@@ -14,6 +14,7 @@ export interface Source {
 export interface PoolNode {
   id: number; name: string; type: string; server: string; port: number; latency_ms: number | null
   status: 'unknown' | 'healthy' | 'unhealthy'; country: string; country_code: string; exit_ip: string
+  region?: string; city?: string
   last_checked_at: string | null; next_check_at: string; last_error: string
   sources: { id: number; name: string; node_name: string }[]
 }

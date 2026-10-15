@@ -2,10 +2,18 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { errorText, formatDate, isCancelled, json, useApi, type NewSource, type Source } from '../api/system'
 import Modal from './Modal.vue'
+import { route, routeParams, setRouteQuery } from '../router'
 const props = defineProps<{ items: Source[]; loading: boolean; error: string }>()
 const emit = defineEmits<{ reload: []; updated: [source: Source]; removed: [id: number] }>()
 const api = useApi()
-const search = ref('')
+const search = ref(routeParams('sources').get('q') ?? '')
+watch(route, value => { if (value.section === 'sources') search.value = routeParams('sources').get('q') ?? '' }, { flush: 'sync' })
+watch(search, value => {
+  if (route.value.section !== 'sources') return
+  const params = new URLSearchParams()
+  if (value) params.set('q', value)
+  setRouteQuery('sources', params, true)
+})
 const visibleSources = computed(() => props.items.filter(source => source.name.toLowerCase().includes(search.value.toLowerCase())))
 const enabledCount = computed(() => props.items.filter(source => source.enabled).length)
 const pendingCount = computed(() => props.items.filter(source => ['queued', 'processing'].includes(source.status)).length)

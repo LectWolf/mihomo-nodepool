@@ -2,7 +2,7 @@
 // Override BROWSER_PATH with an installed Chromium executable on other platforms.
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { readFile, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { readFile, mkdtemp, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -26,17 +26,17 @@ let nextId = 3
 let settings = { exclude_pattern: '流量|到期', test_url: 'https://www.gstatic.com/generate_204', timeout_ms: 5000, probe_concurrency: 16, source_concurrency: 3, refresh_hours: 6, check_hours: 6 }
 const releases = { current_version: 'v1.0.0', latest_version: 'v2.0.0', update_available: true, can_update: true, can_rollback: true, need_restart: false, state: 'idle', message: '', releases: ['v2.0.0', 'v1.0.0', 'v0.9.0'].map(version => ({ version, name: `Release ${version}`, body: `真实契约测试发布说明 ${version}\n- 测试条目`, published_at: date, url: `https://github.com/example/test/releases/tag/${version}` })) }
 let targetVersion = releases.current_version
-const nodes = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, name: `节点-${index + 1}`, type: 'ss', server: 'example.test', port: 443, latency_ms: 40 + index, status: 'healthy', country: '美国', country_code: 'US', exit_ip: '192.0.2.1', last_checked_at: date, next_check_at: date, last_error: '', sources: [{ id: 1, name: '主要来源', node_name: '原名 A' }, { id: 2, name: '备用来源', node_name: '原名 B' }] }))
+const nodes = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, name: `节点-${index + 1}`, type: 'ss', server: 'example.test', port: 443, latency_ms: 40 + index, status: 'healthy', country: 'United States', country_code: 'US', exit_ip: '192.0.2.1', ...(index === 0 ? { region: ' 加州 ', city: '洛杉矶' } : index === 1 ? { region: '美国', city: ' 美国 ' } : {}), last_checked_at: date, next_check_at: date, last_error: '', sources: [{ id: 1, name: '主要来源', node_name: '原名 A' }, { id: 2, name: '备用来源', node_name: '原名 B' }] }))
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
   const send = (status, data) => { if (!res.destroyed) { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)) } }
   try {
     if (!url.pathname.startsWith('/api/v1')) {
-      const relative = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
+      const relative = path.extname(url.pathname) ? url.pathname.slice(1) : 'index.html'
       const filename = path.resolve(root, 'dist', relative)
       if (!filename.startsWith(path.resolve(root, 'dist') + path.sep) && relative !== 'index.html') { res.writeHead(403); res.end(); return }
       const body = await readFile(filename)
-      res.writeHead(200, { 'Content-Type': filename.endsWith('.js') ? 'text/javascript' : filename.endsWith('.css') ? 'text/css' : 'text/html' }); res.end(body); return
+      res.writeHead(200, { 'Content-Type': filename.endsWith('.js') ? 'text/javascript' : filename.endsWith('.css') ? 'text/css' : filename.endsWith('.svg') ? 'image/svg+xml' : 'text/html' }); res.end(body); return
     }
     const chunks = []
     for await (const chunk of req) chunks.push(chunk)
@@ -101,8 +101,8 @@ const server = createServer(async (req, res) => {
 })
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
 const appUrl = `http://127.0.0.1:${server.address().port}`
-await mkdir(path.join(root, 'node_modules/.cache'), { recursive: true })
-const profile = await mkdtemp(path.join(root, 'node_modules/.cache/browser-smoke-'))
+const scratchRoot = process.env.PI_SCRATCH_DIR || (await import('node:os')).tmpdir()
+const profile = await mkdtemp(path.join(scratchRoot, 'browser-smoke-'))
 const browser = spawn(browserPath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' })
 let socket
 let commandId = 0
@@ -130,11 +130,23 @@ const text = () => evaluate('document.body.innerText')
 const hasText = value => eventually(async () => (await text()).includes(value), value)
 const visible = "element => !!element.getClientRects().length"
 async function click(label, scope = 'document') {
-  const expression = `(() => { const container = ${scope}; if (!container) return false; const button = [...container.querySelectorAll('button')].filter(${visible}).find(element => element.textContent.trim() === ${JSON.stringify(label)}); if (!button || button.disabled) return false; button.click(); return true; })()`
+  const expression = `(() => { const container = ${scope}; if (!container) return false; const button = [...container.querySelectorAll('button,a')].filter(${visible}).find(element => element.textContent.trim() === ${JSON.stringify(label)}); if (!button || button.disabled) return false; button.click(); return true; })()`
   await eventually(() => evaluate(expression), `enabled button: ${label}`)
 }
 async function input(selector, value) {
   await evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!element) throw Error('Missing input'); element.value = ${JSON.stringify(value)}; element.dispatchEvent(new Event(element.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); })()`)
+}
+async function select(label, value) {
+  await evaluate(`document.querySelector('[role="combobox"][aria-label="' + ${JSON.stringify(label)} + '"]').scrollIntoView({ block: 'center', behavior: 'instant' })`)
+  await sleep(80)
+  await evaluate(`(() => { const trigger = document.querySelector('[role="combobox"][aria-label="' + ${JSON.stringify(label)} + '"]'); if (!trigger || trigger.disabled) throw Error('Missing/enabled select: ' + ${JSON.stringify(label)}); trigger.focus(); trigger.click(); })()`)
+  await eventually(() => evaluate(`!!document.querySelector('[role="listbox"] [role="option"][data-value="' + ${JSON.stringify(String(value))} + '"]')`), `option ${value}`)
+  await evaluate(`document.querySelector('[role="listbox"] [role="option"][data-value="' + ${JSON.stringify(String(value))} + '"]').click()`)
+}
+async function key(key) {
+  const codes = { Enter: 13, Escape: 27, Tab: 9, ArrowDown: 40, ArrowUp: 38, Home: 36, End: 35, ' ': 32 }
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, windowsVirtualKeyCode: codes[key] || key.toUpperCase().charCodeAt(0) })
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, windowsVirtualKeyCode: codes[key] || key.toUpperCase().charCodeAt(0) })
 }
 async function submit() { await evaluate('document.querySelector("dialog[open] form, .login-card").requestSubmit()') }
 const check = name => console.log(`PASS ${name}`)
@@ -154,30 +166,95 @@ try {
   })
   await cdp('Runtime.enable'); await cdp('Network.enable'); await cdp('Page.enable')
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false })
+  await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
   await cdp('Page.navigate', { url: appUrl })
   await hasText('管理员密码')
   await input('input[type=password]', 'wrong'); await submit(); await hasText('管理员密码错误')
   await input('input[type=password]', 'correct'); await submit(); await hasText('节点-1')
   check('password login and JSON login error')
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark')
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".panel")).backgroundColor'), 'rgb(25, 37, 31)')
+  await select('外观模式', 'light')
+  assert.equal(await evaluate('localStorage.getItem("nodepool-theme")'), 'light')
+  await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
+  await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
+  await sleep(100)
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light')
+  await select('外观模式', 'system')
+  await eventually(() => evaluate('document.documentElement.dataset.theme === "dark"'), 'follow dark system')
+  await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
+  await eventually(() => evaluate('document.documentElement.dataset.theme === "light"'), 'follow light system')
+  await select('外观模式', 'dark')
+  check('first theme follows system, explicit preference persists, and system mode responds to changes')
+  assert.equal(await evaluate('document.querySelectorAll("select").length'), 0)
+  assert.equal(await evaluate('document.querySelector(".node-location-region").textContent'), '美国 · 加州 · 洛杉矶')
+  assert.equal(await evaluate('document.querySelectorAll(".node-location-region")[1].textContent'), '美国')
+  assert.equal(await evaluate('document.querySelectorAll(".node-location-region")[2].textContent'), '美国')
+  await eventually(() => evaluate('document.querySelector("img.country-flag").naturalWidth > 0'), 'local SVG flag loaded')
+  await evaluate('document.querySelector("[role=combobox][aria-label=协议]").focus()')
+  await key(' '); await key('End'); await key('Enter')
+  assert.equal(await evaluate('document.querySelector("[role=combobox][aria-label=协议]").textContent.trim()'), 'VMESS')
+  await key('Home'); await key('Enter')
+  await key('ArrowDown'); await key('ArrowDown'); await key('ArrowUp'); await key('Escape')
+  assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'), '协议')
+  assert.equal(await evaluate('document.querySelectorAll("[role=listbox]").length'), 0)
+  await key('v'); await key('Enter')
+  assert.equal(await evaluate('document.querySelector("[role=combobox][aria-label=协议]").textContent.trim()'), 'VMESS')
+  await key('ArrowDown'); await key('Tab')
+  assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'), '来源')
+  await click('重置')
+  check('custom selects: no native select, keyboard navigation/typeahead, Escape focus and Tab; localized/deduplicated locations and local SVG')
   await click('→'); await hasText('节点-51')
   assert.equal(requests.filter(item => item.route === '/nodes').at(-1).query.page, '2')
   await input('.filters input[type=search]', '节点-2'); await hasText('节点-20')
   assert.equal(requests.filter(item => item.route === '/nodes').at(-1).query.page, '1')
-  await input('.filters select', 'ss')
+  await select('协议', 'ss')
   await input('.latency-filter input', '100')
   await sleep(450)
   assert.equal(requests.filter(item => item.route === '/nodes').at(-1).query.type, 'ss')
   assert.equal(requests.filter(item => item.route === '/nodes').at(-1).query.max_latency, '100')
-  await input('.filters label:nth-child(3) select', '2')
-  await input('.filters label:nth-child(4) select', 'US')
-  await input('.filters label:nth-child(5) select', 'healthy')
-  await input('.filters label:nth-child(7) select', 'name')
+  await select('来源', '2')
+  await select('国家或地区', 'US')
+  await select('健康状态', 'healthy')
+  await select('排序', 'name')
   await sleep(450)
   const allFilters = requests.filter(item => item.route === '/nodes').at(-1).query
   assert.deepEqual([allFilters.source_id, allFilters.country, allFilters.status, allFilters.sort], ['2', 'US', 'healthy', 'name'])
   await input('.latency-filter input', '')
   await sleep(450)
   assert.ok(!('max_latency' in requests.filter(item => item.route === '/nodes').at(-1).query))
+  const filtersBeforeView = requests.filter(item => item.route === '/nodes').at(-1).query
+  await click('卡片')
+  assert.equal(await evaluate('document.querySelector("[aria-label=卡片视图]").getAttribute("aria-pressed")'), 'true')
+  assert.equal(await evaluate('localStorage.getItem("nodepool.nodes.layout")'), 'cards')
+  assert.equal(await evaluate('document.querySelector(".filters input[type=search]").value'), '节点-2')
+  assert.deepEqual(requests.filter(item => item.route === '/nodes').at(-1).query, filtersBeforeView)
+  await click('检测', 'document.querySelector(".node-card")'); await hasText('已加入检测队列')
+  await click('详情', 'document.querySelector(".node-card")'); await hasText('原始名称：原名 B'); await click('×', 'document.querySelector("dialog[open]")')
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true })
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true)
+  await cdp('Page.reload'); await hasText('节点-20')
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark')
+  assert.equal(await evaluate('new URL(location.href).searchParams.get("q")'), '节点-2')
+  assert.equal(await evaluate('document.querySelector("[aria-label=卡片视图]").getAttribute("aria-pressed")'), 'true')
+  await click('重置'); await hasText('节点-1')
+  await select('每页条数', 25); await sleep(450)
+  assert.equal(requests.filter(item => item.route === '/nodes').at(-1).query.page_size, '25')
+  await click('→'); await hasText('节点-26')
+  await click('列表'); await hasText('节点-26')
+  assert.equal(requests.filter(item => item.route === '/nodes').at(-1).query.page, '2')
+  assert.equal(await evaluate('new URL(location.href).searchParams.get("page")'), '2')
+  assert.equal(await evaluate('new URL(location.href).searchParams.get("view")'), 'list')
+  await evaluate('history.back()')
+  await eventually(() => evaluate('document.querySelector("[aria-label=卡片视图]").getAttribute("aria-pressed") === "true"'), 'back restores card view')
+  await evaluate('history.forward()')
+  await eventually(() => evaluate('document.querySelector("[aria-label=列表视图]").getAttribute("aria-pressed") === "true"'), 'forward restores list view')
+  await cdp('Page.reload'); await hasText('节点-26')
+  assert.equal(await evaluate('new URL(location.href).searchParams.get("page")'), '2')
+  check('URL keeps page/filter/view across reload, back and forward')
+  await select('每页条数', 50); await sleep(450)
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false })
+  check('cards preserve filters/page, persist on reload, share detection/details, custom page size and 320px layout')
   await click('重置'); await hasText('节点-1')
   await click('主要来源+1')
   await hasText('原始名称：原名 B'); await click('×', 'document.querySelector("dialog[open]")')
@@ -191,6 +268,7 @@ try {
   await click('重置'); await sleep(400)
   check('late search response cancellation and clearing optional latency filter')
   await click('▤来源管理2')
+  assert.equal(await evaluate('location.pathname'), '/sources')
   await click('＋ 添加来源')
   await input('dialog textarea', 'https://good.example/sub\nhttps://fail.example/sub\ninvalid')
   await submit(); await hasText('1 个失败')
@@ -217,6 +295,7 @@ try {
   assert.ok(!requests.some(item => item.route === '/sources/refresh'))
   check('source edit preserves URL, enable/disable, individual refresh and confirmed deletion')
   await click('⚙运行设置'); await hasText('全局排除规则')
+  assert.equal(await evaluate('location.pathname'), '/settings')
   await input('.settings-main textarea', '('); await click('保存设置'); await hasText('排除正则无效')
   await input('.settings-main textarea', 'draft-pattern')
   await sleep(4500)
@@ -227,7 +306,14 @@ try {
   assert.deepEqual(Object.keys(requests.filter(item => item.method === 'PUT').at(-1).body).sort(), ['exclude_pattern', 'probe_concurrency', 'source_concurrency', 'test_url', 'timeout_ms'])
   check('settings validation, exact payload, and drafts retained through polling/navigation')
   await evaluate('document.querySelector(".version-button").click()'); await hasText('Release v2.0.0')
-  await input('dialog select', 'v0.9.0'); await hasText('真实契约测试发布说明 v0.9.0')
+  await evaluate('document.querySelector("[role=combobox][aria-label=选择发布版本]").focus()')
+  await key(' ')
+  assert.equal(await evaluate('document.querySelector("dialog[open]").contains(document.querySelector("[role=listbox]"))'), true)
+  assert.equal(await evaluate('document.querySelector("[role=listbox]").matches(":popover-open")'), true)
+  assert.equal(await evaluate('(() => { const box = document.querySelector("[role=listbox]").getBoundingClientRect(); return box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight })()'), true)
+  await key('Escape')
+  assert.equal(await evaluate('!!document.querySelector("dialog[open]")'), true)
+  await select('选择发布版本', 'v0.9.0'); await hasText('真实契约测试发布说明 v0.9.0')
   await click('回退到所选历史版'); await click('确认操作'); await hasText('程序文件已准备好')
   assert.equal(requests.filter(item => item.route === '/system/rollback').at(-1).body.version, 'v0.9.0')
   await click('立即重启'); await click('确认操作'); await hasText('仅 Linux 支持立即重启')
@@ -246,6 +332,27 @@ try {
   await sleep(150)
   const releasesAfterClose = requests.filter(item => item.route === '/releases').length
   check('real release notes, selected history rollback, local backup, update, non-Linux restart error and reconnect')
+  await cdp('Page.navigate', { url: appUrl + '/nodes?page=2&page_size=25&view=cards&type=ss&country=US' })
+  await hasText('节点-26')
+  assert.equal(await evaluate('document.querySelector("[aria-label=卡片视图]").getAttribute("aria-pressed")'), 'true')
+  assert.equal(await evaluate('document.querySelector("[aria-label=每页条数]").textContent.trim()'), '25')
+  assert.equal(requests.filter(item => item.route === '/nodes').at(-1).query.country, 'US')
+  await evaluate(`document.querySelector('nav a[href^="/sources"]').click()`)
+  await input('.panel-heading .search-field input', '备用')
+  await eventually(() => evaluate('new URL(location.href).searchParams.get("q") === "备用"'), 'source search URL')
+  await evaluate('history.back()'); await hasText('节点-26')
+  assert.equal(await evaluate('new URL(location.href).searchParams.get("page")'), '2')
+  await evaluate('history.forward()'); await hasText('备用来源')
+  assert.equal(await evaluate('document.querySelector(".panel-heading .search-field input").value'), '备用')
+  await evaluate(`document.querySelector('nav a[href^="/nodes"]').click()`)
+  await hasText('节点-26')
+  await cdp('Page.navigate', { url: appUrl + '/nodes?page=999&page_size=25&view=list' })
+  await hasText('节点-51')
+  assert.equal(await evaluate('new URL(location.href).searchParams.get("page")'), '3')
+  await select('每页条数', 50); await click('重置'); await hasText('节点-1')
+  await select('外观模式', 'light')
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".panel")).backgroundColor'), 'rgb(255, 255, 255)')
+  check('direct page/filter/card URL, source/settings routes, source search history and out-of-range page normalization')
   await click('◈节点总览')
   await input('.filters input[type=search]', 'timeout')
   await eventually(async () => (await text()).includes('请求超时'), 'fetch timeout guidance', 25000)

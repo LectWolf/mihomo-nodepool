@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { errorText, formatDate, isCancelled, json, safeReleaseUrl, useApi, type Releases } from '../api/system'
 import { usePolling } from '../polling'
 import Modal from './Modal.vue'
+import CustomSelect from './CustomSelect.vue'
 const emit = defineEmits<{ close: []; restart: [] }>()
 const api = useApi()
 const data = ref<Releases | null>(null)
@@ -20,6 +21,7 @@ const activeStates = ['checking', 'downloading', 'installing', 'restarting']
 const running = computed(() => !!data.value && activeStates.includes(data.value.state))
 const busy = computed(() => submitting.value || waitingForTask.value || running.value)
 const selectedRelease = computed(() => data.value?.releases.find(release => release.version === selected.value))
+const releaseOptions = computed(() => data.value?.releases.map(release => ({ value: release.version, label: `${release.version}${release.version === data.value?.latest_version ? ' · 最新稳定版' : ''}${release.version === data.value?.current_version ? ' · 当前版本' : ''}` })) ?? [])
 const stateLabels = { idle: '待命', checking: '正在检查', downloading: '正在下载', installing: '正在安装', restarting: '正在重启', done: '操作完成', error: '操作失败' }
 const canInstall = computed(() => !!selectedRelease.value && !!data.value?.can_update && selected.value !== data.value.current_version && !data.value.need_restart && !busy.value)
 async function load() {
@@ -79,7 +81,7 @@ const confirmationText = computed(() => {
       <div v-if="data.need_restart" class="notice warning" role="status">程序文件已准备好，请立即重启以使用所选版本。</div>
       <div v-if="running || waitingForTask || data.state === 'error' || data.message" :class="['notice', data.state === 'error' ? 'error' : 'info']" role="status"><span v-if="running || waitingForTask" class="spinner"></span><strong>{{ waitingForTask ? '等待任务开始' : stateLabels[data.state] }}</strong><span>{{ data.message }}</span></div>
       <p v-if="notice && !running && !data.need_restart && data.state !== 'error'" class="small green-text" role="status">{{ notice }}</p>
-      <div class="release-toolbar"><label>选择发布版本<select v-model="selected" :disabled="busy || !data.releases.length"><option v-if="!data.releases.length" value="">暂无可选版本</option><option v-for="release in data.releases" :key="release.version" :value="release.version">{{ release.version }}{{ release.version === data.latest_version ? ' · 最新稳定版' : '' }}{{ release.version === data.current_version ? ' · 当前版本' : '' }}</option></select></label><button :disabled="loading || busy" @click="load">{{ loading ? '检查中…' : '↻ 检查版本' }}</button></div>
+      <div class="release-toolbar"><div class="release-select-field"><span class="field-label">选择发布版本</span><CustomSelect v-model="selected" label="选择发布版本" :disabled="busy || !data.releases.length" :options="releaseOptions" placeholder="暂无可选版本" /></div><button :disabled="loading || busy" @click="load">{{ loading ? '检查中…' : '↻ 检查版本' }}</button></div>
       <article v-if="selectedRelease" class="release-notes"><div class="panel-heading"><div><h3>{{ selectedRelease.name || selectedRelease.version }}</h3><p class="small muted">{{ formatDate(selectedRelease.published_at) }}</p></div><a v-if="safeReleaseUrl(selectedRelease.url)" :href="safeReleaseUrl(selectedRelease.url)" target="_blank" rel="noopener noreferrer" class="small green-text">查看原文 ↗</a></div><div class="release-body">{{ selectedRelease.body || '此版本未提供发布说明。' }}</div></article>
       <div v-else class="empty-state"><span class="empty-icon">◷</span><h3>暂无发布记录</h3><p>获取到的发布版本将在这里显示。</p></div>
       <div v-if="!data.can_update" class="notice warning">{{ data.message || '当前运行环境不支持在线更新。' }}</div>

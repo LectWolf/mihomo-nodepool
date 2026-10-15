@@ -62,6 +62,9 @@ jobs:
           npm ci --prefix e2e
           ./e2e/node_modules/.bin/playwright install --with-deps chromium
           node e2e/smoke.mjs
+          node --input-type=module -e 'import { chromium } from "./e2e/node_modules/playwright/index.mjs"; console.log("BROWSER_PATH=" + chromium.executablePath())' >> "$GITHUB_ENV"
+      - name: Console interaction regression tests
+        run: npm run test:browser --prefix frontend
       - name: Build and smoke test container
         run: |
           docker build --build-arg VERSION=ci --tag nodepool:ci .

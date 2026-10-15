@@ -3,6 +3,9 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { errorText, formatDate, isCancelled, json, useApi, type NodePage, type Options, type PoolNode, type Source, type SystemInfo } from '../api/system'
 import { usePolling } from '../polling'
 import Modal from './Modal.vue'
+import CustomSelect from './CustomSelect.vue'
+import NodeLocation from './NodeLocation.vue'
+import { route, routeParams, setRouteQuery } from '../router'
 const props = defineProps<{ sources: Source[]; sourcesError: string; system: SystemInfo | null; paused: boolean }>()
 const emit = defineEmits<{ reloadSources: [] }>()
 const api = useApi()
@@ -14,6 +17,12 @@ const optionsError = ref('')
 const filters = reactive({ q: '', type: '', country: '', source_id: '', status: '', max_latency: '', sort: 'latency' })
 const page = ref(1)
 const pageSize = ref(50)
+const layoutKey = 'nodepool.nodes.layout'
+function savedLayout(): 'list' | 'cards' {
+  try { return localStorage.getItem(layoutKey) === 'cards' ? 'cards' : 'list' } catch { return 'list' }
+}
+const layout = ref(savedLayout())
+watch(layout, value => { try { localStorage.setItem(layoutKey, value) } catch { /* Storage may be unavailable in private contexts. */ } })
 const nodeTesting = reactive(new Set<number>())
 const allTesting = ref(false)
 const actionError = ref('')
@@ -21,9 +30,17 @@ const actionMessage = ref('')
 const details = ref<PoolNode | null>(null)
 const maxPages = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / pageSize.value)))
 const statusLabels = { healthy: '健康', unhealthy: '不可用', unknown: '待检测' }
+const protocolOptions = computed(() => [{ value: '', label: '全部协议' }, ...options.value.types.map(type => ({ value: type, label: type.toUpperCase() }))])
+const sourceOptions = computed(() => [{ value: '', label: '全部来源' }, ...props.sources.map(source => ({ value: String(source.id), label: `${source.name}${source.enabled ? '' : '（已停用）'}` }))])
+const countryOptions = computed(() => [{ value: '', label: '全部国家 / 地区' }, ...options.value.countries.map(country => ({ value: country.code, label: country.name || country.code }))])
+const healthOptions = [{ value: '', label: '全部状态' }, { value: 'healthy', label: '健康' }, { value: 'unhealthy', label: '不可用' }, { value: 'unknown', label: '待检测' }]
+const sortOptions = [{ value: 'latency', label: '延迟优先' }, { value: 'name', label: '按名称排序' }, { value: 'created', label: '按加入时间' }]
+const sizeOptions = [25, 50, 100].map(value => ({ value, label: String(value) }))
 let debounce: ReturnType<typeof setTimeout> | undefined
 let controller: AbortController | undefined
 let sequence = 0
+let restoringRoute = false
+let replaceNextRoute = false
 const query = computed(() => {
   const params = new URLSearchParams({ page: String(page.value), page_size: String(pageSize.value), sort: filters.sort })
   for (const [key, value] of Object.entries(filters)) {
@@ -36,6 +53,35 @@ const query = computed(() => {
   }
   return params.toString()
 })
+function pageParams() {
+  const params = new URLSearchParams(query.value)
+  params.set('view', layout.value)
+  return params
+}
+function restoreRoute() {
+  if (route.value.section !== 'nodes') return
+  const params = routeParams('nodes')
+  restoringRoute = true
+  const size = Number(params.get('page_size'))
+  pageSize.value = [25, 50, 100].includes(size) ? size : 50
+  const requestedPage = Number(params.get('page'))
+  page.value = Number.isInteger(requestedPage) && requestedPage > 0 && requestedPage <= 1000000 ? requestedPage : 1
+  const country = params.get('country')?.toUpperCase() ?? ''
+  const sourceID = Number(params.get('source_id'))
+  const latency = Number(params.get('max_latency'))
+  Object.assign(filters, {
+    q: params.get('q') ?? '', type: params.get('type') ?? '',
+    country: /^[A-Z]{2}$/.test(country) ? country : '',
+    source_id: Number.isSafeInteger(sourceID) && sourceID > 0 ? String(sourceID) : '',
+    status: ['healthy', 'unhealthy', 'unknown'].includes(params.get('status') ?? '') ? params.get('status') : '',
+    max_latency: Number.isFinite(latency) && latency > 0 ? String(Math.min(2147483647, Math.floor(latency))) : '',
+    sort: ['latency', 'name', 'created'].includes(params.get('sort') ?? '') ? params.get('sort') : 'latency',
+  })
+  const view = params.get('view')
+  layout.value = view === 'list' || view === 'cards' ? view : savedLayout()
+  restoringRoute = false
+  setRouteQuery('nodes', pageParams(), true)
+}
 async function load() {
   if (props.paused) return
   const currentSequence = ++sequence
@@ -46,6 +92,7 @@ async function load() {
     const result = await api<NodePage>(`/nodes?${query.value}`, { signal: controller.signal })
     if (currentSequence !== sequence) return
     if (page.value > Math.max(1, Math.ceil(result.total / pageSize.value))) {
+      replaceNextRoute = true
       page.value = Math.max(1, Math.ceil(result.total / pageSize.value))
       return
     }
@@ -59,8 +106,18 @@ async function loadOptions() {
   try { options.value = await api<Options>('/options'); optionsError.value = '' }
   catch (cause) { if (!isCancelled(cause)) optionsError.value = errorText(cause) }
 }
-watch(filters, () => { page.value = 1 }, { flush: 'sync' })
-watch(pageSize, () => { page.value = 1 }, { flush: 'sync' })
+watch(filters, () => { if (!restoringRoute) page.value = 1 }, { flush: 'sync' })
+watch(pageSize, () => { if (!restoringRoute) page.value = 1 }, { flush: 'sync' })
+watch([query, layout], ([next], [previous]) => {
+  if (restoringRoute || route.value.section !== 'nodes') return
+  const before = new URLSearchParams(previous)
+  const after = new URLSearchParams(next)
+  const typing = before.get('q') !== after.get('q') || before.get('max_latency') !== after.get('max_latency')
+  const replace = typing || replaceNextRoute
+  replaceNextRoute = false
+  setRouteQuery('nodes', pageParams(), replace)
+})
+watch(route, restoreRoute, { flush: 'sync', immediate: true })
 watch(query, () => {
   // Invalidate the visible page immediately so a late response cannot replace newer filters.
   ++sequence
@@ -112,36 +169,47 @@ const tasks = computed(() => props.system?.tasks)
     <div class="section-line"><span><span class="dot"></span>每 6 小时自动检测 · 手动检测同样按队列执行</span><span v-if="tasks">检测中 {{ tasks.active_nodes }} · 排队 {{ tasks.pending_nodes }}</span></div>
     <div v-if="actionError" class="notice error" role="alert">{{ actionError }}</div><div v-if="actionMessage" class="notice success" role="status">{{ actionMessage }}</div>
     <div class="panel node-panel">
-      <div class="panel-heading"><div><h2>所有节点 <span class="count">{{ data?.total ?? '—' }}</span></h2><p class="small muted">相同连接配置合并展示，来源关联完整保留。</p></div><button :disabled="loading || paused" @click="load">{{ loading ? '读取中…' : '↻ 更新列表' }}</button></div>
+      <div class="panel-heading node-toolbar"><div><h2>所有节点 <span class="count">{{ data?.total ?? '—' }}</span></h2><p class="small muted">相同连接配置合并展示，来源关联完整保留。</p></div><div class="node-toolbar-actions"><div class="view-switch" role="group" aria-label="节点展示方式"><button type="button" :aria-pressed="layout === 'list'" aria-label="列表视图" @click="layout = 'list'"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h2m2 0h8M2 8h2m2 0h8M2 13h2m2 0h8" /></svg>列表</button><button type="button" :aria-pressed="layout === 'cards'" aria-label="卡片视图" @click="layout = 'cards'"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h4v4H2zm8 0h4v4h-4zM2 10h4v4H2zm8 0h4v4h-4z" /></svg>卡片</button></div><button :disabled="loading || paused" @click="load">{{ loading ? '读取中…' : '↻ 更新列表' }}</button></div></div>
       <div class="filters">
         <label class="search-field"><span class="sr-only">搜索节点</span><span aria-hidden="true">⌕</span><input v-model="filters.q" type="search" placeholder="搜索节点名称或地址" /></label>
-        <label><span class="sr-only">协议</span><select v-model="filters.type"><option value="">全部协议</option><option v-for="type in options.types" :key="type" :value="type">{{ type.toUpperCase() }}</option></select></label>
-        <label><span class="sr-only">来源</span><select v-model="filters.source_id"><option value="">全部来源</option><option v-for="source in sources" :key="source.id" :value="String(source.id)">{{ source.name }}{{ source.enabled ? '' : '（已停用）' }}</option></select></label>
-        <label><span class="sr-only">国家或地区</span><select v-model="filters.country"><option value="">全部国家 / 地区</option><option v-for="country in options.countries" :key="country.code" :value="country.code">{{ country.name || country.code }}</option></select></label>
-        <label><span class="sr-only">健康状态</span><select v-model="filters.status"><option value="">全部状态</option><option value="healthy">健康</option><option value="unhealthy">不可用</option><option value="unknown">待检测</option></select></label>
+        <CustomSelect v-model="filters.type" label="协议" :options="protocolOptions" />
+        <CustomSelect v-model="filters.source_id" label="来源" :options="sourceOptions" />
+        <CustomSelect v-model="filters.country" label="国家或地区" :options="countryOptions" />
+        <CustomSelect v-model="filters.status" label="健康状态" :options="healthOptions" />
         <label class="latency-filter"><span class="sr-only">最大延迟（毫秒）</span><input v-model="filters.max_latency" type="number" min="0" step="1" placeholder="最大延迟" /><span>ms</span></label>
-        <label><span class="sr-only">排序</span><select v-model="filters.sort"><option value="latency">延迟优先</option><option value="name">按名称排序</option><option value="created">按加入时间</option></select></label>
+        <CustomSelect v-model="filters.sort" label="排序" :options="sortOptions" />
         <button class="text-button" @click="reset">重置</button>
       </div>
       <div v-if="optionsError || sourcesError" class="notice warning small">{{ optionsError ? `筛选选项读取失败：${optionsError}` : `来源选项读取失败：${sourcesError}` }}<button @click="loadOptions(); emit('reloadSources')">重试选项</button></div>
       <div v-if="error" class="notice error" role="alert">{{ error }}<span v-if="data">当前保留上次读取结果。</span><button :disabled="loading" @click="load">重试</button></div>
-      <div class="table-wrap" :aria-busy="loading">
-        <table v-if="data?.items.length"><thead><tr><th>节点名称 / 地址</th><th>协议</th><th>国家 / 出口 IP</th><th>延迟 / 状态</th><th>关联来源</th><th>最近检测</th><th class="right">操作</th></tr></thead><tbody>
+      <div :class="layout === 'list' ? 'table-wrap' : 'node-cards-wrap'" :aria-busy="loading">
+        <table v-if="data?.items.length && layout === 'list'" class="node-table"><thead><tr><th>节点名称 / 地址</th><th>协议</th><th>出口 IP / 地区</th><th>延迟 / 状态</th><th>关联来源</th><th>最近检测</th><th class="right">操作</th></tr></thead><tbody>
           <tr v-for="node in data.items" :key="node.id">
             <td><button class="node-name text-button" @click="details = node">{{ node.name }}</button><span class="cell-sub mono">{{ node.server }}:{{ node.port }}</span></td>
             <td><span class="protocol-tag">{{ node.type.toUpperCase() }}</span></td>
-            <td><span>{{ node.country || node.country_code || '待识别' }}</span><span class="cell-sub mono">{{ node.exit_ip || '—' }}</span></td>
+            <td><NodeLocation :node="node" /></td>
             <td><span :class="['latency', { 'green-text': node.status === 'healthy' }]">{{ node.latency_ms === null ? '—' : `${node.latency_ms} ms` }}</span><span :class="['cell-sub', 'status-text', node.status]"><span class="dot" :class="{ bad: node.status === 'unhealthy', pending: node.status === 'unknown' }"></span>{{ statusLabels[node.status] }}</span></td>
             <td><button class="source-association" @click="details = node">{{ node.sources[0]?.name || '—' }}<span v-if="node.sources.length > 1" class="count">+{{ node.sources.length - 1 }}</span></button></td>
             <td><span class="small">{{ formatDate(node.last_checked_at) }}</span><span class="cell-sub">下次 {{ formatDate(node.next_check_at) }}</span></td>
             <td class="right"><button class="compact" :disabled="nodeTesting.has(node.id) || allTesting || paused" @click="testNode(node)">{{ nodeTesting.has(node.id) ? '排队中…' : '检测' }}</button></td>
           </tr>
         </tbody></table>
+        <div v-else-if="data?.items.length" class="node-cards">
+          <article v-for="node in data.items" :key="node.id" class="node-card" :data-node-id="node.id">
+            <div class="node-card-heading"><button class="node-name text-button" @click="details = node">{{ node.name }}</button><span class="protocol-tag">{{ node.type.toUpperCase() }}</span></div>
+            <p class="node-card-address mono">{{ node.server }}:{{ node.port }}</p>
+            <NodeLocation :node="node" />
+            <div class="node-card-health"><span :class="['latency', { 'green-text': node.status === 'healthy' }]">{{ node.latency_ms === null ? '—' : `${node.latency_ms} ms` }}</span><span class="status-text"><span class="dot" :class="{ bad: node.status === 'unhealthy', pending: node.status === 'unknown' }"></span>{{ statusLabels[node.status] }}</span></div>
+            <div class="node-card-source"><span class="small muted">关联来源</span><button class="source-association" @click="details = node">{{ node.sources[0]?.name || '—' }}<span v-if="node.sources.length > 1" class="count">+{{ node.sources.length - 1 }}</span></button></div>
+            <dl class="node-card-dates"><div><dt>最近检测</dt><dd>{{ formatDate(node.last_checked_at) }}</dd></div><div><dt>下次检测</dt><dd>{{ formatDate(node.next_check_at) }}</dd></div></dl>
+            <div class="node-card-actions"><button class="compact" :aria-label="`查看 ${node.name} 的详情`" @click="details = node">详情</button><button class="compact" :disabled="nodeTesting.has(node.id) || allTesting || paused" :aria-label="`检测 ${node.name}`" @click="testNode(node)">{{ nodeTesting.has(node.id) ? '排队中…' : '检测' }}</button></div>
+          </article>
+        </div>
         <div v-else-if="loading && !data" class="empty-state" role="status"><span class="spinner"></span><h3>正在读取节点</h3><p>等待服务返回最新列表…</p></div>
         <div v-else-if="!error" class="empty-state"><span class="empty-icon">◈</span><h3>{{ data?.stats.total ? '没有符合条件的节点' : '还没有有效节点' }}</h3><p>{{ data?.stats.total ? '尝试调整搜索词或筛选条件。' : '前往来源管理，导入订阅、本地文件或节点链接。' }}</p><button v-if="data?.stats.total" @click="reset">清空筛选</button></div>
       </div>
-      <div class="pagination"><span class="small muted">{{ loading ? '正在更新…' : `共 ${data?.total ?? 0} 个匹配节点` }}</span><div><label class="inline-label">每页 <select v-model.number="pageSize"><option :value="25">25</option><option :value="50">50</option><option :value="100">100</option></select></label><button :disabled="page <= 1 || loading || !data?.total" aria-label="上一页" @click="page--">←</button><span class="small">{{ page }} / {{ maxPages }}</span><button :disabled="page >= maxPages || loading || !data?.total" aria-label="下一页" @click="page++">→</button></div></div>
+      <div class="pagination"><span class="small muted">{{ loading ? '正在更新…' : `共 ${data?.total ?? 0} 个匹配节点` }}</span><div><div class="inline-label"><span>每页</span><CustomSelect v-model="pageSize" label="每页条数" :options="sizeOptions" /></div><button :disabled="page <= 1 || loading || !data?.total" aria-label="上一页" @click="page--">←</button><span class="small">{{ page }} / {{ maxPages }}</span><button :disabled="page >= maxPages || loading || !data?.total" aria-label="下一页" @click="page++">→</button></div></div>
     </div>
-    <Modal v-if="details" title="节点详情" @close="details = null"><div class="detail-title"><h3>{{ details.name }}</h3><span class="protocol-tag">{{ details.type.toUpperCase() }}</span></div><dl class="detail-list"><div><dt>连接地址</dt><dd class="mono">{{ details.server }}:{{ details.port }}</dd></div><div><dt>状态</dt><dd>{{ statusLabels[details.status] }} · {{ details.latency_ms === null ? '暂无延迟' : `${details.latency_ms} ms` }}</dd></div><div><dt>出口</dt><dd>{{ details.country || details.country_code || '待识别' }} · {{ details.exit_ip || '暂无出口 IP' }}</dd></div><div><dt>最近检测</dt><dd>{{ formatDate(details.last_checked_at) }}</dd></div><div><dt>下次检测</dt><dd>{{ formatDate(details.next_check_at) }}</dd></div></dl><p v-if="details.last_error" class="notice error">{{ details.last_error }}</p><h3>关联来源 <span class="count">{{ details.sources.length }}</span></h3><ul class="association-list"><li v-for="source in details.sources" :key="source.id"><strong>{{ source.name }}</strong><span class="small muted">原始名称：{{ source.node_name }}</span></li></ul><p class="small muted">同一连接配置只检测一次，不同来源的原始名称分别保留。</p></Modal>
+    <Modal v-if="details" title="节点详情" @close="details = null"><div class="detail-title"><h3>{{ details.name }}</h3><span class="protocol-tag">{{ details.type.toUpperCase() }}</span></div><dl class="detail-list"><div><dt>连接地址</dt><dd class="mono">{{ details.server }}:{{ details.port }}</dd></div><div><dt>状态</dt><dd>{{ statusLabels[details.status] }} · {{ details.latency_ms === null ? '暂无延迟' : `${details.latency_ms} ms` }}</dd></div><div><dt>出口 / 地区</dt><dd><NodeLocation :node="details" /></dd></div><div><dt>最近检测</dt><dd>{{ formatDate(details.last_checked_at) }}</dd></div><div><dt>下次检测</dt><dd>{{ formatDate(details.next_check_at) }}</dd></div></dl><p v-if="details.last_error" class="notice error">{{ details.last_error }}</p><h3>关联来源 <span class="count">{{ details.sources.length }}</span></h3><ul class="association-list"><li v-for="source in details.sources" :key="source.id"><strong>{{ source.name }}</strong><span class="small muted">原始名称：{{ source.node_name }}</span></li></ul><p class="small muted">同一连接配置只检测一次，不同来源的原始名称分别保留。每 6 小时自动检测，手动检测同样按队列执行。</p></Modal>
   </section>
 </template>

@@ -160,7 +160,7 @@ func (s *Service) nodeLoop(ctx context.Context) {
 				defer wg.Done()
 				jobCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 				defer cancel()
-				exit := n.ExitCheckedAt == nil || time.Since(*n.ExitCheckedAt) >= 24*time.Hour || n.ExitIP == ""
+				exit := needsExitLookup(n, time.Now())
 				results[i] = s.Prober.Probe(jobCtx, n, settings, exit)
 			}(i, n)
 		}
@@ -186,4 +186,8 @@ func (s *Service) nodeLoop(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func needsExitLookup(n Node, now time.Time) bool {
+	return n.ExitCheckedAt == nil || now.Sub(*n.ExitCheckedAt) >= 24*time.Hour || n.ExitIP == "" || n.CountryCode == "" || (n.Region == "" && n.City == "")
 }

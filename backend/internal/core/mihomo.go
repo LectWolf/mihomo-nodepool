@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
@@ -28,7 +27,11 @@ type Mihomo struct {
 func New() *Mihomo {
 	adapter.UnifiedDelay.Store(true)
 	mlog.SetLevel(mlog.SILENT)
-	return &Mihomo{exitSlots: make(chan struct{}, 4), GeoURLs: []string{"https://api.ip.sb/geoip", "https://ipwho.is/"}}
+	return &Mihomo{exitSlots: make(chan struct{}, 4), GeoURLs: []string{
+		"http://ip-api.com/json/?lang=zh-CN&fields=status,message,country,countryCode,regionName,city,query",
+		"https://api.ip.sb/geoip",
+		"https://ipwho.is/",
+	}}
 }
 func (*Mihomo) Version() string { return "v1.19.31" }
 func (*Mihomo) Validate(config map[string]any) error {
@@ -128,21 +131,15 @@ func (m *Mihomo) Probe(ctx context.Context, n pool.Node, s pool.Settings, exit b
 		if e != nil || resp.StatusCode != 200 {
 			continue
 		}
-		var v struct {
-			IP          string `json:"ip"`
-			Country     string `json:"country"`
-			CountryCode string `json:"country_code"`
-			Success     *bool  `json:"success"`
-		}
-		if json.Unmarshal(body, &v) != nil || (v.Success != nil && !*v.Success) {
+		location, e := parseLocation(body)
+		if e != nil {
 			continue
 		}
-		if _, e = netip.ParseAddr(v.IP); e != nil {
-			continue
-		}
-		result.ExitIP = v.IP
-		result.Country = v.Country
-		result.CountryCode = strings.ToUpper(v.CountryCode)
+		result.ExitIP = location.IP
+		result.Country = location.Country
+		result.CountryCode = location.CountryCode
+		result.Region = location.Region
+		result.City = location.City
 		return result
 	}
 	result.ExitError = "出口国家查询失败，稍后重试"

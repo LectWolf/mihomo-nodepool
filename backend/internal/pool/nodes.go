@@ -8,12 +8,12 @@ import (
 )
 
 const visible = `EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1)`
-const nodeColumns = `n.id,n.name,n.type,n.server,n.port,n.latency_ms,n.status,n.country,n.country_code,n.exit_ip,n.last_checked_at,n.next_check_at,n.last_error,n.config,n.created_at,n.failures,n.successes,n.exit_checked_at`
+const nodeColumns = `n.id,n.name,n.type,n.server,n.port,n.latency_ms,n.status,n.country,n.country_code,n.region,n.city,n.exit_ip,n.last_checked_at,n.next_check_at,n.last_error,n.config,n.created_at,n.failures,n.successes,n.exit_checked_at`
 
 func scanNode(row scanner) (Node, error) {
 	var n Node
 	n.Sources = []Origin{}
-	e := row.Scan(&n.ID, &n.Name, &n.Type, &n.Server, &n.Port, &n.LatencyMS, &n.Status, &n.Country, &n.CountryCode, &n.ExitIP, &n.LastCheckedAt, &n.NextCheckAt, &n.LastError, &n.Config, &n.CreatedAt, &n.Failures, &n.Successes, &n.ExitCheckedAt)
+	e := row.Scan(&n.ID, &n.Name, &n.Type, &n.Server, &n.Port, &n.LatencyMS, &n.Status, &n.Country, &n.CountryCode, &n.Region, &n.City, &n.ExitIP, &n.LastCheckedAt, &n.NextCheckAt, &n.LastError, &n.Config, &n.CreatedAt, &n.Failures, &n.Successes, &n.ExitCheckedAt)
 	return n, e
 }
 func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
@@ -222,7 +222,23 @@ func (s *Store) SaveProbe(ctx context.Context, n Node, r ProbeResult, suppress b
 	}
 	if r.ExitAttempted {
 		if r.ExitIP != "" {
-			_, e = s.DB.ExecContext(ctx, `UPDATE np_nodes SET exit_ip=?,country=?,country_code=?,exit_checked_at=? WHERE id=?`, r.ExitIP, r.Country, r.CountryCode, now, n.ID)
+			// Partial fallback responses may omit geography. Preserve known fields
+			// only when the exit is unchanged; never attach an old city to a new IP.
+			if r.ExitIP == n.ExitIP {
+				if r.Country == "" {
+					r.Country = n.Country
+				}
+				if r.CountryCode == "" {
+					r.CountryCode = n.CountryCode
+				}
+				if r.Region == "" {
+					r.Region = n.Region
+				}
+				if r.City == "" {
+					r.City = n.City
+				}
+			}
+			_, e = s.DB.ExecContext(ctx, `UPDATE np_nodes SET exit_ip=?,country=?,country_code=?,region=?,city=?,exit_checked_at=? WHERE id=?`, r.ExitIP, r.Country, r.CountryCode, r.Region, r.City, now, n.ID)
 		} else {
 			_, e = s.DB.ExecContext(ctx, `UPDATE np_nodes SET exit_checked_at=? WHERE id=?`, now, n.ID)
 		}

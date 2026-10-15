@@ -104,6 +104,8 @@ type Node struct {
 	Status        string          `json:"status"`
 	Country       string          `json:"country"`
 	CountryCode   string          `json:"country_code"`
+	Region        string          `json:"region"`
+	City          string          `json:"city"`
 	ExitIP        string          `json:"exit_ip"`
 	LastCheckedAt *time.Time      `json:"last_checked_at"`
 	NextCheckAt   time.Time       `json:"next_check_at"`
@@ -153,6 +155,7 @@ type ProbeResult struct {
 	LatencyMS                    *int
 	Error                        string
 	ExitIP, Country, CountryCode string
+	Region, City                 string
 	ExitAttempted                bool
 	ExitError                    string
 }

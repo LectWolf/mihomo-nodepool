@@ -34,6 +34,7 @@ var schema = []string{
  server VARCHAR(512) NOT NULL, port INT NOT NULL, config JSON NOT NULL,
  status VARCHAR(16) NOT NULL DEFAULT 'unknown', latency_ms INT NULL,
  country VARCHAR(128) NOT NULL DEFAULT '', country_code VARCHAR(8) NOT NULL DEFAULT '', exit_ip VARCHAR(64) NOT NULL DEFAULT '',
+ region VARCHAR(128) NOT NULL DEFAULT '', city VARCHAR(128) NOT NULL DEFAULT '',
  last_checked_at DATETIME(6) NULL, exit_checked_at DATETIME(6) NULL, next_check_at DATETIME(6) NOT NULL,
  last_error TEXT NOT NULL, created_at DATETIME(6) NOT NULL,
  failures INT NOT NULL DEFAULT 0, successes INT NOT NULL DEFAULT 0,
@@ -64,6 +65,9 @@ func (s *Store) Ensure(ctx context.Context) error {
 		if _, e := s.DB.ExecContext(ctx, q); e != nil {
 			return e
 		}
+	}
+	if err := s.ensureLocationColumns(ctx); err != nil {
+		return err
 	}
 	b, _ := json.Marshal(Defaults())
 	if _, e := s.DB.ExecContext(ctx, `INSERT IGNORE INTO np_settings(id,body) VALUES(1,?)`, b); e != nil {

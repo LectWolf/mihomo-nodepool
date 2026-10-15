@@ -21,7 +21,7 @@ func TestProbeUsesMihomoTunnelForDelayAndCountry(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/geo" {
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"ip":"203.0.113.9","country":"Japan","country_code":"JP"}`)
+			fmt.Fprint(w, `{"status":"success","query":"203.0.113.9","country":"美国","countryCode":"US","regionName":"加州","city":"洛杉矶"}`)
 			return
 		}
 		w.WriteHeader(204)
@@ -61,7 +61,7 @@ func TestProbeUsesMihomoTunnelForDelayAndCountry(t *testing.T) {
 	settings := pool.Defaults()
 	settings.TestURL = target.URL + "/delay"
 	result := engine.Probe(context.Background(), pool.Node{Config: config}, settings, true)
-	if result.LatencyMS == nil || result.ExitIP != "203.0.113.9" || result.CountryCode != "JP" || connects.Load() < 2 {
+	if result.LatencyMS == nil || result.ExitIP != "203.0.113.9" || result.CountryCode != "US" || result.Region != "加州" || result.City != "洛杉矶" || connects.Load() < 2 {
 		t.Fatalf("probe did not traverse tunnel: %+v, connects=%d", result, connects.Load())
 	}
 }

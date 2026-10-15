@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { abortRequests, apiEvents, errorText, isCancelled, json, useApi, type Source, type SystemInfo } from './api/system'
 import { usePolling } from './polling'
 import NodesView from './components/NodesView.vue'
 import SourcesView from './components/SourcesView.vue'
 import SettingsView from './components/SettingsView.vue'
 import VersionsDialog from './components/VersionsDialog.vue'
+import ThemeSelect from './components/ThemeSelect.vue'
+import { navigate, route, sectionHref, type Section } from './router'
 
 const api = useApi()
 const authenticated = ref(false)
@@ -14,9 +16,14 @@ const password = ref('')
 const loginBusy = ref(false)
 const loginError = ref('')
 const logoutBusy = ref(false)
-const section = ref<'nodes' | 'sources' | 'settings'>('nodes')
-const visited = reactive(new Set(['nodes']))
-function navigate(id: typeof section.value) { visited.add(id); section.value = id }
+const section = computed(() => route.value.section)
+const visited = reactive(new Set<Section>([section.value]))
+watch(section, id => visited.add(id), { flush: 'sync' })
+function navigateLink(event: MouseEvent, id: Section) {
+	if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return
+	event.preventDefault()
+	navigate(id)
+}
 const system = ref<SystemInfo | null>(null)
 const systemError = ref('')
 const sources = ref<Source[]>([])
@@ -52,8 +59,7 @@ function clearSession() {
   reconnectError.value = ''
   databaseUnavailable.value = false
   sourcesRevision++
-  section.value = 'nodes'
-  visited.clear(); visited.add('nodes')
+  visited.clear(); visited.add(section.value)
 }
 function unauthorized() {
   if (authenticated.value) loginError.value = '登录已过期，请重新输入管理员密码。'
@@ -150,6 +156,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <ThemeSelect v-if="!authenticated" class="guest-theme" />
   <div v-if="booting" class="boot-screen" role="status"><span class="brand-symbol">N</span><span class="spinner"></span>正在连接 NodePool…</div>
   <main v-else-if="!authenticated" class="login-screen">
     <div class="login-intro"><span class="brand-symbol">N</span><span class="eyebrow">MIHOMO NODEPOOL</span><h1>每一个连接，<br>清晰可见。</h1><p>汇集来源，去重管理。<br>让节点状态与连接质量，一目了然。</p><div class="login-orbit" aria-hidden="true"><span></span><span></span><span></span><b>◈</b></div></div>
@@ -166,11 +173,11 @@ onBeforeUnmount(() => {
       <div class="brand"><span class="brand-symbol">N</span><div><strong>NodePool</strong><span>MIHOMO 控制台</span></div></div>
       <button class="version-button" @click="versionsOpen = true"><span class="dot"></span>{{ system?.version || '版本信息' }}<span>⌄</span></button>
       <p class="nav-caption">工作空间</p>
-      <nav aria-label="主要导航"><button v-for="item in sections" :key="item.id" :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="navigate(item.id)"><span aria-hidden="true">{{ item.icon }}</span>{{ item.label }}<span v-if="item.id === 'sources' && sources.length" class="nav-count">{{ sources.length }}</span></button></nav>
+      <nav aria-label="主要导航"><a v-for="item in sections" :key="item.id" :href="sectionHref(item.id)" :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="navigateLink($event, item.id)"><span aria-hidden="true">{{ item.icon }}</span>{{ item.label }}<span v-if="item.id === 'sources' && sources.length" class="nav-count">{{ sources.length }}</span></a></nav>
       <div class="sidebar-bottom"><div class="schedule-mini"><span class="dot"></span><strong>自动维护 · 每 6 小时</strong><p>来源刷新与节点检测<br>分别错峰，持续运行</p></div><button class="logout" :disabled="logoutBusy" @click="logout">{{ logoutBusy ? '正在退出…' : '退出登录 ↗' }}</button></div>
     </aside>
     <div class="workspace">
-      <header class="topbar"><span>工作空间 <span class="muted">/</span> <strong>{{ currentTitle }}</strong></span><div class="topbar-status"><span class="dot" :class="{ bad: !system?.database.connected }"></span>{{ system ? (system.database.connected ? '数据库已连接' : '数据库未连接') : '正在连接服务' }}<span class="admin-avatar">A</span><span>管理员</span><button class="mobile-logout text-button" :disabled="logoutBusy" @click="logout">退出</button></div></header>
+      <header class="topbar"><span>工作空间 <span class="muted">/</span> <strong>{{ currentTitle }}</strong></span><div class="topbar-status"><ThemeSelect /><span class="dot" :class="{ bad: !system?.database.connected }"></span>{{ system ? (system.database.connected ? '数据库已连接' : '数据库未连接') : '正在连接服务' }}<span class="admin-avatar">A</span><span class="admin-name">管理员</span><button class="mobile-logout text-button" :disabled="logoutBusy" @click="logout">退出</button></div></header>
       <main class="main-content">
         <div v-if="databaseUnavailable" class="notice error" role="alert">数据库暂不可用，节点、来源和设置可能无法读取。请恢复数据库连接后重试。<button @click="refreshOverview">重试连接</button></div>
         <div v-if="systemError && !databaseUnavailable" class="notice error" role="alert">{{ systemError }}<button @click="loadSystem">重试</button></div>

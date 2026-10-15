@@ -3,6 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      (() => {
+        let preference = 'system'
+        try { preference = localStorage.getItem('nodepool-theme') || 'system' } catch {}
+        const dark = preference === 'dark' || (preference !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+        document.documentElement.style.backgroundColor = dark ? '#111a16' : '#f5f7f6'
+      })()
+    </script>
     <meta name="description" content="Mihomo NodePool 中文节点管理控制台，统一管理节点来源、连接检测与版本更新。" />
     <title>NodePool · 节点管理控制台</title>
     <link
