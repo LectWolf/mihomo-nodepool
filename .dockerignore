@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+node_modules
+**/node_modules
+frontend/dist
+backend/internal/web/dist
+build
+data
+*.log

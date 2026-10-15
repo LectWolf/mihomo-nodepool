@@ -1,0 +1,27 @@
+{
+  "name": "mihomo-nodepool-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Mihomo NodePool 前端骨架。只准备系统状态页，不包含节点管理或版本更新。",
+  "type": "module",
+  "engines": {
+    "node": ">=24.17.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "vue-tsc -b --pretty false",
+    "build": "vue-tsc -b --pretty false && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "vue": "^3.5.44"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "@vue/tsconfig": "^0.9.1",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.4",
+    "vue-tsc": "^3.3.13"
+  }
+}
