@@ -50,6 +50,18 @@ jobs:
           test -z "$(gofmt -l cmd internal)"
           go test ./...
           go vet ./...
+      - name: Browser integration tests
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: '3306'
+          MYSQL_USER: root
+          MYSQL_PASSWORD: nodepool-test-only
+          MYSQL_DATABASE: nodepool_browser_test
+        run: |
+          docker exec ${{ job.services.mysql.id }} mysql -uroot -pnodepool-test-only -e 'CREATE DATABASE nodepool_browser_test CHARACTER SET utf8mb4;'
+          npm ci --prefix e2e
+          ./e2e/node_modules/.bin/playwright install --with-deps chromium
+          node e2e/smoke.mjs
       - name: Build and smoke test container
         run: |
           docker build --build-arg VERSION=ci --tag nodepool:ci .

@@ -19,6 +19,8 @@ import (
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/database"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/server"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/update"
+	"github.com/joho/godotenv"
 )
 
 func main() {
@@ -28,6 +30,13 @@ func main() {
 	}
 }
 func run() error {
+	envFile := os.Getenv("NODEPOOL_ENV_FILE")
+	if envFile == "" {
+		envFile = ".env"
+	}
+	if err := godotenv.Load(envFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.New("无法读取环境配置文件，请检查 .env 格式")
+	}
 	cfg, e := config.Load()
 	if e != nil {
 		return e
@@ -52,6 +61,10 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	updater, err := update.New(update.Options{Version: buildinfo.Version})
+	if err != nil {
+		return fmt.Errorf("无法初始化版本更新器：%w", err)
+	}
 	if admin.PasswordFile != "" {
 		log.Printf("管理员密码文件：%s", admin.PasswordFile)
 	}
@@ -60,7 +73,7 @@ func run() error {
 	defer stop()
 	workerDone := make(chan struct{})
 	go func() { defer close(workerDone); service.Run(ctx) }()
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: server.New(server.Options{Service: service, Auth: admin}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second}
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: server.New(server.Options{Service: service, Auth: admin, Updates: updater}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second}
 	errorsCh := make(chan error, 1)
 	go func() { errorsCh <- srv.ListenAndServe() }()
 	log.Printf("Mihomo NodePool %s 正在监听 %s", buildinfo.Version, cfg.HTTPAddr)

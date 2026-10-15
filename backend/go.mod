@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/go-sql-driver/mysql v1.10.1
+	github.com/joho/godotenv v1.5.1
 	github.com/metacubex/mihomo v1.19.31
 	gopkg.in/yaml.v3 v3.0.1
 )
