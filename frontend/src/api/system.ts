@@ -1,113 +1,96 @@
-export const SYSTEM_ENDPOINT = '/api/v1/system'
-
-export const CORE_NOT_INTEGRATED = 'not_integrated' as const
-
-export interface DatabaseStatus {
-  configured: boolean
-  connected: boolean
-}
-
-export interface CoreStatus {
-  state: typeof CORE_NOT_INTEGRATED
-}
+import { onBeforeUnmount } from 'vue'
 
 export interface SystemInfo {
-  name: string
-  version: string
-  commit: string
-  build_time: string
-  database: DatabaseStatus
-  core: CoreStatus
+  name: string; version: string; commit: string; build_time: string
+  database: { configured: boolean; connected: boolean }
+  core: { state: 'ready' | 'error'; version: string }
+  tasks: { pending_sources: number; pending_nodes: number; active_sources: number; active_nodes: number }
 }
-
-export class SystemResponseError extends Error {
-  readonly status: number | undefined
-
-  constructor(message: string, status?: number) {
-    super(message)
-    this.name = 'SystemResponseError'
-    this.status = status
-  }
+export interface Source {
+  id: number; name: string; kind: 'url' | 'file' | 'links'; enabled: boolean; exclude_pattern: string
+  status: 'queued' | 'processing' | 'ready' | 'error'; node_count: number; excluded_count: number
+  last_error: string; last_refresh_at: string | null; next_refresh_at: string | null; created_at: string
 }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+export interface PoolNode {
+  id: number; name: string; type: string; server: string; port: number; latency_ms: number | null
+  status: 'unknown' | 'healthy' | 'unhealthy'; country: string; country_code: string; exit_ip: string
+  last_checked_at: string | null; next_check_at: string; last_error: string
+  sources: { id: number; name: string; node_name: string }[]
 }
-
-function readText(record: Record<string, unknown>, key: string): string {
-  const value = record[key]
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new SystemResponseError(`系统接口缺少有效的 ${key}`)
-  }
-  return value
+export interface NodePage {
+  items: PoolNode[]; total: number; page: number; page_size: number
+  stats: { total: number; healthy: number; unhealthy: number; pending: number }
 }
-
-export function parseSystemInfo(value: unknown): SystemInfo {
-  if (!isRecord(value)) {
-    throw new SystemResponseError('系统接口返回的不是对象')
-  }
-
-  const database = value.database
-  if (
-    !isRecord(database) ||
-    typeof database.configured !== 'boolean' ||
-    typeof database.connected !== 'boolean'
-  ) {
-    throw new SystemResponseError('系统接口的 database 状态无效')
-  }
-
-  const core = value.core
-  if (!isRecord(core) || core.state !== CORE_NOT_INTEGRATED) {
-    throw new SystemResponseError('系统接口的 core.state 与约定的 not_integrated 不一致')
-  }
-
-  return {
-    name: readText(value, 'name'),
-    version: readText(value, 'version'),
-    commit: readText(value, 'commit'),
-    build_time: readText(value, 'build_time'),
-    database: {
-      configured: database.configured,
-      connected: database.connected,
-    },
-    core: {
-      state: CORE_NOT_INTEGRATED,
-    },
-  }
+export interface Options { types: string[]; countries: { code: string; name: string }[] }
+export interface Settings {
+  exclude_pattern: string; test_url: string; timeout_ms: number; probe_concurrency: number
+  source_concurrency: number; refresh_hours: number; check_hours: number
 }
-
-export function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'AbortError'
+export interface Release { version: string; name: string; body: string; published_at: string; url: string }
+export interface Releases {
+  current_version: string; latest_version: string; update_available: boolean; can_update: boolean
+  can_rollback: boolean; need_restart: boolean
+  state: 'idle' | 'checking' | 'downloading' | 'installing' | 'done' | 'error'
+  message: string; releases: Release[]
 }
+export interface NewSource { name: string; kind: Source['kind']; url?: string; content?: string; exclude_pattern?: string }
+export class ApiError extends Error {
+  readonly status: number
+  constructor(message: string, status = 0) { super(message); this.name = 'ApiError'; this.status = status }
+}
+export const apiEvents = new EventTarget()
+const controllers = new Set<AbortController>()
+export function abortRequests() { controllers.forEach(controller => controller.abort()) }
+export function isCancelled(error: unknown): boolean { return error instanceof Error && error.name === 'AbortError' }
+export function errorText(error: unknown): string { return error instanceof Error ? error.message : '操作失败，请稍后重试。' }
 
-export async function fetchSystemInfo(signal: AbortSignal): Promise<SystemInfo> {
-  let response: Response
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const controller = new AbortController()
+  const external = init.signal
+  const abort = () => controller.abort()
+  if (external?.aborted) controller.abort()
+  external?.addEventListener('abort', abort, { once: true })
+  controllers.add(controller)
+  let timedOut = false
+  const timer = window.setTimeout(() => { timedOut = true; controller.abort() }, 20000)
   try {
-    response = await fetch(SYSTEM_ENDPOINT, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-      signal,
+    const response = await fetch(`/api/v1${path}`, {
+      ...init, credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+      headers: { Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...init.headers },
     })
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw error
+    const body: unknown = await response.json().catch(() => null)
+    if (!response.ok) {
+      const detail = body && typeof body === 'object' && 'error' in body && typeof body.error === 'string' ? body.error : `请求失败（${response.status}）`
+      if (response.status === 401) apiEvents.dispatchEvent(new Event('unauthorized'))
+      if (response.status === 503) {
+        apiEvents.dispatchEvent(new Event('database-unavailable'))
+        throw new ApiError(`数据库暂不可用。${detail}`, 503)
+      }
+      throw new ApiError(detail, response.status)
     }
-    throw new SystemResponseError(
-      '无法连接后端。请确认 Go 服务已在 127.0.0.1:8080 监听，并且开发代理可用。',
-    )
+    if (body === null) throw new ApiError('服务返回了无法读取的响应，请重试。')
+    return body as T
+  } catch (error) {
+    if (timedOut) throw new ApiError('请求超时，请检查服务连接后重试。')
+    if (isCancelled(error) || error instanceof ApiError) throw error
+    throw new ApiError('无法连接服务，请检查网络后重试。')
+  } finally {
+    clearTimeout(timer)
+    external?.removeEventListener('abort', abort)
+    controllers.delete(controller)
   }
-
-  if (!response.ok) {
-    throw new SystemResponseError(`系统接口返回 HTTP ${response.status}`, response.status)
-  }
-
-  let body: unknown
-  try {
-    body = await response.json()
-  } catch {
-    throw new SystemResponseError('系统接口返回的不是 JSON')
-  }
-
-  return parseSystemInfo(body)
+}
+export const json = (method: string, body?: unknown): RequestInit => ({ method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+export function useApi() {
+  const lifetime = new AbortController()
+  onBeforeUnmount(() => lifetime.abort())
+  return <T>(path: string, init: RequestInit = {}) => request<T>(path, { ...init, signal: init.signal ?? lifetime.signal })
+}
+export function formatDate(value?: string | null): string {
+  if (!value) return '尚未执行'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+export function safeReleaseUrl(value: string): string | undefined {
+  try { const url = new URL(value); return url.protocol === 'https:' ? url.href : undefined } catch { return undefined }
 }
