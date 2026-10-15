@@ -1,0 +1,12 @@
+Mihomo NodePool
+
+This project embeds Mihomo (Clash.Meta), copyright its respective contributors,
+under GNU General Public License version 3. See LICENSE.
+
+Mihomo source: https://github.com/MetaCubeX/mihomo
+Embedded version: v1.19.31 (Go module github.com/metacubex/mihomo).
+Other Go and npm dependencies retain their respective licenses.
+
+Implementation behavior was studied against the private LinkSyncX/linksyncx
+project at e7f208eae7125e02ba3ccde882fd7ce99aa51f79. The full reference code
+is not included in this repository.

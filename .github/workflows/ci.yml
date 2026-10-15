@@ -16,6 +16,17 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: nodepool-test-only
+          MYSQL_DATABASE: nodepool_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pnodepool-test-only"
+          --health-interval=5s --health-timeout=5s --health-retries=20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -32,6 +43,9 @@ jobs:
       - run: node scripts/build.mjs
       - name: Check Go formatting, tests and vet
         working-directory: backend
+        env:
+          MYSQL_TEST_DSN: root:nodepool-test-only@tcp(127.0.0.1:3306)/nodepool_test?parseTime=true
+          NODEPOOL_CAPACITY_TEST: '1'
         run: |
           test -z "$(gofmt -l cmd internal)"
           go test ./...
@@ -39,7 +53,7 @@ jobs:
       - name: Build and smoke test container
         run: |
           docker build --build-arg VERSION=ci --tag nodepool:ci .
-          docker run --detach --name nodepool-ci --publish 127.0.0.1:18080:8080 nodepool:ci
+          docker run --detach --name nodepool-ci --env ADMIN_PASSWORD=nodepool-ci-test-password --publish 127.0.0.1:18080:8080 nodepool:ci
           trap 'docker logs nodepool-ci; docker rm --force nodepool-ci' EXIT
           for attempt in $(seq 1 15); do
             if curl --fail --silent http://127.0.0.1:18080/healthz; then
@@ -48,7 +62,8 @@ jobs:
             sleep 1
           done
           curl --fail http://127.0.0.1:18080/
-          curl --fail http://127.0.0.1:18080/api/v1/system
+          curl --fail --cookie-jar /tmp/nodepool-ci.cookies --header 'Content-Type: application/json' --data '{"password":"nodepool-ci-test-password"}' http://127.0.0.1:18080/api/v1/auth/login
+          curl --fail --cookie /tmp/nodepool-ci.cookies http://127.0.0.1:18080/api/v1/system
           docker exec nodepool-ci /app/nodepool healthcheck
           docker exec nodepool-ci sh -c 'grep -Eq "^Uid:[[:space:]]+1000[[:space:]]" /proc/1/status'
           docker exec --user 1000:1000 nodepool-ci sh -c 'test -w /app && test -w /app/data'

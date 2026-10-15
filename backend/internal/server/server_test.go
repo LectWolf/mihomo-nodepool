@@ -1,45 +1,44 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/auth"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/core"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
 )
 
-func TestUnconfiguredSystemReportsActualState(t *testing.T) {
-	rr := httptest.NewRecorder()
-	Handler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/system", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("system status: %d", rr.Code)
+func TestAuthenticatedSystemAndDatabaseUnavailable(t *testing.T) {
+	a, e := auth.New(t.TempDir(), "test-password")
+	if e != nil {
+		t.Fatal(e)
 	}
-	var result struct {
-		Database databaseStatus `json:"database"`
-		Core     struct {
-			State string `json:"state"`
-		} `json:"core"`
+	h := New(Options{Service: pool.NewService(pool.NewStore(nil), core.New()), Auth: a})
+	for path, want := range map[string]int{"/healthz": 200, "/readyz": 503, "/api/v1/system": 401, "/api/v1/nodes": 401} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != want {
+			t.Fatalf("%s = %d", path, w.Code)
+		}
 	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
+	login := httptest.NewRecorder()
+	h.ServeHTTP(login, httptest.NewRequest("POST", "/api/v1/auth/login", strings.NewReader(`{"password":"test-password"}`)))
+	if login.Code != 200 {
+		t.Fatal("login failed")
 	}
-	if result.Database.Configured || result.Database.Connected || result.Core.State != "not_integrated" {
-		t.Fatal("preparation build must not claim a working database or core")
-	}
-}
-
-func TestHealthAndReadinessAreSeparate(t *testing.T) {
-	handler := Handler(nil)
-	for path, want := range map[string]int{
-		"/healthz":        http.StatusOK,
-		"/readyz":         http.StatusServiceUnavailable,
-		"/api/v1/missing": http.StatusNotFound,
-	} {
-		t.Run(path, func(t *testing.T) {
-			rr := httptest.NewRecorder()
-			handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
-			if rr.Code != want {
-				t.Fatalf("status = %d, want %d", rr.Code, want)
-			}
-		})
+	for path, want := range map[string]int{"/api/v1/system": 200, "/api/v1/nodes": 503, "/api/v1/missing": 404} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.AddCookie(login.Result().Cookies()[0])
+		h.ServeHTTP(w, r)
+		if w.Code != want {
+			t.Fatalf("%s = %d", path, w.Code)
+		}
+		if path == "/api/v1/system" && !strings.Contains(w.Body.String(), `"state":"ready"`) {
+			t.Fatal("embedded engine missing")
+		}
 	}
 }
