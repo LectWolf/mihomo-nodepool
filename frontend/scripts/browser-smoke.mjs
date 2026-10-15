@@ -103,7 +103,10 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
 const appUrl = `http://127.0.0.1:${server.address().port}`
 const scratchRoot = process.env.PI_SCRATCH_DIR || (await import('node:os')).tmpdir()
 const profile = await mkdtemp(path.join(scratchRoot, 'browser-smoke-'))
-const browser = spawn(browserPath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' })
+const browser = spawn(browserPath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', ...(process.env.CI ? ['--no-sandbox', '--disable-dev-shm-usage'] : []), '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] })
+let browserError = ''
+browser.stderr.on('data', chunk => { browserError = (browserError + chunk.toString()).slice(-4000) })
+browser.on('error', error => { browserError = error.message })
 let socket
 let commandId = 0
 const pending = new Map()
@@ -153,6 +156,7 @@ const check = name => console.log(`PASS ${name}`)
 try {
   let debugPort
   await eventually(async () => {
+    if (browser.exitCode !== null || browser.signalCode !== null) throw new Error(`Browser exited before readiness (${browser.exitCode ?? browser.signalCode}): ${browserError}`)
     try { debugPort = (await readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]; return !!debugPort } catch { return false }
   }, 'browser startup')
   const targets = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()
