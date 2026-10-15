@@ -39,7 +39,7 @@ PUT `/api/v1/settings` `{exclude_pattern,test_url,timeout_ms,probe_concurrency,s
 
 ## 版本
 
-- GET `/api/v1/releases` -> `{current_version,latest_version,update_available,can_update,can_rollback,need_restart,state:"idle"|"checking"|"downloading"|"installing"|"done"|"error",message,releases:[{version,name,body,published_at,url}]}`。
+- GET `/api/v1/releases` -> `{current_version,latest_version,update_available,can_update,can_rollback,need_restart,state:"idle"|"checking"|"downloading"|"installing"|"restarting"|"done"|"error",message,releases:[{version,name,body,published_at,url}]}`。
 - POST `/api/v1/system/update` `{version?:string}` -> `{queued:true}`。默认最新稳定版。
 - POST `/api/v1/system/rollback` `{version?:string}` -> `{queued:true}`。空恢复本地 backup，否则下载指定历史版。
 - POST `/api/v1/system/restart` -> `{restarting:true}`。Linux 进程退出，由 Docker restart 策略拉起；非 Linux 返回说明性错误。

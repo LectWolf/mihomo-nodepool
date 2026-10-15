@@ -83,7 +83,9 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 			reparse = true
 		}
 	}
-	_, e = tx.ExecContext(ctx, `UPDATE np_sources SET name=?,enabled=?,exclude_pattern=?,url=?,url_hash=?,revision=revision+1,pending=IF(? OR ?,1,pending),cached=IF(?,0,IF(?,1,cached)),status=IF(? OR ?,'queued',status) WHERE id=?`, v.Name, v.Enabled, v.ExcludePattern, v.URL, urlHash(v.URL), reparse, fetch, fetch, reparse, reparse, fetch, id)
+	// Evaluate cached before pending: queued/in-flight network work and due refreshes
+	// take priority over reparsing old content. MySQL SET assignments run left to right.
+	_, e = tx.ExecContext(ctx, `UPDATE np_sources SET name=?,enabled=?,exclude_pattern=?,url=?,url_hash=?,revision=revision+1,cached=IF(?,0,IF(?,IF(kind='url' AND ((cached=0 AND (pending=1 OR lease_until IS NOT NULL)) OR next_refresh_at<=UTC_TIMESTAMP(6)),0,1),cached)),pending=IF(? OR ?,1,pending),status=IF(? OR ?,'queued',status) WHERE id=?`, v.Name, v.Enabled, v.ExcludePattern, v.URL, urlHash(v.URL), fetch, reparse, reparse, fetch, reparse, fetch, id)
 	if e != nil {
 		return v, e
 	}

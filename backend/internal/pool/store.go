@@ -103,7 +103,8 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 		return e
 	}
 	if old.ExcludePattern != v.ExcludePattern {
-		_, e = tx.ExecContext(ctx, `UPDATE np_sources SET pending=1,cached=1,revision=revision+1,status='queued' WHERE enabled=1`)
+		// Preserve existing network refresh requirements when merging rule changes.
+		_, e = tx.ExecContext(ctx, `UPDATE np_sources SET cached=IF(kind='url' AND ((cached=0 AND (pending=1 OR lease_until IS NOT NULL)) OR next_refresh_at<=UTC_TIMESTAMP(6)),0,1),pending=1,revision=revision+1,status='queued' WHERE enabled=1`)
 		if e != nil {
 			return e
 		}

@@ -31,6 +31,7 @@ const (
 	stateInstalling  = "installing"
 	stateDone        = "done"
 	stateError       = "error"
+	stateRestarting  = "restarting"
 )
 
 // Options configures the production updater. Paths, HTTP clients, API bases,
@@ -168,13 +169,17 @@ func newManager(cfg managerConfig) (*Manager, error) {
 	if exit == nil {
 		exit = func(int) {}
 	}
+	exePath, err := resolveExecutable(cfg.exePath)
+	if err != nil {
+		return nil, err
+	}
 	m := &Manager{
 		repo:        repo,
 		version:     strings.TrimSpace(cfg.version),
 		apiBase:     parsed.String(),
 		apiHost:     parsed.Host,
 		apiScheme:   parsed.Scheme,
-		exePath:     cfg.exePath,
+		exePath:     exePath,
 		goos:        goos,
 		goarch:      goarch,
 		exit:        exit,
@@ -275,11 +280,7 @@ func (m *Manager) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if version == "" {
-		exe, err := m.executable()
-		if err != nil {
-			writeError(w, http.StatusBadRequest, m.safe(err))
-			return
-		}
+		exe := m.exePath
 		if !regularFile(exe + ".backup") {
 			writeError(w, http.StatusBadRequest, "没有可恢复的本地备份")
 			return
@@ -329,8 +330,8 @@ func (m *Manager) handleRestart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "仅 Linux 会退出进程并由 Docker 重启策略拉起，当前系统请手动重启")
 		return
 	}
-	if m.isBusy() {
-		writeError(w, http.StatusConflict, "已有更新或回退正在执行")
+	if !m.tryBegin(stateRestarting, "正在重启") {
+		writeError(w, http.StatusConflict, "已有更新、回退或重启正在执行")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"restarting": true})
@@ -483,11 +484,7 @@ func (m *Manager) runLocalRollback() {
 			m.finish(stateError, m.safe(fmt.Errorf("内部错误: %v", rec)), false)
 		}
 	}()
-	exe, err := m.executable()
-	if err != nil {
-		m.finish(stateError, m.safe(err), false)
-		return
-	}
+	exe := m.exePath
 	if err := m.restoreBackup(exe); err != nil {
 		m.finish(stateError, m.safe(err), false)
 		return

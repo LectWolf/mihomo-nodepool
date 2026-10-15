@@ -19,20 +19,22 @@ import (
 )
 
 func (m *Manager) backupExists() bool {
-	exe, err := m.executable()
-	if err != nil {
-		return false
-	}
-	return regularFile(exe + ".backup")
+	return regularFile(m.exePath + ".backup")
 }
 
-func (m *Manager) executable() (string, error) {
-	if m.exePath != "" {
-		return m.exePath, nil
+// Resolve once before any replacement: Linux may report the renamed backup as
+// os.Executable after the running binary has been moved.
+func resolveExecutable(found string) (string, error) {
+	if found == "" {
+		var err error
+		found, err = os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("无法定位当前程序: %w", err)
+		}
 	}
-	found, err := os.Executable()
+	found, err := filepath.Abs(found)
 	if err != nil {
-		return "", fmt.Errorf("无法定位当前程序: %w", err)
+		return "", fmt.Errorf("无法定位程序绝对路径: %w", err)
 	}
 	resolved, err := filepath.EvalSymlinks(found)
 	if err != nil {
@@ -119,10 +121,7 @@ func (m *Manager) applyRelease(ctx context.Context, rel releaseRecord) error {
 	if err != nil {
 		return err
 	}
-	exe, err := m.executable()
-	if err != nil {
-		return err
-	}
+	exe := m.exePath
 	tempDir, err := os.MkdirTemp(filepath.Dir(exe), ".nodepool-update-*")
 	if err != nil {
 		return fmt.Errorf("无法创建临时目录: %w", err)

@@ -30,7 +30,7 @@ export interface Release { version: string; name: string; body: string; publishe
 export interface Releases {
   current_version: string; latest_version: string; update_available: boolean; can_update: boolean
   can_rollback: boolean; need_restart: boolean
-  state: 'idle' | 'checking' | 'downloading' | 'installing' | 'done' | 'error'
+  state: 'idle' | 'checking' | 'downloading' | 'installing' | 'restarting' | 'done' | 'error'
   message: string; releases: Release[]
 }
 export interface NewSource { name: string; kind: Source['kind']; url?: string; content?: string; exclude_pattern?: string }

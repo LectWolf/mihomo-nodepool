@@ -16,11 +16,11 @@ const waitingForTask = ref(false)
 const confirm = ref<'update' | 'history' | 'backup' | 'restart' | null>(null)
 let submittedAt = 0
 let initialState = ''
-const activeStates = ['checking', 'downloading', 'installing']
+const activeStates = ['checking', 'downloading', 'installing', 'restarting']
 const running = computed(() => !!data.value && activeStates.includes(data.value.state))
 const busy = computed(() => submitting.value || waitingForTask.value || running.value)
 const selectedRelease = computed(() => data.value?.releases.find(release => release.version === selected.value))
-const stateLabels = { idle: '待命', checking: '正在检查', downloading: '正在下载', installing: '正在安装', done: '操作完成', error: '操作失败' }
+const stateLabels = { idle: '待命', checking: '正在检查', downloading: '正在下载', installing: '正在安装', restarting: '正在重启', done: '操作完成', error: '操作失败' }
 const canInstall = computed(() => !!selectedRelease.value && !!data.value?.can_update && selected.value !== data.value.current_version && !data.value.need_restart && !busy.value)
 async function load() {
   if (loading.value) return
