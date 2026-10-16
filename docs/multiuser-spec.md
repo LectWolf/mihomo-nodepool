@@ -40,7 +40,7 @@ Subscription = {id,name,node_count,source_count,created_at,updated_at,url:string
 - POST /subscriptions/{id}/rotate -> Subscription；旧token立即失效。
 - GET /sub/{token}?format=clash|v2ray|auto（不带/api/v1）客户端公开令牌入口。显式格式优先；auto按UA决定，默认clash。clash返回有效可导入完整YAML配置，v2ray返回UTF8分享URI按行连接再base64；支持SS、VMess、VLESS、Trojan、Hysteria2、TUIC、http/socks有条件转换；不支持协议/参数不能生成丢配置假节点，应跳过并返回跳过数Header，全部不可转换则422。停用用户或来源/账号无权限立即禁止输出；Content-Type/Cache-Control/Vary/User-Agent及inline文件名合理。令牌不计入请求日志。
 
-规则组合 API：GET /rule-profiles -> {items:RuleProfile[]}，GET /rule-profiles/default -> 默认模板，POST /rule-profiles、PUT/DELETE /rule-profiles/{id}。RuleProfile = {id,name,routing_enabled,dns_enabled,dns_servers:string[],rules:string[],created_at,updated_at}，各账号私有。订阅保存传 rule_profile_id 绑定，null解除；被绑定规则删除409。仅Clash应用，DNS留空默认三个地址、关闭不写DNS；分流默认沿用本机订阅共享完整规则，关闭合并缓存源本地分流；v2ray和未绑定旧订阅不变。
+规则组合 API：GET /rule-profiles -> {items:RuleProfile[]}，首项为所有账号可用的官方内置规则（id=0、official=true、readonly=true），其后为账号私人规则（正数ID、两个标记false）。GET /rule-profiles/default 返回完整官方模板，POST 创建私人副本，PUT/DELETE /rule-profiles/{id} 修改私人规则；官方0修改或删除403，被绑定私人规则删除409。RuleProfile = {id,name,official,readonly,routing_enabled,dns_enabled,dns_servers:string[],rules:string[],created_at,updated_at}。订阅 rule_profile_id=0 绑定官方，正数仅本人私人项，null不绑定；新建省略默认0，编辑省略保留，旧null不迁移，负数拒绝。PATCH /subscriptions/{id} 只改规则绑定，不重新校验／领取节点快照。仅Clash应用，DNS留空默认三个地址、关闭不写DNS；分流默认沿用本机订阅共享完整规则，关闭合并缓存源本地分流；v2ray不变。
 
 ## 界面
 
@@ -50,6 +50,9 @@ Subscription = {id,name,node_count,source_count,created_at,updated_at,url:string
 - 来源面板参考 Token分享 account-table.html 的内置搜索、勾选摘要与清空；地区网格参考本机订阅共享 CatalogView.vue／RegionCell.vue。复用自绘可访问浮层，不依赖原生 select。
 - 节点可多选，展示提供方、可关注/按提供方查看。提供方页分页搜索和关注；来源弹窗可搜索分页选择整个来源；组合页查看/编辑/复制自动、Clash、v2ray链接及重置令牌、删除。
 - 紧凑卡片单行标题并悬浮全文；浏览整卡看详情，选择模式整卡选择。检测仅管理员详情。桌面地区五列、单行名称、内部滚动；整来源弹窗显示当前选区和每来源状态。保存弹窗可覆盖已有组合并保留原链接，满额仍能进入选择。
+- 地区选中项显示勾选，已选数量和可取消名称标签置于搜索上方，触发器显示所选名称。当前选区按真实来源名称分组，统一紧凑移除按钮。
+- 官方规则可只读预览和复制；私人规则工作台提供搜索、每页30条、逐条增改、上下移动、文本模式、DNS分区、未应用规则提醒与撤销本次修改。
+- 遮罩关闭须在弹窗外按下并松开且未拖动；内容拖出、外拖入、内部留白不触发关闭。
 - 管理员用户管理显示和编辑额度；普通用户账号页显示额度/已用、自己的提供方链接。
 - 所有表单字段统一：第一行标签（可选标记同行），第二行输入，第三行说明（可选）；并排字段顶端/输入框对齐，禁用额外的可选标记独占行。
 

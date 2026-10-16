@@ -311,9 +311,14 @@ func (s *Store) ExportSavedSubscription(ctx context.Context, token, format strin
 		raw, n, e := ExportSubscription(nodes, format)
 		return raw, n, 0, e
 	}
-	p, e := scanRuleProfile(s.DB.QueryRowContext(ctx, `SELECT `+ruleProfileColumns+` FROM np_rule_profiles WHERE id=? AND user_id=?`, *target.RuleProfileID, target.UserID))
-	if e != nil {
-		return nil, 0, 0, e
+	var p RuleProfile
+	if *target.RuleProfileID == 0 {
+		p = DefaultRuleProfile()
+	} else {
+		p, e = scanRuleProfile(s.DB.QueryRowContext(ctx, `SELECT `+ruleProfileColumns+` FROM np_rule_profiles WHERE id=? AND user_id=?`, *target.RuleProfileID, target.UserID))
+		if e != nil {
+			return nil, 0, 0, e
+		}
 	}
 	sources := []Source{}
 	if !p.RoutingEnabled {

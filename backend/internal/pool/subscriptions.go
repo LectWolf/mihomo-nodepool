@@ -124,6 +124,9 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 	if len(in.Nodes) > 100000 || len(in.SourceIDs) > 10000 {
 		return out, errors.New("选择条目过多")
 	}
+	if in.RuleProfileID != nil && *in.RuleProfileID < 0 {
+		return out, errors.New("规则配置ID必须为0（官方默认规则）、正整数（私人规则）或null（不绑定）")
+	}
 	tx, e := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if e != nil {
 		return out, e
@@ -156,14 +159,16 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 	if id > 0 && existing == nil {
 		return out, ErrNotFound
 	}
-	if !in.RuleProfileSet && in.RuleProfileID == nil && existing != nil {
-		in.RuleProfileID = existing.RuleProfileID
-	}
-	if in.RuleProfileID != nil {
-		var found int64
-		if *in.RuleProfileID <= 0 {
-			return out, errors.New("规则配置ID无效")
+	if !in.RuleProfileSet && in.RuleProfileID == nil {
+		if existing != nil {
+			in.RuleProfileID = existing.RuleProfileID
+		} else {
+			officialID := int64(0)
+			in.RuleProfileID = &officialID
 		}
+	}
+	if in.RuleProfileID != nil && *in.RuleProfileID > 0 {
+		var found int64
 		if e = tx.QueryRowContext(ctx, `SELECT id FROM np_rule_profiles WHERE id=? AND user_id=? FOR UPDATE`, *in.RuleProfileID, u.ID).Scan(&found); e != nil {
 			return out, e
 		}

@@ -150,11 +150,11 @@ func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manage
 			return e
 		}
 		if len(in.RuleProfileID) == 0 {
-			return errors.New("请提供rule_profile_id，使用null解除绑定")
+			return errors.New("请提供rule_profile_id：0选择官方默认规则，正整数选择私人规则，null解除绑定")
 		}
 		var profileID *int64
 		if e = json.Unmarshal(in.RuleProfileID, &profileID); e != nil {
-			return errors.New("规则配置ID必须为正整数或null")
+			return errors.New("规则配置ID必须为0（官方默认规则）、正整数（私人规则）或null（不绑定）")
 		}
 		item, e := s.BindSubscriptionRule(r.Context(), id, profileID)
 		if e == nil {

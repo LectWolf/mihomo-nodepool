@@ -31,7 +31,7 @@ watch(() => props.paused, paused => { if (!paused) void load(); else { details.v
 function create() { resetDraft(); selectingNodes.value = true; navigate('nodes') }
 function edit(item: Subscription) { editSubscription(item); details.value = null; navigate('nodes') }
 function viewSource(id: number) { details.value = null; navigate('nodes', new URLSearchParams({ source_id: String(id) })) }
-function ruleName(item: Subscription) { return item.rule_profile_id ? rules.value.find(rule => rule.id === item.rule_profile_id)?.name || `规则组合 #${item.rule_profile_id}` : '未绑定 · 仅节点配置' }
+function ruleName(item: Subscription) { return item.rule_profile_id === 0 ? '官方默认规则' : item.rule_profile_id ? rules.value.find(rule => rule.id === item.rule_profile_id)?.name || `规则组合 #${item.rule_profile_id}` : '未绑定 · 仅节点配置' }
 function displayNodes(item: Subscription) { return item.nodes.map(node => ({ ...node, ...item.node_details?.find(detail => detail.node_id === node.node_id && detail.source_id === node.source_id) })) }
 function url(item: Subscription, format?: string) { const value = new URL(absoluteURL(item.url)); if (format) value.searchParams.set('format', format); return value.href }
 async function copy(item: Subscription, format?: string) {

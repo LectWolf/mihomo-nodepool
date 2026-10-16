@@ -144,11 +144,11 @@ function chooseNode(node: PoolNode) {
   if (existing) { toggleNode(existing); return }
   const sources = origins(node)
   if (sources.length > 1) { originNode.value = node; return }
-  if (sources[0]) toggleNode({ node_id: node.id, source_id: sources[0].id, name: node.name })
+  if (sources[0]) toggleNode({ node_id: node.id, source_id: sources[0].id, source_name: sources[0].name, name: node.name })
 }
 function chooseOrigin(sourceID: number) {
   const node = originNode.value; if (!node) return
-  toggleNode({ node_id: node.id, source_id: sourceID, name: node.name }); originNode.value = null
+  toggleNode({ node_id: node.id, source_id: sourceID, source_name: node.sources.find(source => source.id === sourceID)?.name, name: node.name }); originNode.value = null
 }
 function selectSource(source: Source) { toggleSource(source) }
 function activateNode(node: PoolNode) { if (selectingNodes.value) chooseNode(node); else details.value = node }

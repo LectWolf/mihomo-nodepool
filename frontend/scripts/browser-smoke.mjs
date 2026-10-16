@@ -55,7 +55,9 @@ const server = createServer(async (req, res) => {
     if (route === '/system') { send(200, { name: 'Mihomo NodePool', version: releases.current_version, commit: 'browser-test', build_time: date, database: { configured: true, connected: !databaseDown }, core: { state: 'ready', version: 'test-core' }, tasks: { pending_sources: 0, pending_nodes: 0, active_sources: 0, active_nodes: 0 } }); return }
     if (databaseDown && !route.includes('release')) { send(503, { error: '测试数据库连接失败' }); return }
     if (route === '/me') { send(200, { user: admin, usage: { nodes: 0, sources: 0, subscriptions: 0 }, provider_path: '/nodes?provider_id=1' }); return }
-    if (route === '/subscriptions' || route === '/rule-profiles') { send(200, { items: [] }); return }
+    if (route === '/subscriptions') { send(200, { items: [] }); return }
+    if (route === '/rule-profiles') { send(200, { items: [{ id: 0, name: '官方默认规则', official: true, readonly: true, routing_enabled: true, dns_enabled: true, dns_servers: [], rules: ['DOMAIN-SUFFIX,example.test,DIRECT', 'MATCH,NodePool'], created_at: date, updated_at: date }] }); return }
+    if (route === '/rule-profiles/0') { send(403, { error: '官方默认规则只读' }); return }
     if (route === '/sources/catalog') { const q = url.searchParams.get('q') || ''; const items = sources.filter(s => s.name.includes(q)); send(200, { items, total: items.length, page: 1, page_size: 20 }); return }
     if (route === '/sources' && req.method === 'GET') { send(200, { items: sources }); return }
     if (route === '/sources' && req.method === 'POST') {
@@ -234,6 +236,18 @@ try {
   await click('下一页'); await hasText('节点-51')
   await click('上一页'); await hasText('节点-1')
   await evaluate('document.querySelector(".node-card").click()'); await hasText('节点详情')
+  const modalBox = await evaluate('(() => { const r = document.querySelector("dialog[open]").getBoundingClientRect(); return { x:r.x, y:r.y, width:r.width, height:r.height } })()')
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: modalBox.x + 35, y: modalBox.y + 35, button: 'left', clickCount: 1 })
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 8, y: 8, button: 'left', buttons: 1 })
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 8, y: 8, button: 'left', clickCount: 1 })
+  assert.equal(await evaluate('!!document.querySelector("dialog[open]")'), true, 'dragging from modal content onto backdrop must not close it')
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: modalBox.x + 3, y: modalBox.y + 3, button: 'left', clickCount: 1 })
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: modalBox.x + 3, y: modalBox.y + 3, button: 'left', clickCount: 1 })
+  assert.equal(await evaluate('!!document.querySelector("dialog[open]")'), true, 'dialog padding is not the backdrop')
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: 8, y: 8, button: 'left', clickCount: 1 })
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 8, y: 8, button: 'left', clickCount: 1 })
+  await eventually(() => evaluate('!document.querySelector("dialog[open]")'), 'short backdrop click closes modal')
+  await evaluate('document.querySelector(".node-card").click()'); await hasText('节点详情')
   assert.equal(await evaluate('document.querySelectorAll(".node-card button,.node-card input").length'), 0, 'whole-card button has no nested controls')
   await key('Escape'); await click('选择节点')
   await evaluate('document.querySelector(".node-card").click()'); await hasText('选择领取来源')
@@ -245,8 +259,13 @@ try {
   assert.equal(await evaluate('document.querySelector(".node-card").getAttribute("aria-pressed")'), 'true', 'selection survives pagination')
   await click('选择整个来源'); await hasText('当前选择'); await hasText('已单选 1 个节点')
   assert.equal(await evaluate('document.querySelector("dialog .draft-preview").textContent.includes("节点-1")'), true)
+  assert.equal(await evaluate('document.querySelector("dialog .draft-preview").textContent.includes("来源 #1")'), false, 'fresh selection uses the source name, like saved selections')
+  await click('移除节点 节点-1', 'document.querySelector("dialog[open]")')
+  assert.equal(await evaluate('document.querySelectorAll("dialog .draft-entry").length'), 0, 'remove control updates the current selection')
   await key('Escape')
+  await evaluate('document.querySelector(".node-card").click()'); await hasText('选择领取来源'); await click('主要来源', 'document.querySelector("dialog[open]")')
   await click('保存组合'); await hasText('保存方式'); await eventually(() => evaluate('!!document.querySelector("[aria-label=订阅规则组合]")'), 'rule profile selector')
+  assert.match(await evaluate('document.querySelector("[aria-label=订阅规则组合]").textContent'), /官方默认规则/)
   await key('Escape')
   await click('清空', 'document.querySelector(".selection-bar")'); await click('完成选择')
   await click('下一页'); await hasText('节点-51')
@@ -261,8 +280,10 @@ try {
   assert.equal(await evaluate('getComputedStyle(document.querySelector(".region-grid")).gridTemplateColumns.split(" ").length'), 5)
   assert.equal(await evaluate('document.querySelector(".region-grid").scrollHeight > document.querySelector(".region-grid").clientHeight'), true, 'regions scroll inside grid')
   assert.equal(await evaluate('getComputedStyle(document.querySelector(".region-cell > span")).whiteSpace'), 'nowrap')
-  assert.equal(await evaluate('document.querySelector(".filter-trigger[aria-label=国家或地区]").textContent.trim()'), '地区 · 2')
-  await key('Escape')
+  assert.equal(await evaluate('document.querySelector(".filter-trigger[aria-label=国家或地区]").textContent.trim()'), '美国、日本')
+  assert.equal(await evaluate('document.querySelectorAll(".region-cell[aria-pressed=true] .region-check").length'), 2, 'selected countries have checkmarks')
+  assert.equal(await evaluate('document.querySelectorAll(".region-selection button").length'), 2, 'selected names stay visible above search')
+  await click('完成', 'document.querySelector(".filter-popup")')
   assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'), '国家或地区')
   await select('健康状态', 'healthy')
   await select('排序', 'name')

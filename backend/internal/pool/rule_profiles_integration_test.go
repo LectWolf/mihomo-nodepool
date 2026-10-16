@@ -21,8 +21,8 @@ func TestMySQLRuleProfilesBindingAndActiveUsers(t *testing.T) {
 	oc, bc := pool.WithUser(ctx, owner), pool.WithUser(ctx, other)
 	src := sharedSource(t, s, oc, "profile-source", 2, 0)
 	items, e := s.RuleProfiles(oc)
-	if e != nil || len(items) != 0 {
-		t.Fatalf("profiles auto-created: %v %+v", e, items)
+	if e != nil || len(items) != 1 || items[0].ID != 0 || !items[0].Official || !items[0].Readonly {
+		t.Fatalf("official profile not listed first: %v %+v", e, items)
 	}
 	d := pool.DefaultRuleProfile()
 	input := pool.RuleProfileInput{Name: d.Name, RoutingEnabled: d.RoutingEnabled, DNSEnabled: d.DNSEnabled, DNSServers: d.DNSServers, Rules: d.Rules}
@@ -30,12 +30,15 @@ func TestMySQLRuleProfilesBindingAndActiveUsers(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	if p.ID <= 0 || p.Official || p.Readonly || len(p.Rules) != 9735 {
+		t.Fatalf("official copy is not private: %+v", p)
+	}
 	p2, e := s.SaveRuleProfile(oc, 0, pool.RuleProfileInput{Name: "second", Rules: []string{"MATCH,DIRECT"}})
 	if e != nil || p.ID == p2.ID {
 		t.Fatalf("multiple profiles %v", e)
 	}
 	foreign, e := s.RuleProfiles(bc)
-	if e != nil || len(foreign) != 0 {
+	if e != nil || len(foreign) != 1 || foreign[0].ID != 0 || !foreign[0].Official {
 		t.Fatal("foreign profile listed")
 	}
 	for _, foreignCtx := range []context.Context{bc, ctx} {
@@ -299,10 +302,14 @@ func TestMySQLRuleOnlyBindingKeepsUnavailableSnapshot(t *testing.T) {
 	if _, err = s.BindSubscriptionRule(uc, saved.Subscription.ID, &foreign.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("foreign profile accepted: %v", err)
 	}
-	for _, policy := range []*int64{&p.ID, nil} {
+	officialID := int64(0)
+	for _, policy := range []*int64{&p.ID, &officialID, nil} {
 		changed, err := s.BindSubscriptionRule(uc, saved.Subscription.ID, policy)
 		if err != nil || changed.URL != saved.Subscription.URL || changed.Name != saved.Subscription.Name || len(changed.Nodes) != len(saved.Subscription.Nodes) {
 			t.Fatalf("rule binding changed snapshot: %+v %v", changed, err)
+		}
+		if (changed.RuleProfileID == nil) != (policy == nil) || (policy != nil && *changed.RuleProfileID != *policy) {
+			t.Fatalf("rule binding not saved: %+v", changed)
 		}
 		for i, node := range changed.Nodes {
 			if node != saved.Subscription.Nodes[i] {
@@ -312,5 +319,81 @@ func TestMySQLRuleOnlyBindingKeepsUnavailableSnapshot(t *testing.T) {
 	}
 	if err = s.DeleteRuleProfile(uc, p.ID); err != nil {
 		t.Fatalf("cannot delete detached profile: %v", err)
+	}
+}
+
+func TestMySQLOfficialRuleDefaultsAndLegacyNull(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	owner := account(t, s, "official_owner", 20, 5, 5)
+	other := account(t, s, "official_other", 20, 5, 5)
+	src := sharedSource(t, s, pool.WithUser(ctx, owner), "official-source", 2, 0)
+	var beforeCount int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_rule_profiles`).Scan(&beforeCount); err != nil {
+		t.Fatal(err)
+	}
+	for _, uc := range []context.Context{ctx, pool.WithUser(ctx, owner), pool.WithUser(ctx, other)} {
+		items, err := s.RuleProfiles(uc)
+		if err != nil || len(items) != 1 || items[0].ID != 0 || !items[0].Official || !items[0].Readonly || len(items[0].Rules) != 9735 {
+			t.Fatalf("shared official profile: %v", err)
+		}
+		if err := s.DeleteRuleProfile(uc, 0); !errors.Is(err, pool.ErrOfficialProfileReadOnly) {
+			t.Fatalf("official deletion allowed: %v", err)
+		}
+		for _, tc := range []struct {
+			name, field string
+			official    bool
+		}{{"omitted", "", true}, {"zero", `,"rule_profile_id":0`, true}, {"null", `,"rule_profile_id":null`, false}} {
+			var in pool.SubscriptionInput
+			if err := json.Unmarshal([]byte(`{"name":"`+tc.name+`","source_ids":[`+jsonNumber(src.ID)+`]`+tc.field+`}`), &in); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := s.SaveSubscription(uc, 0, in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding := saved.Subscription.RuleProfileID
+			if (binding != nil) != tc.official || (binding != nil && *binding != 0) {
+				t.Fatalf("%s default binding: %v", tc.name, binding)
+			}
+			// An omitted edit retains both official bindings and historical nulls.
+			edited, err := s.SaveSubscription(uc, saved.Subscription.ID, pool.SubscriptionInput{Name: tc.name + " edited", SourceIDs: []int64{src.ID}})
+			if err != nil || (edited.Subscription.RuleProfileID != nil) != tc.official || (edited.Subscription.RuleProfileID != nil && *edited.Subscription.RuleProfileID != 0) {
+				t.Fatalf("%s omitted edit changed binding: %+v %v", tc.name, edited, err)
+			}
+			nodes, err := s.SubscriptionNodes(ctx, saved.Subscription.Token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, format := range []string{"clash", "v2ray"} {
+				var profile *pool.RuleProfile
+				if tc.official {
+					d := pool.DefaultRuleProfile()
+					profile = &d
+				}
+				want, skipped, warnings, err := pool.ExportSubscriptionWithProfile(nodes, format, profile, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, gotSkipped, gotWarnings, err := s.ExportSavedSubscription(ctx, saved.Subscription.Token, format)
+				if err != nil || !bytes.Equal(want, got) || skipped != gotSkipped || warnings != gotWarnings {
+					t.Fatalf("%s %s export changed: %v", tc.name, format, err)
+				}
+			}
+			if !tc.official {
+				officialID := int64(0)
+				changed, err := s.BindSubscriptionRule(uc, saved.Subscription.ID, &officialID)
+				if err != nil || changed.RuleProfileID == nil || *changed.RuleProfileID != 0 {
+					t.Fatalf("user cannot select official: %+v %v", changed, err)
+				}
+			}
+			if _, err := s.MutateSubscription(uc, saved.Subscription.ID, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_rule_profiles`).Scan(&count); err != nil || count != beforeCount {
+		t.Fatalf("official rules persisted per user: before=%d after=%d %v", beforeCount, count, err)
 	}
 }

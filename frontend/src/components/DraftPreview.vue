@@ -1,15 +1,29 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import { draftNodes, draftSources, toggleNode, toggleSource } from '../api/accounts'
 import AppIcon from './AppIcon.vue'
 defineProps<{ disabled?: boolean }>()
+const removed = ref('')
+const groups = computed(() => {
+  const names = new Map<number, string>()
+  for (const source of draftSources.value) names.set(source.id, source.name)
+  for (const node of draftNodes.value) if (node.source_name) names.set(node.source_id, node.source_name)
+  return [...new Set([...draftSources.value.map(s => s.id), ...draftNodes.value.map(n => n.source_id)])].map(id => ({ id, name: names.get(id) || `来源 #${id}`, whole: draftSources.value.find(s => s.id === id), nodes: draftNodes.value.filter(n => n.source_id === id) }))
+})
+function removeNode(node: typeof draftNodes.value[number]) { toggleNode(node); removed.value = `已移除 ${node.name || '节点'}` }
+function removeSource(source: typeof draftSources.value[number]) { toggleSource(source); removed.value = `已取消整来源 ${source.name}` }
 </script>
 <template>
   <div class="draft-preview">
-    <h3>当前选择 <span class="count">{{ draftNodes.length }} 节点 · {{ draftSources.length }} 整来源</span></h3>
+    <div class="draft-heading"><h3>当前选择</h3><span class="small muted">{{ draftNodes.length }} 节点 · {{ draftSources.length }} 整来源</span></div>
     <p v-if="!draftNodes.length && !draftSources.length" class="small muted">尚未选择节点或来源。</p>
-    <ul v-else class="draft-list">
-      <li v-for="source in draftSources" :key="`s${source.id}`"><span><strong>整来源 · {{ source.name }}</strong><small class="cell-sub muted">{{ source.node_count }} 个可用节点，保存时按剩余额度截取</small></span><button type="button" class="icon-button" :disabled="disabled" :aria-label="`移除来源 ${source.name}`" @click="toggleSource(source)"><AppIcon name="close" /></button></li>
-      <li v-for="node in draftNodes" :key="node.node_id"><span>{{ node.name || `节点 #${node.node_id}` }} <small class="muted">{{ node.source_name || `来源 #${node.source_id}` }}</small></span><button type="button" class="icon-button" :disabled="disabled" :aria-label="`移除节点 ${node.name || node.node_id}`" @click="toggleNode(node)"><AppIcon name="close" /></button></li>
-    </ul>
+    <div v-else class="draft-groups">
+      <section v-for="group in groups" :key="group.id" class="draft-source-group">
+        <div class="draft-source-heading"><AppIcon name="sources" /><strong :title="group.name">{{ group.name }}</strong><small>{{ group.whole ? '整来源' : `${group.nodes.length} 个节点` }}</small></div>
+        <div v-if="group.whole" class="draft-entry whole-source"><span><strong>已选整个来源</strong><small>{{ group.whole.node_count }} 个节点，按剩余额度截取</small></span><button type="button" class="remove-selection" :disabled="disabled" :aria-label="`移除来源 ${group.name}`" @click="removeSource(group.whole)"><AppIcon name="close" /><span>移除</span></button></div>
+        <div v-for="node in group.nodes" :key="node.node_id" class="draft-entry"><span><strong :title="node.name || `节点 #${node.node_id}`">{{ node.name || `节点 #${node.node_id}` }}</strong><small v-if="group.whole">此节点也在单独选择中</small></span><button type="button" class="remove-selection" :disabled="disabled" :aria-label="`移除节点 ${node.name || node.node_id}`" @click="removeNode(node)"><AppIcon name="close" /><span>移除</span></button></div>
+      </section>
+    </div>
+    <span class="sr-only" role="status">{{ removed }}</span>
   </div>
 </template>

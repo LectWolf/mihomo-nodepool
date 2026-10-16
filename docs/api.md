@@ -78,17 +78,19 @@ GET 列表另带 `node_details:[{node_id,source_id,name,source_name,type,server,
 
 保存后固定节点快照。输出过滤已删除关系、排除／屏蔽节点、停用来源及停用提供方，不补入用户未选择的新节点；同时按最新账号额度重新裁切。降低订阅条数额度时，按已有订阅顺序限制可用输出。
 
-PUT 覆盖会先排除目标组合的旧用量再校验账号合计额度，保留原令牌。网页保存弹窗可选择新建或覆盖，订阅数满额时仍可选节点并覆盖。`rule_profile_id` 仅可绑定本人规则组合，编辑省略保留，显式 `null` 解除绑定。
+PUT 覆盖会先排除目标组合的旧用量再校验账号合计额度，保留原令牌。网页保存弹窗可选择新建或覆盖，订阅数满额时仍可选节点并覆盖。`rule_profile_id=0` 绑定官方默认规则，正整数仅可绑定本人私人规则，显式 `null` 不绑定。新建省略默认 0；编辑省略保留原值，旧 null 不强制迁移；负数或错误类型返回 400。PATCH 必须显式提供该字段。
 
 ## 规则组合
 
-`RuleProfile = {id,name,routing_enabled,dns_enabled,dns_servers:string[],rules:string[],created_at,updated_at}`，按账号隔离，可创建多套供订阅复用。
+`RuleProfile = {id,name,official:boolean,readonly:boolean,routing_enabled,dns_enabled,dns_servers:string[],rules:string[],created_at,updated_at}`。官方内置项 ID 为 0，`official/readonly` 均 true，所有账号直接可用，无需创建数据库副本；正整数为账号私有组合，两标记为 false。
 
-- GET `/rule-profiles` → `{items:RuleProfile[]}`。
-- GET `/rule-profiles/default` → 默认模板，复制时创建私人规则组合。
+- GET `/rule-profiles` → `{items:RuleProfile[]}`，官方项始终排第一，其后仅本人私人组合。
+- GET `/rule-profiles/default` → 完整官方模板，与列表中 ID 0 内容一致。
 - POST `/rule-profiles` 同上配置字段 → RuleProfile，201。
 - PUT `/rule-profiles/{id}` 同上配置字段 → RuleProfile。
 - DELETE `/rule-profiles/{id}` → `{deleted:true}`；仍被订阅绑定时 409，须先解绑。
+
+PUT／DELETE `/rule-profiles/0` 返回 403，官方规则不可修改或删除。复制通过 POST 提交配置字段 `name,routing_enabled,dns_enabled,dns_servers,rules` 创建私人项；响应元数据不属于写入字段。
 
 默认分流沿用本机“订阅共享”的完整规则表，主代理组名统一为 `NodePool`，包含自动选择、故障转移、Cloudflare、国内网站、拦截广告和漏网之鱼。规则按序匹配，可编辑；不加入品牌或流量信息假节点。默认 DNS 开启且留空时写入 `223.5.5.5`、`119.29.29.29`、`8.8.8.8`。关闭 DNS 则不写入 DNS 段。
 
@@ -127,11 +129,13 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 - `/sources`：本人来源管理，管理员可管理全部；`q` 保存来源名称搜索。
 - `/providers`：提供方目录，`q`、`following`、`page` 可还原。
 - `/subscriptions`、`/account`：个人组合订阅和账号额度／设置。
-- `/rules`：规则组合管理，创建默认模板副本、编辑、复制和删除。
+- `/rules`：查看官方默认规则，复制为私人组合；私人工作台支持搜索、每页30条、逐条增改、上下移动、文本编辑、DNS分区和撤销本次修改。
 - `/users`、`/settings`：管理员页面。
 
 默认卡片；`page=1`、`page_size=50`、`sort=latency`、`view=cards` 从 URL 省略。离散筛选、分页和视图切换保留历史，搜索输入替换历史。节点选区在当前登录会话内跨页保留，退出或账号失效时清空。
 
 节点默认整卡点击查看详情，进入选择模式后整卡选择，支持键盘操作。卡片单行标题省略并提供悬浮全文。桌面地区面板每行 5 项，名称一行、内部滚动；整来源弹窗并列显示当前选区与来源的选择状态。
+
+地区选中项带勾选标记，面板显示已选数量和可取消标签，触发器显示已选名称；“完成”关闭后恢复焦点。当前选区按真实来源名称分组，统一“移除”控件。弹窗遮罩关闭要求按下与松开都在外部、移动不超过6px；内容拖出、外部拖入、内部留白均不误关，Escape与关闭按钮仍可用。
 
 首次跟随系统亮暗，太阳／月亮图标切换后保存显式偏好。版本入口显示后端真实版本文字；普通用户仅查看版本，管理员打开更新弹窗。顶栏不显示正常数据库连接说明，异常仍有明确提示。

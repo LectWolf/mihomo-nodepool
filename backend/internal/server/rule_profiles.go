@@ -3,6 +3,7 @@ package server
 import (
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
 	"net/http"
+	"strconv"
 )
 
 func registerRuleProfiles(business businessRegistrar, s *pool.Store) {
@@ -22,7 +23,7 @@ func registerRuleProfiles(business businessRegistrar, s *pool.Store) {
 			var id int64
 			var e error
 			if !create {
-				id, e = idOf(r)
+				id, e = editableRuleProfileID(r)
 				if e != nil {
 					return e
 				}
@@ -45,7 +46,7 @@ func registerRuleProfiles(business businessRegistrar, s *pool.Store) {
 	business("POST /api/v1/rule-profiles", save(true))
 	business("PUT /api/v1/rule-profiles/{id}", save(false))
 	business("DELETE /api/v1/rule-profiles/{id}", func(w http.ResponseWriter, r *http.Request) error {
-		id, e := idOf(r)
+		id, e := editableRuleProfileID(r)
 		if e != nil {
 			return e
 		}
@@ -54,4 +55,11 @@ func registerRuleProfiles(business businessRegistrar, s *pool.Store) {
 		}
 		return e
 	})
+}
+
+func editableRuleProfileID(r *http.Request) (int64, error) {
+	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil && id == 0 {
+		return 0, pool.ErrOfficialProfileReadOnly
+	}
+	return idOf(r)
 }

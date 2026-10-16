@@ -18,11 +18,14 @@ import (
 var defaultRules string
 
 var ErrProfileInUse = errors.New("规则配置仍被订阅引用，请先解除绑定")
+var ErrOfficialProfileReadOnly = fmt.Errorf("官方默认规则只读，请复制为私人规则后编辑：%w", ErrForbidden)
 
-// RuleProfile is private to its owner; the owner ID is never supplied by clients.
+// RuleProfile is either the shared official template (ID 0) or private to its owner.
 type RuleProfile struct {
 	ID             int64     `json:"id"`
 	Name           string    `json:"name"`
+	Official       bool      `json:"official"`
+	Readonly       bool      `json:"readonly"`
 	RoutingEnabled bool      `json:"routing_enabled"`
 	DNSEnabled     bool      `json:"dns_enabled"`
 	DNSServers     []string  `json:"dns_servers"`
@@ -48,7 +51,7 @@ func DefaultRuleProfile() RuleProfile {
 			rules = append(rules, line)
 		}
 	}
-	return RuleProfile{Name: "默认规则", RoutingEnabled: true, DNSEnabled: true, DNSServers: []string{}, Rules: rules}
+	return RuleProfile{ID: 0, Name: "官方默认规则", Official: true, Readonly: true, RoutingEnabled: true, DNSEnabled: true, DNSServers: []string{}, Rules: rules}
 }
 func safeScalar(s string) bool { return !strings.ContainsFunc(s, unicode.IsControl) }
 func validDNS(s string) bool {
@@ -238,7 +241,7 @@ func (s *Store) RuleProfiles(ctx context.Context) ([]RuleProfile, error) {
 		return nil, e
 	}
 	defer rows.Close()
-	items := []RuleProfile{}
+	items := []RuleProfile{DefaultRuleProfile()}
 	for rows.Next() {
 		p, e := scanRuleProfile(rows)
 		if e != nil {
@@ -294,6 +297,9 @@ func (s *Store) SaveRuleProfile(ctx context.Context, id int64, in RuleProfileInp
 	return p, tx.Commit()
 }
 func (s *Store) DeleteRuleProfile(ctx context.Context, id int64) error {
+	if id == 0 {
+		return ErrOfficialProfileReadOnly
+	}
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return e
@@ -339,8 +345,8 @@ func (in *SubscriptionInput) UnmarshalJSON(data []byte) error {
 	}
 	*in = SubscriptionInput(v)
 	_, in.RuleProfileSet = fields["rule_profile_id"]
-	if in.RuleProfileID != nil && *in.RuleProfileID <= 0 {
-		return errors.New("规则配置ID必须为正整数或null")
+	if in.RuleProfileID != nil && *in.RuleProfileID < 0 {
+		return errors.New("规则配置ID必须为0（官方默认规则）、正整数（私人规则）或null（不绑定）")
 	}
 	return nil
 }
@@ -360,8 +366,8 @@ func (in *RuleProfileInput) UnmarshalJSON(data []byte) error {
 // BindSubscriptionRule changes output policy without reclaiming or replacing the
 // saved node snapshot. Historical selections may no longer be available.
 func (s *Store) BindSubscriptionRule(ctx context.Context, id int64, profileID *int64) (Subscription, error) {
-	if profileID != nil && *profileID <= 0 {
-		return Subscription{}, errors.New("规则配置ID必须为正整数或null")
+	if profileID != nil && *profileID < 0 {
+		return Subscription{}, errors.New("规则配置ID必须为0（官方默认规则）、正整数（私人规则）或null（不绑定）")
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -379,7 +385,7 @@ func (s *Store) BindSubscriptionRule(ctx context.Context, id int64, profileID *i
 	if err != nil {
 		return Subscription{}, err
 	}
-	if profileID != nil {
+	if profileID != nil && *profileID > 0 {
 		var found int64
 		if err = tx.QueryRowContext(ctx, `SELECT id FROM np_rule_profiles WHERE id=? AND user_id=? FOR UPDATE`, *profileID, CurrentUser(ctx).ID).Scan(&found); err != nil {
 			return Subscription{}, err

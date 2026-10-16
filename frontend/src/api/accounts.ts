@@ -16,6 +16,7 @@ export interface Provider {
 export interface NodeSelection { node_id: number; source_id: number; name?: string; source_name?: string }
 export interface RuleProfile {
   id: number; name: string; routing_enabled: boolean; dns_enabled: boolean; dns_servers: string[]; rules: string[]
+  official?: boolean; readonly?: boolean
   created_at?: string; updated_at?: string
 }
 export interface Subscription {
@@ -32,13 +33,13 @@ export const draftNodes = ref<NodeSelection[]>([])
 export const draftSources = ref<{ id: number; name: string; node_count: number }[]>([])
 export const editingSubscription = ref<number | null>(null)
 export const draftName = ref('我的订阅')
-export const draftRuleProfile = ref<number | null>(null)
+export const draftRuleProfile = ref<number | null>(0)
 export const selectingNodes = ref(false)
 export const selectionError = ref('')
 export const selectedSources = computed(() => new Set([...draftNodes.value.map(n => n.source_id), ...draftSources.value.map(s => s.id)]))
 export const draftEstimate = computed(() => draftNodes.value.length + draftSources.value.reduce((n, s) => n + s.node_count, 0))
 let accountRevision = 0
-export function resetDraft() { draftNodes.value = []; draftSources.value = []; editingSubscription.value = null; draftName.value = '我的订阅'; draftRuleProfile.value = null; selectionError.value = '' }
+export function resetDraft() { draftNodes.value = []; draftSources.value = []; editingSubscription.value = null; draftName.value = '我的订阅'; draftRuleProfile.value = 0; selectionError.value = '' }
 export function clearAccount() { accountRevision++; currentUser.value = null; profile.value = null; followed.value = new Set(); resetDraft(); selectingNodes.value = false }
 export async function loadProfile() {
   const revision = accountRevision

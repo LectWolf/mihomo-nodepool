@@ -60,7 +60,7 @@ func assertProfileReferences(t *testing.T, doc map[string]any) {
 }
 func TestDefaultProfileCompleteRulesDNSAndReservedNames(t *testing.T) {
 	p := DefaultRuleProfile()
-	if len(p.Rules) != 9735 || !p.RoutingEnabled || !p.DNSEnabled || len(p.DNSServers) != 0 {
+	if p.ID != 0 || p.Name != "官方默认规则" || !p.Official || !p.Readonly || len(p.Rules) != 9735 || !p.RoutingEnabled || !p.DNSEnabled || len(p.DNSServers) != 0 {
 		t.Fatalf("default %+v rules=%d", p, len(p.Rules))
 	}
 	in := RuleProfileInput{Name: p.Name, RoutingEnabled: p.RoutingEnabled, DNSEnabled: p.DNSEnabled, DNSServers: p.DNSServers, Rules: p.Rules}
@@ -216,15 +216,16 @@ func TestProfileInputValidationAndBindingPresence(t *testing.T) {
 		t.Fatalf("default switches: %+v %v", in, e)
 	}
 	for _, tc := range []struct {
-		raw string
-		set bool
-		id  int64
-	}{{`{"name":"old"}`, false, 0}, {`{"name":"new","rule_profile_id":null}`, true, 0}, {`{"name":"bound","rule_profile_id":12}`, true, 12}} {
+		raw   string
+		set   bool
+		bound bool
+		id    int64
+	}{{`{"name":"old"}`, false, false, 0}, {`{"name":"new","rule_profile_id":null}`, true, false, 0}, {`{"name":"official","rule_profile_id":0}`, true, true, 0}, {`{"name":"bound","rule_profile_id":12}`, true, true, 12}} {
 		var in SubscriptionInput
 		if e := json.Unmarshal([]byte(tc.raw), &in); e != nil {
 			t.Fatal(e)
 		}
-		if in.RuleProfileSet != tc.set || (tc.id == 0 && in.RuleProfileID != nil) || (tc.id != 0 && (in.RuleProfileID == nil || *in.RuleProfileID != tc.id)) {
+		if in.RuleProfileSet != tc.set || (in.RuleProfileID != nil) != tc.bound || (tc.bound && *in.RuleProfileID != tc.id) {
 			t.Fatalf("presence %s %+v", tc.raw, in)
 		}
 	}
@@ -235,6 +236,16 @@ func TestProfileInputValidationAndBindingPresence(t *testing.T) {
 		}
 	}
 	s := NewStore(nil)
+	negative := int64(-1)
+	if _, err := s.SaveSubscription(context.Background(), 0, SubscriptionInput{Name: "negative", RuleProfileID: &negative}); err == nil || !strings.Contains(err.Error(), "0（官方默认规则）") {
+		t.Fatalf("negative save binding: %v", err)
+	}
+	if _, err := s.BindSubscriptionRule(context.Background(), 1, &negative); err == nil || !strings.Contains(err.Error(), "0（官方默认规则）") {
+		t.Fatalf("negative rule-only binding: %v", err)
+	}
+	if err := s.DeleteRuleProfile(context.Background(), 0); !errors.Is(err, ErrOfficialProfileReadOnly) || !errors.Is(err, ErrForbidden) {
+		t.Fatalf("official deletion: %v", err)
+	}
 	ctx := WithUser(context.Background(), User{ID: 2, Role: "user", Enabled: true})
 	if !errors.Is(s.NodePermission(ctx, 1), ErrForbidden) || !errors.Is(s.QueueNodes(ctx, []int64{1}), ErrForbidden) {
 		t.Fatal("non-admin can probe")

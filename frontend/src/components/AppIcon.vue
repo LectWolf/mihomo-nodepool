@@ -17,6 +17,7 @@ const paths: Record<string, string> = {
   left: 'M15 5l-7 7 7 7',
   right: 'M9 5l7 7-7 7',
   down: 'M6 9l6 6 6-6',
+  up: 'M6 15l6-6 6 6',
   external: 'M14 3h7v7 M21 3 11 13 M10 5H4v15h15v-6',
   version: 'M12 3 3 7.5v9l9 4.5 9-4.5v-9L12 3z M3 7.5l9 5 9-5 M12 12.5V21',
   link: 'M10 14l4-4 M8 16l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0 M16 8l2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0',

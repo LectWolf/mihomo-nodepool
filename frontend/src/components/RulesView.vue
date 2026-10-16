@@ -1,22 +1,25 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { errorText, formatDate, isCancelled, json, useApi } from '../api/system'
 import type { RuleProfile } from '../api/accounts'
 import Modal from './Modal.vue'
 import AppIcon from './AppIcon.vue'
+import RuleProfileEditor from './RuleProfileEditor.vue'
 const props = defineProps<{ paused: boolean }>()
 const api = useApi()
 const items = ref<RuleProfile[]>([])
+const official = computed(() => items.value.find(item => item.official || item.id === 0))
+const personal = computed(() => items.value.filter(item => !item.official && item.id !== 0))
 const error = ref('')
 const message = ref('')
 const loading = ref(false)
 const busy = ref(false)
-const editorOpen = ref(false)
+const editor = ref<RuleProfile | null>(null)
+const editorKey = ref(0)
 const editing = ref<number | null>(null)
+const viewing = ref(false)
 const deleting = ref<RuleProfile | null>(null)
 const formError = ref('')
-const form = reactive({ name: '', routing_enabled: true, dns_enabled: true, dns: '', rules: '' })
-const ruleCount = computed(() => form.rules.split('\n').filter(line => line.trim() && !line.trim().startsWith('#')).length)
 async function load() {
   if (props.paused || loading.value) return
   loading.value = true
@@ -24,32 +27,26 @@ async function load() {
   catch (cause) { if (!isCancelled(cause)) error.value = errorText(cause) }
   finally { loading.value = false }
 }
-watch(() => props.paused, paused => { if (!paused) void load(); else { editorOpen.value = false; deleting.value = null } }, { immediate: true })
-function fill(item: RuleProfile, id: number | null, name = item.name) {
-  editing.value = id; form.name = name; form.routing_enabled = item.routing_enabled; form.dns_enabled = item.dns_enabled
-  form.dns = (item.dns_servers ?? []).join('\n'); form.rules = (item.rules ?? []).join('\n'); formError.value = ''; editorOpen.value = true
+watch(() => props.paused, paused => { if (!paused) void load(); else { editor.value = null; deleting.value = null } }, { immediate: true })
+function fill(item: RuleProfile, copy = false) {
+  editing.value = copy ? null : item.id; viewing.value = !copy && (!!item.official || item.id === 0)
+  editor.value = { ...item, name: copy ? item.id === 0 ? '我的规则组合' : `${item.name} 副本` : item.name, dns_servers: [...item.dns_servers], rules: [...item.rules] }; editorKey.value++; formError.value = ''
 }
 async function create() {
   if (busy.value) return
+  if (official.value) { fill(official.value, true); return }
   busy.value = true; error.value = ''
-  try { const template = await api<RuleProfile>('/rule-profiles/default'); if (!props.paused) fill(template, null, '默认规则') }
+  try { const template = await api<RuleProfile>('/rule-profiles/default'); if (!props.paused) fill(template, true) }
   catch (cause) { if (!isCancelled(cause)) error.value = errorText(cause) }
   finally { busy.value = false }
 }
-async function restore() {
-  if (busy.value) return
-  busy.value = true; formError.value = ''
-  try { const template = await api<RuleProfile>('/rule-profiles/default'); form.rules = template.rules.join('\n') }
-  catch (cause) { if (!isCancelled(cause)) formError.value = errorText(cause) }
-  finally { busy.value = false }
-}
-async function save() {
-  if (busy.value || !form.name.trim()) return
+async function save(item: RuleProfile) {
+  if (busy.value || viewing.value) return
   busy.value = true; formError.value = ''
   try {
-    const payload = { name: form.name.trim(), routing_enabled: form.routing_enabled, dns_enabled: form.dns_enabled, dns_servers: form.dns.split(/[\s,，;；]+/).filter(Boolean), rules: form.rules.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')) }
-    await api(editing.value ? `/rule-profiles/${editing.value}` : '/rule-profiles', json(editing.value ? 'PUT' : 'POST', payload))
-    editorOpen.value = false; message.value = '规则组合已保存，绑定它的订阅将在客户端下次更新时应用。'; await load()
+    const { name, routing_enabled, dns_enabled, dns_servers, rules } = item
+    await api(editing.value ? `/rule-profiles/${editing.value}` : '/rule-profiles', json(editing.value ? 'PUT' : 'POST', { name, routing_enabled, dns_enabled, dns_servers, rules }))
+    editor.value = null; message.value = '规则组合已保存，绑定它的订阅将在客户端下次更新时应用。'; await load()
   } catch (cause) { if (!isCancelled(cause)) formError.value = errorText(cause) }
   finally { busy.value = false }
 }
@@ -63,20 +60,15 @@ async function remove() {
 </script>
 <template>
   <section>
-    <div class="page-heading"><div><h1>规则组合</h1><p class="muted">保存多套分流与 DNS，在我的订阅中自由绑定。只影响 Clash / Mihomo。</p></div><button class="primary" :disabled="busy || paused" @click="create"><AppIcon name="plus" />复制默认规则</button></div>
+    <div class="page-heading"><div><p class="eyebrow">ROUTING & DNS</p><h1>规则组合</h1><p class="muted">官方规则开箱即用，私人组合按需调整。</p></div><button class="primary" :disabled="busy || paused" @click="create"><AppIcon name="plus" />创建规则组合</button></div>
     <p v-if="error" role="alert" class="notice error">{{ error }}<button @click="load">重试</button></p>
     <p v-if="message" role="status" class="notice success">{{ message }}</p>
-    <div v-if="loading" class="panel empty-state" role="status"><span class="spinner"></span><p>正在读取规则组合…</p></div>
-    <div v-else-if="!items.length && !error" class="panel empty-state"><AppIcon name="settings" /><h3>从默认规则开始</h3><p>包含国内直连、广告拦截、自动选择和故障转移。复制后可以按需修改。</p><button class="primary" :disabled="busy" @click="create">创建规则组合</button></div>
-    <div class="rule-grid"><article v-for="item in items" :key="item.id" class="panel rule-card"><div class="panel-heading"><h2 :title="item.name">{{ item.name }}</h2><button class="compact" @click="fill(item, item.id)"><AppIcon name="edit" />编辑</button></div><div class="rule-status"><span :class="{ enabled: item.routing_enabled }">分流 {{ item.routing_enabled ? '开启' : '跟随来源' }}</span><span :class="{ enabled: item.dns_enabled }">DNS {{ item.dns_enabled ? '开启' : '关闭' }}</span></div><p class="small muted">{{ item.rules.length.toLocaleString() }} 条规则 · {{ item.dns_enabled ? (item.dns_servers.length ? `${item.dns_servers.length} 个 DNS` : '默认 DNS') : '不写入 DNS' }}</p><p class="small muted">{{ formatDate(item.updated_at) }}</p><div class="subscription-maintenance"><button class="text-button" @click="fill(item, null, `${item.name} 副本`)"><AppIcon name="copy" />复制</button><button class="text-button danger" @click="deleting = item; formError = ''"><AppIcon name="trash" />删除</button></div></article></div>
-    <Modal v-if="editorOpen" :title="editing ? '编辑规则组合' : '创建规则组合'" wide :busy="busy" @close="editorOpen = false"><form @submit.prevent="save">
-      <label class="form-field"><span class="field-label">组合名称</span><input v-model="form.name" required maxlength="200" :disabled="busy" /></label>
-      <div class="rule-option"><div><strong>分流规则</strong><p class="small muted">使用国内直连、广告拦截等覆盖规则。关闭则跟随来源。只影响 Clash。</p></div><button type="button" class="switch" :class="{ on: form.routing_enabled }" role="switch" aria-label="分流规则" :aria-checked="form.routing_enabled" :disabled="busy" @click="form.routing_enabled = !form.routing_enabled"><span></span></button></div>
-      <details class="rule-editor"><summary>查看和修改分流规则 <span class="count">{{ ruleCount.toLocaleString() }} 条</span></summary><label class="form-field"><span class="field-label">Clash 规则 <small class="muted">每行一条，按顺序匹配</small></span><textarea v-model="form.rules" class="mono rule-textarea" spellcheck="false" :disabled="busy" aria-label="Clash 分流规则"></textarea><span class="field-hint">目标可使用 NodePool、DIRECT、REJECT，或默认策略组名称。最后保留 MATCH 兜底。</span></label><button type="button" class="text-button" :disabled="busy" @click="restore">恢复默认分流规则</button></details>
-      <div class="rule-option"><div><strong>自定义 DNS</strong><p class="small muted">留空使用 223.5.5.5、119.29.29.29、8.8.8.8。关闭则不写入 DNS。</p></div><button type="button" class="switch" :class="{ on: form.dns_enabled }" role="switch" aria-label="自定义 DNS" :aria-checked="form.dns_enabled" :disabled="busy" @click="form.dns_enabled = !form.dns_enabled"><span></span></button></div>
-      <label v-if="form.dns_enabled" class="form-field"><span class="field-label">DNS 服务器 <small class="muted">可选</small></span><textarea v-model="form.dns" class="mono" rows="3" placeholder="223.5.5.5&#10;119.29.29.29&#10;8.8.8.8" :disabled="busy" /><span class="field-hint">每行一个，也可用逗号分隔。</span></label>
-      <p v-if="formError" role="alert" class="notice error">{{ formError }}</p><div class="dialog-actions"><button type="button" :disabled="busy" @click="editorOpen = false">取消</button><button class="primary" :disabled="busy || !form.name.trim()">{{ busy ? '正在保存…' : '保存规则组合' }}</button></div>
-    </form></Modal>
+    <div v-if="loading && !items.length" class="panel empty-state" role="status"><span class="spinner"></span><p>正在读取规则组合…</p></div>
+    <article v-if="official" class="panel official-rule-card"><div class="official-rule-symbol"><AppIcon name="globe" /></div><div class="official-rule-content"><span class="official-label"><AppIcon name="check" />官方提供 · 默认推荐</span><h2>官方默认规则</h2><p>国内直连、广告拦截、自动选择与故障转移。</p><div class="official-rule-meta"><span>{{ official.rules.length.toLocaleString() }} 条分流规则</span><span>默认 DNS 已开启</span><span>所有账号可用</span></div></div><div class="official-rule-actions"><button :disabled="busy" @click="fill(official)">查看规则</button><button :disabled="busy" @click="fill(official, true)"><AppIcon name="copy" />复制并编辑</button></div></article>
+    <div class="personal-rule-heading"><div><h2>我的规则组合 <span class="count">{{ personal.length }}</span></h2><p class="small muted">可供多个订阅复用，修改后统一生效。</p></div></div>
+    <div v-if="!loading && !personal.length && !error" class="panel empty-personal-rules"><AppIcon name="settings" /><div><h3>需要不同策略？创建自己的组合</h3><p class="small muted">复制官方规则，再添加优先规则或自定义 DNS。官方规则始终保留。</p></div><button :disabled="busy" @click="create">复制官方规则</button></div>
+    <div class="rule-grid"><article v-for="item in personal" :key="item.id" class="panel rule-card"><div class="panel-heading"><div><span class="eyebrow">私人组合</span><h2 :title="item.name">{{ item.name }}</h2></div><button class="compact" @click="fill(item)"><AppIcon name="edit" />编辑</button></div><div class="rule-status"><span :class="{ enabled: item.routing_enabled }"><AppIcon name="sources" />{{ item.routing_enabled ? '分流已开启' : '跟随来源' }}</span><span :class="{ enabled: item.dns_enabled }"><AppIcon name="globe" />{{ item.dns_enabled ? 'DNS 已开启' : 'DNS 已关闭' }}</span></div><p class="small muted">{{ item.rules.length.toLocaleString() }} 条规则 · {{ item.dns_enabled ? item.dns_servers.length ? `${item.dns_servers.length} 个 DNS` : '默认 DNS' : '不写入 DNS' }}</p><div class="rule-card-footer"><span class="small muted">更新于 {{ formatDate(item.updated_at) }}</span><button class="text-button" @click="fill(item, true)"><AppIcon name="copy" />复制</button><button class="text-button danger" @click="deleting = item; formError = ''"><AppIcon name="trash" />删除</button></div></article></div>
+    <Modal v-if="editor" :title="viewing ? '官方规则详情' : editing ? '编辑规则组合' : '创建规则组合'" expanded :busy="busy" @close="editor = null"><RuleProfileEditor :key="editorKey" :profile="editor" :readonly="viewing" :busy="busy" :error="formError" @save="save" @cancel="editor = null" @copy="fill(editor!, true)" /></Modal>
     <Modal v-if="deleting" title="删除规则组合" :busy="busy" @close="deleting = null"><p>删除「{{ deleting.name }}」？请先在我的订阅中解除绑定。</p><p v-if="formError" role="alert" class="notice error">{{ formError }}</p><div class="dialog-actions"><button :disabled="busy" @click="deleting = null">取消</button><button class="danger-solid" :disabled="busy" @click="remove">确认删除</button></div></Modal>
   </section>
 </template>

@@ -18,6 +18,7 @@ import (
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/core"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
 	"github.com/go-sql-driver/mysql"
+	"gopkg.in/yaml.v3"
 )
 
 type testUpdates struct{}
@@ -151,9 +152,26 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 	savedResponse := call("POST", "/api/v1/subscriptions", subBody, ac, "", 201)
 	var saved pool.SavedSubscription
 	_ = json.Unmarshal(savedResponse.Body.Bytes(), &saved)
-	if saved.SelectedCount != 1 || saved.Subscription.URL == "" {
+	if saved.SelectedCount != 1 || saved.Subscription.URL == "" || saved.Subscription.RuleProfileID == nil || *saved.Subscription.RuleProfileID != 0 {
 		t.Fatal("subscription contract")
 	}
+	// Explicit null preserves the legacy export, including through omitted edits.
+	nullBody := fmt.Sprintf(`{"name":"unbound","source_ids":[%d],"rule_profile_id":null}`, src.ID)
+	nullResponse := call("POST", "/api/v1/subscriptions", nullBody, bc, "", 201)
+	var unbound pool.SavedSubscription
+	if e = json.Unmarshal(nullResponse.Body.Bytes(), &unbound); e != nil || unbound.Subscription.RuleProfileID != nil {
+		t.Fatal("explicit null creation bound official rules")
+	}
+	nullPath := fmt.Sprintf("/api/v1/subscriptions/%d", unbound.Subscription.ID)
+	nullEdit := call("PUT", nullPath, subBody, bc, "", 200)
+	if e = json.Unmarshal(nullEdit.Body.Bytes(), &unbound); e != nil || unbound.Subscription.RuleProfileID != nil {
+		t.Fatal("omitted edit migrated legacy null")
+	}
+	legacyDownload := call("GET", unbound.Subscription.URL+"?format=clash", "", nil, "", 200)
+	if strings.Contains(legacyDownload.Body.String(), "dns:") || strings.Contains(legacyDownload.Body.String(), "🌩️ Cloudflare") {
+		t.Fatal("explicit null changed legacy export")
+	}
+	call("POST", "/api/v1/subscriptions", fmt.Sprintf(`{"name":"invalid","source_ids":[%d],"rule_profile_id":-1}`, src.ID), ac, "", 400)
 	path := fmt.Sprintf("/api/v1/subscriptions/%d", saved.Subscription.ID)
 	call("DELETE", path, "", bc, "", 404)
 	call("POST", path+"/rotate", "", bc, "", 404)
@@ -166,21 +184,68 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 		t.Fatal("download headers")
 	}
 	clash := call("GET", saved.Subscription.URL+"?format=clash", "", nil, "v2rayN", 200)
-	if !strings.Contains(clash.Body.String(), "proxy-groups:") || !strings.Contains(clash.Body.String(), "rules:") {
-		t.Fatal("explicit clash priority")
+	var clashConfig struct {
+		Groups []struct {
+			Name string `yaml:"name"`
+		} `yaml:"proxy-groups"`
+		DNS struct {
+			Nameserver []string `yaml:"nameserver"`
+		} `yaml:"dns"`
+	}
+	if e = yaml.Unmarshal(clash.Body.Bytes(), &clashConfig); e != nil {
+		t.Fatal(e)
+	}
+	hasCloudflare := false
+	for _, group := range clashConfig.Groups {
+		if group.Name == "🌩️ Cloudflare" {
+			hasCloudflare = true
+		}
+	}
+	if !hasCloudflare || len(clashConfig.DNS.Nameserver) != 3 || clashConfig.DNS.Nameserver[0] != "223.5.5.5" || clash.Header().Get("X-Subscription-Routing-Skipped") != "0" {
+		t.Fatal("explicit clash priority and official routing/DNS")
 	}
 	profileDefault := call("GET", "/api/v1/rule-profiles/default", "", ac, "", 200)
 	var template pool.RuleProfile
-	if e = json.Unmarshal(profileDefault.Body.Bytes(), &template); e != nil || len(template.Rules) != 9735 || !template.RoutingEnabled || !template.DNSEnabled {
+	if e = json.Unmarshal(profileDefault.Body.Bytes(), &template); e != nil || template.ID != 0 || template.Name != "官方默认规则" || !template.Official || !template.Readonly || len(template.Rules) != 9735 || !template.RoutingEnabled || !template.DNSEnabled {
 		t.Fatal("default profile contract")
 	}
-	call("GET", "/api/v1/rule-profiles", "", ac, "", 200)
+	checkProfiles := func(cookie *http.Cookie, privateIDs ...int64) {
+		t.Helper()
+		response := call("GET", "/api/v1/rule-profiles", "", cookie, "", 200)
+		var list struct {
+			Items []pool.RuleProfile `json:"items"`
+		}
+		if e := json.Unmarshal(response.Body.Bytes(), &list); e != nil || len(list.Items) != len(privateIDs)+1 {
+			t.Fatalf("profile list count: %s %v", response.Body.String(), e)
+		}
+		first := list.Items[0]
+		if first.ID != 0 || !first.Official || !first.Readonly || len(first.Rules) != 9735 || first.Rules[0] != template.Rules[0] {
+			t.Fatal("official profile not first or template changed")
+		}
+		for i, id := range privateIDs {
+			if p := list.Items[i+1]; p.ID != id || p.Official || p.Readonly {
+				t.Fatal("private profile metadata or ownership")
+			}
+		}
+	}
+	for _, cookie := range []*http.Cookie{admin, ac, bc} {
+		checkProfiles(cookie)
+		for _, method := range []string{"PUT", "DELETE"} {
+			denied := call(method, "/api/v1/rule-profiles/0", `{}`, cookie, "", 403)
+			if !strings.Contains(denied.Body.String(), "官方默认规则只读") {
+				t.Fatal("missing official readonly error")
+			}
+		}
+	}
 	profileBody := `{"name":"my rules","routing_enabled":true,"dns_enabled":true,"dns_servers":[],"rules":["DOMAIN-SUFFIX,example.com,DIRECT","MATCH,NodePool"]}`
 	profileResponse := call("POST", "/api/v1/rule-profiles", profileBody, ac, "", 201)
 	var profile pool.RuleProfile
-	if e = json.Unmarshal(profileResponse.Body.Bytes(), &profile); e != nil || profile.ID <= 0 {
+	if e = json.Unmarshal(profileResponse.Body.Bytes(), &profile); e != nil || profile.ID <= 0 || profile.Official || profile.Readonly {
 		t.Fatal("created profile contract")
 	}
+	checkProfiles(ac, profile.ID)
+	checkProfiles(bc)
+	checkProfiles(admin)
 	profilePath := fmt.Sprintf("/api/v1/rule-profiles/%d", profile.ID)
 	call("PUT", profilePath, profileBody, bc, "", 404)
 	call("DELETE", profilePath, "", bc, "", 404)
@@ -206,8 +271,27 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 	call("PATCH", path, patchBinding, bc, "", 404)
 	call("PATCH", path, `{}`, ac, "", 400)
 	call("PATCH", path, `{"rule_profile_id":-1}`, ac, "", 400)
+	call("PATCH", path, `{"rule_profile_id":"0"}`, ac, "", 400)
+	call("PUT", path, fmt.Sprintf(`{"name":"invalid","source_ids":[%d],"rule_profile_id":-1}`, src.ID), ac, "", 400)
 	call("PATCH", path, patchBinding, ac, "", 200)
 	call("PATCH", fmt.Sprintf("/api/v1/sources/%d", src.ID), `{"enabled":false}`, ac, "", 200)
+	// Official binding remains available to both users with an unavailable source.
+	for _, binding := range []struct {
+		path   string
+		cookie *http.Cookie
+		saved  pool.Subscription
+	}{{path, ac, saved.Subscription}, {nullPath, bc, unbound.Subscription}} {
+		response := call("PATCH", binding.path, `{"rule_profile_id":0}`, binding.cookie, "", 200)
+		var changed pool.Subscription
+		if e = json.Unmarshal(response.Body.Bytes(), &changed); e != nil || changed.RuleProfileID == nil || *changed.RuleProfileID != 0 || changed.URL != binding.saved.URL || changed.Name != binding.saved.Name || len(changed.Nodes) != len(binding.saved.Nodes) {
+			t.Fatalf("official rule-only binding changed snapshot: %+v %v", changed, e)
+		}
+		for i, node := range changed.Nodes {
+			if node != binding.saved.Nodes[i] {
+				t.Fatal("official binding changed snapshot membership")
+			}
+		}
+	}
 	detached := call("PATCH", path, `{"rule_profile_id":null}`, ac, "", 200)
 	var snapshot pool.Subscription
 	if e = json.Unmarshal(detached.Body.Bytes(), &snapshot); e != nil || snapshot.RuleProfileID != nil || snapshot.URL != saved.Subscription.URL || len(snapshot.Nodes) != len(saved.Subscription.Nodes) {
@@ -215,6 +299,9 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 	}
 	call("PATCH", fmt.Sprintf("/api/v1/sources/%d", src.ID), `{"enabled":true}`, ac, "", 200)
 	call("DELETE", profilePath, "", ac, "", 200)
+	checkProfiles(ac)
+	checkProfiles(bc)
+	checkProfiles(admin)
 	call("PATCH", "/api/v1/me", `{"display_name":"Alice Updated","password":"alice-new-password"}`, ac, "", 200)
 	call("GET", "/api/v1/me", "", ac, "", 200)
 	call("GET", "/api/v1/me", "", ac2, "", 401)
