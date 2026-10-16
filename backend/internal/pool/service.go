@@ -168,16 +168,9 @@ func (s *Service) nodeLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		failures := 0
-		for _, r := range results {
-			if r.LatencyMS == nil {
-				failures++
-			}
-		}
-		suppress := len(nodes) >= 5 && failures*5 >= len(nodes)*4
 		for i, n := range nodes {
 			saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			if e := s.Store.SaveProbe(saveCtx, n, results[i], suppress); e != nil {
+			if e := s.Store.SaveProbe(saveCtx, n, results[i]); e != nil {
 				log.Print("节点检测结果保存失败，将在租约过期后重试")
 			}
 			cancel()

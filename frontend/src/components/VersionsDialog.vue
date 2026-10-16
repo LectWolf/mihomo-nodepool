@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { errorText, formatDate, isCancelled, json, safeReleaseUrl, useApi, type Releases } from '../api/system'
 import { usePolling } from '../polling'
 import Modal from './Modal.vue'
+import AppIcon from './AppIcon.vue'
 import CustomSelect from './CustomSelect.vue'
 const emit = defineEmits<{ close: []; restart: [] }>()
 const api = useApi()
@@ -81,13 +82,13 @@ const confirmationText = computed(() => {
       <div v-if="data.need_restart" class="notice warning" role="status">程序文件已准备好，请立即重启以使用所选版本。</div>
       <div v-if="running || waitingForTask || data.state === 'error' || data.message" :class="['notice', data.state === 'error' ? 'error' : 'info']" role="status"><span v-if="running || waitingForTask" class="spinner"></span><strong>{{ waitingForTask ? '等待任务开始' : stateLabels[data.state] }}</strong><span>{{ data.message }}</span></div>
       <p v-if="notice && !running && !data.need_restart && data.state !== 'error'" class="small green-text" role="status">{{ notice }}</p>
-      <div class="release-toolbar"><div class="release-select-field"><span class="field-label">选择发布版本</span><CustomSelect v-model="selected" label="选择发布版本" :disabled="busy || !data.releases.length" :options="releaseOptions" placeholder="暂无可选版本" /></div><button :disabled="loading || busy" @click="load">{{ loading ? '检查中…' : '↻ 检查版本' }}</button></div>
-      <article v-if="selectedRelease" class="release-notes"><div class="panel-heading"><div><h3>{{ selectedRelease.name || selectedRelease.version }}</h3><p class="small muted">{{ formatDate(selectedRelease.published_at) }}</p></div><a v-if="safeReleaseUrl(selectedRelease.url)" :href="safeReleaseUrl(selectedRelease.url)" target="_blank" rel="noopener noreferrer" class="small green-text">查看原文 ↗</a></div><div class="release-body">{{ selectedRelease.body || '此版本未提供发布说明。' }}</div></article>
+      <div class="release-toolbar"><div class="release-select-field"><span class="field-label">选择发布版本</span><CustomSelect v-model="selected" label="选择发布版本" :disabled="busy || !data.releases.length" :options="releaseOptions" placeholder="暂无可选版本" /></div><button :disabled="loading || busy" @click="load"><AppIcon name="refresh" />{{ loading ? '检查中…' : '检查版本' }}</button></div>
+      <article v-if="selectedRelease" class="release-notes"><div class="panel-heading"><div><h3>{{ selectedRelease.name || selectedRelease.version }}</h3><p class="small muted">{{ formatDate(selectedRelease.published_at) }}</p></div><a v-if="safeReleaseUrl(selectedRelease.url)" :href="safeReleaseUrl(selectedRelease.url)" target="_blank" rel="noopener noreferrer" class="small green-text">查看原文 <AppIcon name="external" /></a></div><div class="release-body">{{ selectedRelease.body || '此版本未提供发布说明。' }}</div></article>
       <div v-else class="empty-state"><span class="empty-icon">◷</span><h3>暂无发布记录</h3><p>获取到的发布版本将在这里显示。</p></div>
       <div v-if="!data.can_update" class="notice warning">{{ data.message || '当前运行环境不支持在线更新。' }}</div>
-      <div class="release-actions"><button class="primary" :disabled="!canInstall" @click="confirm = 'update'">安装所选版本</button><button :disabled="!canInstall || selected === data.latest_version" @click="confirm = 'history'">回退到所选历史版</button></div>
-      <div class="version-maintenance"><div><strong>恢复本地备份</strong><p class="small muted">恢复上一次备份的程序文件，随后重启生效。</p></div><button :disabled="!data.can_rollback || busy || data.need_restart" @click="confirm = 'backup'">恢复本地 backup</button></div>
-      <div class="version-maintenance"><div><strong>重启服务</strong><p class="small muted">重启期间连接会短暂中断，恢复后自动重连。</p></div><button :class="{ primary: data.need_restart }" :disabled="busy" @click="confirm = 'restart'">立即重启</button></div>
+      <div class="release-actions"><button class="primary" :disabled="!canInstall" @click="confirm = 'update'"><AppIcon name="upload" />安装所选版本</button><button :disabled="!canInstall || selected === data.latest_version" @click="confirm = 'history'"><AppIcon name="left" />回退到所选历史版</button></div>
+      <div class="version-maintenance"><div><strong>恢复本地备份</strong><p class="small muted">恢复上一次备份的程序文件，随后重启生效。</p></div><button :disabled="!data.can_rollback || busy || data.need_restart" @click="confirm = 'backup'"><AppIcon name="refresh" />恢复本地 backup</button></div>
+      <div class="version-maintenance"><div><strong>重启服务</strong><p class="small muted">重启期间连接会短暂中断，恢复后自动重连。</p></div><button :class="{ primary: data.need_restart }" :disabled="busy" @click="confirm = 'restart'"><AppIcon name="refresh" />立即重启</button></div>
       <p class="small muted">容器重新创建后会使用所选镜像中的版本。版本回退仅替换程序，不回退数据库。</p>
     </template>
     <p v-if="actionError" class="notice error" role="alert">{{ actionError }}</p>

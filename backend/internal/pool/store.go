@@ -35,10 +35,10 @@ var schema = []string{
  status VARCHAR(16) NOT NULL DEFAULT 'unknown', latency_ms INT NULL,
  country VARCHAR(128) NOT NULL DEFAULT '', country_code VARCHAR(8) NOT NULL DEFAULT '', exit_ip VARCHAR(64) NOT NULL DEFAULT '',
  region VARCHAR(128) NOT NULL DEFAULT '', city VARCHAR(128) NOT NULL DEFAULT '',
- last_checked_at DATETIME(6) NULL, exit_checked_at DATETIME(6) NULL, next_check_at DATETIME(6) NOT NULL,
+ last_checked_at DATETIME(6) NULL, last_success_at DATETIME(6) NULL, exit_checked_at DATETIME(6) NULL, next_check_at DATETIME(6) NOT NULL,
  last_error TEXT NOT NULL, created_at DATETIME(6) NOT NULL,
  failures INT NOT NULL DEFAULT 0, successes INT NOT NULL DEFAULT 0,
- pending BOOLEAN NOT NULL DEFAULT 0, lease_until DATETIME(6) NULL,
+ pending BOOLEAN NOT NULL DEFAULT 0, lease_until DATETIME(6) NULL, blocked BOOLEAN NOT NULL DEFAULT 0,
  INDEX node_due(next_check_at,lease_until), INDEX node_pending(pending,lease_until), INDEX node_type(type), INDEX node_country(country_code)
  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
 	`CREATE TABLE IF NOT EXISTS np_source_nodes (
@@ -67,6 +67,9 @@ func (s *Store) Ensure(ctx context.Context) error {
 		}
 	}
 	if err := s.ensureLocationColumns(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureNodeProbeColumns(ctx); err != nil {
 		return err
 	}
 	b, _ := json.Marshal(Defaults())

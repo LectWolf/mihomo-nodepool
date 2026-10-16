@@ -31,6 +31,8 @@ Node: `{id,name,type,server,port,latency_ms:number|null,status:"unknown"|"health
 - POST `/api/v1/nodes/{id}/test` -> `{queued:true}`。
 - POST `/api/v1/nodes/test` `{ids?:number[]}` -> `{queued:true}`。省略 ids 测全部有效节点，手动请求仍排队、去重和限并发。
 - GET `/api/v1/options` -> `{types:string[],countries:[{code,name}]}`。
+- 节点连接检测失败使用 1/2/4/8/16/24 小时退避，之后最多 24 小时；连续 7 天无成功检测则屏蔽。屏蔽节点不计入有效列表、统计、选项或无 ID 的批量检测。
+- 指定 ID 的检测允许重新检测仍有有效来源的屏蔽节点；成功即恢复健康、解除屏蔽并恢复 6 小时错峰。`blocked`、`last_success_at` 为内部字段，不添加到节点响应。
 
 ## 设置
 
@@ -48,6 +50,7 @@ PUT `/api/v1/settings` `{exclude_pattern,test_url,timeout_ms,probe_concurrency,s
 ## 网页路由与外观
 
 - `/nodes`：节点页，查询参数支持 `page`、`page_size`、`view=list|cards` 和节点 API 的筛选／排序参数。
+- 默认卡片；`page=1`、`page_size=50`、`sort=latency`、`view=cards` 从网页地址省略。`view=list` 明确表示列表，刷新和前进后退按 URL 还原。最大延迟与搜索输入替换当前历史，其余筛选、排序、分页和视图切换保留历史。
 - `/sources`：来源页，`q` 保存来源名称搜索。
 - `/settings`：运行设置。
 - 页面切换、节点翻页和离散筛选进入浏览器历史；地址可直接打开并在登录后还原。输入搜索词时使用替换历史，避免每个字符产生一条历史。

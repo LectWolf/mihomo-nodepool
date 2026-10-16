@@ -20,7 +20,7 @@ export function setThemePreference(value: ThemePreference) {
 const stop = watchEffect(() => {
   document.documentElement.dataset.theme = effectiveTheme.value
   document.documentElement.style.colorScheme = effectiveTheme.value
-  document.documentElement.style.backgroundColor = effectiveTheme.value === 'dark' ? '#111a16' : '#f5f7f6'
+  document.documentElement.style.backgroundColor = effectiveTheme.value === 'dark' ? '#12171c' : '#f5f7f6'
 })
 function systemChanged(event: MediaQueryListEvent) { systemDark.value = event.matches }
 function storageChanged(event: StorageEvent) { if (event.key === key || event.key === null) preference.value = readPreference() }

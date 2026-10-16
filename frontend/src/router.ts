@@ -18,17 +18,24 @@ function publish(value: AppRoute) {
   state.value = value
   document.title = `${titles[value.section]} · NodePool`
 }
-const initial = currentURL(state.value)
-if (location.pathname + location.search + location.hash !== initial) history.replaceState(history.state, '', initial)
+function normalizeLocation(value: AppRoute) {
+  const normalized = currentURL(value)
+  if (location.pathname + location.search + location.hash !== normalized) history.replaceState(history.state, '', normalized)
+}
+normalizeLocation(state.value)
 publish(state.value)
-function popstate() { publish(readLocation()) }
+function popstate() {
+  const next = readLocation()
+  normalizeLocation(next)
+  publish(next)
+}
 window.addEventListener('popstate', popstate)
 
 export function sectionHref(section: Section) { return remembered.get(section) ?? paths[section] }
 export function navigate(section: Section) {
   const destination = sectionHref(section)
   if (destination === currentURL(state.value)) return
-  history.pushState(null, '', destination)
+  history.pushState(history.state, '', destination)
   publish(readLocation())
 }
 export function routeParams(section: Section) {
@@ -40,7 +47,7 @@ export function setRouteQuery(section: Section, params: URLSearchParams, replace
   const next = { section, path: paths[section], query: params.toString() }
   if (currentURL(next) === currentURL(state.value)) return
   if (replace) history.replaceState(history.state, '', currentURL(next))
-  else history.pushState(null, '', currentURL(next))
+  else history.pushState(history.state, '', currentURL(next))
   publish(next)
 }
 if (import.meta.hot) import.meta.hot.dispose(() => window.removeEventListener('popstate', popstate))

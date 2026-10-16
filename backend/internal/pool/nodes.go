@@ -5,17 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
-const visible = `EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1)`
-const nodeColumns = `n.id,n.name,n.type,n.server,n.port,n.latency_ms,n.status,n.country,n.country_code,n.region,n.city,n.exit_ip,n.last_checked_at,n.next_check_at,n.last_error,n.config,n.created_at,n.failures,n.successes,n.exit_checked_at`
+const visible = `n.blocked=0 AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1)`
+const nodeColumns = `n.id,n.name,n.type,n.server,n.port,n.latency_ms,n.status,n.country,n.country_code,n.region,n.city,n.exit_ip,n.last_checked_at,n.last_success_at,n.exit_checked_at,n.next_check_at,n.last_error,n.config,n.created_at,n.failures,n.successes,n.blocked`
 
 func scanNode(row scanner) (Node, error) {
 	var n Node
 	n.Sources = []Origin{}
-	e := row.Scan(&n.ID, &n.Name, &n.Type, &n.Server, &n.Port, &n.LatencyMS, &n.Status, &n.Country, &n.CountryCode, &n.Region, &n.City, &n.ExitIP, &n.LastCheckedAt, &n.NextCheckAt, &n.LastError, &n.Config, &n.CreatedAt, &n.Failures, &n.Successes, &n.ExitCheckedAt)
+	e := row.Scan(&n.ID, &n.Name, &n.Type, &n.Server, &n.Port, &n.LatencyMS, &n.Status, &n.Country, &n.CountryCode, &n.Region, &n.City, &n.ExitIP, &n.LastCheckedAt, &n.LastSuccessAt, &n.ExitCheckedAt, &n.NextCheckAt, &n.LastError, &n.Config, &n.CreatedAt, &n.Failures, &n.Successes, &n.Blocked)
 	return n, e
 }
+
 func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 	if f.Page < 1 {
 		f.Page = 1
@@ -112,11 +114,12 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 	}
 	return out, origins.Err()
 }
+
 func (s *Store) QueueNodes(ctx context.Context, ids []int64) error {
 	if len(ids) > 10000 {
 		return errors.New("单次最多指定 10000 个节点")
 	}
-	where := visible
+	where := `EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources src ON src.id=sn.source_id WHERE sn.node_id=n.id AND sn.excluded=0 AND src.enabled=1)`
 	args := []any{}
 	if len(ids) > 0 {
 		marks := make([]string, len(ids))
@@ -128,10 +131,13 @@ func (s *Store) QueueNodes(ctx context.Context, ids []int64) error {
 			args = append(args, id)
 		}
 		where += " AND n.id IN (" + strings.Join(marks, ",") + ")"
+	} else {
+		where += " AND n.blocked=0"
 	}
 	_, e := s.DB.ExecContext(ctx, `UPDATE np_nodes n SET pending=1 WHERE `+where, args...)
 	return e
 }
+
 func (s *Store) Options(ctx context.Context) (map[string]any, error) {
 	types := []string{}
 	countries := []map[string]string{}
@@ -166,6 +172,7 @@ func (s *Store) Options(ctx context.Context) (map[string]any, error) {
 	}
 	return map[string]any{"types": types, "countries": countries}, rows.Err()
 }
+
 func (s *Store) ClaimSource(ctx context.Context) (Source, error) {
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
@@ -182,13 +189,14 @@ func (s *Store) ClaimSource(ctx context.Context) (Source, error) {
 	}
 	return v, tx.Commit()
 }
+
 func (s *Store) ClaimNode(ctx context.Context) (Node, error) {
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return Node{}, e
 	}
 	defer tx.Rollback()
-	v, e := scanNode(tx.QueryRowContext(ctx, `SELECT `+nodeColumns+` FROM np_nodes n WHERE `+visible+` AND (n.lease_until IS NULL OR n.lease_until<UTC_TIMESTAMP(6)) AND (n.pending=1 OR n.next_check_at<=UTC_TIMESTAMP(6) OR n.lease_until IS NOT NULL) ORDER BY n.pending DESC,n.next_check_at,n.id LIMIT 1 FOR UPDATE SKIP LOCKED`))
+	v, e := scanNode(tx.QueryRowContext(ctx, `SELECT `+nodeColumns+` FROM np_nodes n WHERE ((n.blocked=0 AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources src ON src.id=sn.source_id WHERE sn.node_id=n.id AND sn.excluded=0 AND src.enabled=1)) OR (n.blocked=1 AND n.pending=1 AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources src ON src.id=sn.source_id WHERE sn.node_id=n.id AND sn.excluded=0 AND src.enabled=1))) AND (n.lease_until IS NULL OR n.lease_until<UTC_TIMESTAMP(6)) AND (n.pending=1 OR n.next_check_at<=UTC_TIMESTAMP(6) OR n.lease_until IS NOT NULL) ORDER BY n.pending DESC,n.next_check_at,n.id LIMIT 1 FOR UPDATE SKIP LOCKED`))
 	if e != nil {
 		return v, e
 	}
@@ -198,25 +206,37 @@ func (s *Store) ClaimNode(ctx context.Context) (Node, error) {
 	}
 	return v, tx.Commit()
 }
-func (s *Store) SaveProbe(ctx context.Context, n Node, r ProbeResult, suppress bool) error {
+
+func (s *Store) SaveProbe(ctx context.Context, n Node, r ProbeResult) error {
 	now := utcNow()
 	status := n.Status
 	failures, successes := n.Failures, n.Successes
+	blocked := n.Blocked
+	lastSuccess := n.LastSuccessAt
+	var next time.Time
 	if r.LatencyMS != nil {
 		successes++
 		failures = 0
-		if status == "unknown" || successes >= 2 {
-			status = "healthy"
-		}
-	} else if !suppress {
+		status = "healthy"
+		blocked = false
+		lastSuccess = &now
+		next = NextRun(n.CreatedAt, fmt.Sprintf("node:%d", n.ID), now)
+	} else {
 		failures++
 		successes = 0
 		if failures >= 3 {
 			status = "unhealthy"
 		}
+		base := n.CreatedAt
+		if lastSuccess != nil {
+			base = *lastSuccess
+		}
+		if now.Sub(base) >= StaleAfter {
+			blocked = true
+		}
+		next = now.Add(RetryDelay(failures))
 	}
-	next := NextRun(n.CreatedAt, fmt.Sprintf("node:%d", n.ID), now)
-	_, e := s.DB.ExecContext(ctx, `UPDATE np_nodes SET latency_ms=?,status=?,failures=?,successes=?,last_checked_at=?,next_check_at=?,last_error=?,lease_until=NULL WHERE id=?`, r.LatencyMS, status, failures, successes, now, next, r.Error, n.ID)
+	_, e := s.DB.ExecContext(ctx, `UPDATE np_nodes SET latency_ms=?,status=?,failures=?,successes=?,last_checked_at=?,last_success_at=?,next_check_at=?,last_error=?,lease_until=NULL,blocked=? WHERE id=?`, r.LatencyMS, status, failures, successes, now, lastSuccess, next, r.Error, blocked, n.ID)
 	if e != nil {
 		return e
 	}
@@ -245,6 +265,7 @@ func (s *Store) SaveProbe(ctx context.Context, n Node, r ProbeResult, suppress b
 	}
 	return e
 }
+
 func (s *Store) TaskStatus(ctx context.Context) (Tasks, error) {
 	var t Tasks
 	e := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(enabled=1 AND (pending=1 OR next_refresh_at<=UTC_TIMESTAMP(6))),0),COALESCE(SUM(lease_until>UTC_TIMESTAMP(6)),0) FROM np_sources`).Scan(&t.PendingSources, &t.ActiveSources)

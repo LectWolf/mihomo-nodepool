@@ -13,6 +13,9 @@ import (
 )
 
 const DefaultExclude = `(?i)(剩余|到期|过期|流量|官网|套餐|重置|expire|traffic|website|remaining)`
+
+const RetryBase = time.Hour
+const StaleAfter = 7 * 24 * time.Hour
 const Period = 6 * time.Hour
 
 var ErrNotFound = errors.New("记录不存在")
@@ -115,6 +118,8 @@ type Node struct {
 	CreatedAt     time.Time       `json:"-"`
 	Failures      int             `json:"-"`
 	Successes     int             `json:"-"`
+	LastSuccessAt *time.Time      `json:"-"`
+	Blocked       bool            `json:"-"`
 	ExitCheckedAt *time.Time      `json:"-"`
 }
 type ParsedNode struct {
@@ -181,6 +186,16 @@ func InitialRun(key string, now time.Time) time.Time {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(key))
 	return now.Add(time.Duration(h.Sum32()%30000) * time.Millisecond)
+}
+
+func RetryDelay(failures int) time.Duration {
+	if failures <= 0 {
+		return RetryBase
+	}
+	if failures >= 6 {
+		return 24 * time.Hour
+	}
+	return time.Duration(1<<(failures-1)) * RetryBase
 }
 func cleanName(s string) string { return strings.TrimSpace(s) }
 func checkSource(in SourceInput) error {

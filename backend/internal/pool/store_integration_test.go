@@ -86,7 +86,7 @@ func TestMySQLImportDedupExclusionAndRecovery(t *testing.T) {
 	}
 	node := page.Items[0]
 	delay := 42
-	if e = s.SaveProbe(ctx, node, pool.ProbeResult{LatencyMS: &delay, ExitAttempted: true, ExitIP: "203.0.113.1", Country: "Japan", CountryCode: "JP"}, false); e != nil {
+	if e = s.SaveProbe(ctx, node, pool.ProbeResult{LatencyMS: &delay, ExitAttempted: true, ExitIP: "203.0.113.1", Country: "Japan", CountryCode: "JP"}); e != nil {
 		t.Fatal(e)
 	}
 	page, e = s.Nodes(ctx, pool.Filter{Country: "JP", MaxLatency: 50, Q: "Alias", Type: "ss", SourceID: b.ID, Sort: "latency"})
