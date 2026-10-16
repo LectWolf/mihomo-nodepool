@@ -55,6 +55,7 @@ const server = createServer(async (req, res) => {
     if (route === '/system') { send(200, { name: 'Mihomo NodePool', version: releases.current_version, commit: 'browser-test', build_time: date, database: { configured: true, connected: !databaseDown }, core: { state: 'ready', version: 'test-core' }, tasks: { pending_sources: 0, pending_nodes: 0, active_sources: 0, active_nodes: 0 } }); return }
     if (databaseDown && !route.includes('release')) { send(503, { error: '测试数据库连接失败' }); return }
     if (route === '/me') { send(200, { user: admin, usage: { nodes: 0, sources: 0, subscriptions: 0 }, provider_path: '/nodes?provider_id=1' }); return }
+    if (route === '/subscriptions' || route === '/rule-profiles') { send(200, { items: [] }); return }
     if (route === '/sources/catalog') { const q = url.searchParams.get('q') || ''; const items = sources.filter(s => s.name.includes(q)); send(200, { items, total: items.length, page: 1, page_size: 20 }); return }
     if (route === '/sources' && req.method === 'GET') { send(200, { items: sources }); return }
     if (route === '/sources' && req.method === 'POST') {
@@ -79,7 +80,7 @@ const server = createServer(async (req, res) => {
       send(200, { items: filtered.slice((page - 1) * size, page * size), total: filtered.length, page, page_size: size, stats: { total: 60, healthy: 60, unhealthy: 0, pending: 0 } }); return
     }
     if (/^\/nodes(?:\/\d+)?\/test$/.test(route)) { send(200, { queued: true }); return }
-    if (route === '/options') { send(200, { types: ['ss', 'vmess'], countries: [{ code: 'US', name: '美国' }, { code: 'JP', name: '日本' }] }); return }
+    if (route === '/options') { send(200, { types: ['ss', 'vmess'], countries: ['US','JP','CN','HK','TW','SG','GB','DE','FR','CA','AU','KR','IN','TH','MY','VN','NL','FI','SE','NO','BR','AR','ZA','EG','TR','IT','ES','PT','IE','CH','AT','BE','DK','NZ','ID','PH','MX','PL','CZ','HU'].map(code => ({ code, name: code })) }); return }
     if (route === '/settings') {
       if (req.method === 'PUT') {
         if (body.exclude_pattern === '(') { send(400, { error: '排除正则无效' }); return }
@@ -232,14 +233,22 @@ try {
   check('custom selects: no native select, keyboard navigation/typeahead, Escape focus and Tab; localized/deduplicated locations and local SVG')
   await click('下一页'); await hasText('节点-51')
   await click('上一页'); await hasText('节点-1')
-  await evaluate('document.querySelector(".node-card .node-checkbox").click()'); await hasText('选择领取来源')
+  await evaluate('document.querySelector(".node-card").click()'); await hasText('节点详情')
+  assert.equal(await evaluate('document.querySelectorAll(".node-card button,.node-card input").length'), 0, 'whole-card button has no nested controls')
+  await key('Escape'); await click('选择节点')
+  await evaluate('document.querySelector(".node-card").click()'); await hasText('选择领取来源')
   await key('Escape')
-  assert.equal(await evaluate('document.querySelector(".node-card .node-checkbox").checked'), false, 'cancelled origin keeps checkbox clear')
-  await evaluate('document.querySelector(".node-card .node-checkbox").click()'); await hasText('选择领取来源')
+  assert.equal(await evaluate('document.querySelector(".node-card").getAttribute("aria-pressed")'), 'false', 'cancelled origin keeps selection clear')
+  await evaluate('document.querySelector(".node-card").click()'); await hasText('选择领取来源')
   await click('主要来源', 'document.querySelector("dialog[open]")'); await hasText('1 个单选')
   await click('下一页'); await hasText('节点-51'); await click('上一页'); await hasText('节点-1')
-  assert.equal(await evaluate('document.querySelector(".node-card .node-checkbox").checked'), true, 'selection survives pagination')
-  await click('清空', 'document.querySelector(".selection-bar")')
+  assert.equal(await evaluate('document.querySelector(".node-card").getAttribute("aria-pressed")'), 'true', 'selection survives pagination')
+  await click('选择整个来源'); await hasText('当前选择'); await hasText('已单选 1 个节点')
+  assert.equal(await evaluate('document.querySelector("dialog .draft-preview").textContent.includes("节点-1")'), true)
+  await key('Escape')
+  await click('保存组合'); await hasText('保存方式'); await eventually(() => evaluate('!!document.querySelector("[aria-label=订阅规则组合]")'), 'rule profile selector')
+  await key('Escape')
+  await click('清空', 'document.querySelector(".selection-bar")'); await click('完成选择')
   await click('下一页'); await hasText('节点-51')
   assert.equal(requests.filter(item => item.route === '/nodes').at(-1).query.page, '2')
   await input('.filters input[type=search]', '节点-2'); await hasText('节点-20')
@@ -249,6 +258,9 @@ try {
   assert.equal(requests.filter(item => item.route === '/nodes').at(-1).query.type, 'ss')
   await click('来源'); await hasText('备用来源'); await click('备用来源', 'document.querySelector(".filter-popup")')
   await click('国家或地区'); await click('美国', 'document.querySelector(".filter-popup")'); await click('日本', 'document.querySelector(".filter-popup")')
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".region-grid")).gridTemplateColumns.split(" ").length'), 5)
+  assert.equal(await evaluate('document.querySelector(".region-grid").scrollHeight > document.querySelector(".region-grid").clientHeight'), true, 'regions scroll inside grid')
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".region-cell > span")).whiteSpace'), 'nowrap')
   assert.equal(await evaluate('document.querySelector(".filter-trigger[aria-label=国家或地区]").textContent.trim()'), '地区 · 2')
   await key('Escape')
   assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'), '国家或地区')
@@ -262,8 +274,10 @@ try {
   assert.equal(await evaluate('document.querySelector("[aria-label=卡片视图]").getAttribute("aria-pressed")'), 'true')
   assert.equal(await evaluate('document.querySelector(".filters input[type=search]").value'), '节点-2')
   assert.deepEqual(requests.filter(item => item.route === '/nodes').at(-1).query, filtersBeforeView)
-  await click('检测', 'document.querySelector(".node-card")'); await hasText('已加入检测队列')
-  await evaluate('document.querySelector(".node-card .node-card-actions button:first-child").click()'); await hasText('原始名称：原名 B'); await evaluate('document.querySelector("dialog[open] .icon-button").click()')
+  assert.ok(await evaluate('document.querySelector(".node-card").getBoundingClientRect().height < 180'), 'compact node card')
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".node-card .node-name")).whiteSpace'), 'nowrap')
+  await evaluate('document.querySelector(".node-card").click()'); await hasText('原始名称：原名 B')
+  await click('检测节点', 'document.querySelector("dialog[open]")'); await key('Escape'); await hasText('已加入检测队列')
   await cdp('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true })
   assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true)
   await cdp('Page.reload'); await hasText('节点-20')
@@ -289,12 +303,11 @@ try {
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false })
   check('cards preserve filters/page, persist on reload, share detection/details, custom page size and 320px layout')
   await click('重置筛选'); await hasText('节点-1')
-  await click('主要来源+1')
-  await hasText('原始名称：原名 B'); await evaluate('document.querySelector("dialog[open] .icon-button").click()')
-  await click('检测', 'document.querySelector("tbody tr")'); await hasText('已加入检测队列')
-  await click('检测全部节点'); await hasText('全部有效节点已加入检测队列')
-  assert.deepEqual(requests.find(item => item.route === '/nodes/test').body, {})
-  check('pagination, filter queries, source associations and single/all detection')
+  await evaluate('document.querySelector("tbody .node-name").click()'); await hasText('原始名称：原名 B')
+  await click('检测节点', 'document.querySelector("dialog[open]")'); await key('Escape'); await hasText('已加入检测队列')
+  assert.ok(requests.some(item => /^\/nodes\/\d+\/test$/.test(item.route)))
+  assert.equal(await evaluate('document.querySelectorAll(".node-card-actions").length'), 0)
+  check('pagination, filter queries, whole-card selection, source preview and detection inside details')
   await input('.filters input[type=search]', 'slow'); await sleep(400)
   await input('.filters input[type=search]', '节点-2'); await sleep(1300)
   assert.equal(await evaluate('document.querySelector(".node-name").textContent'), '节点-2')

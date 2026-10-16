@@ -144,6 +144,9 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 }
 
 func (s *Store) QueueNodes(ctx context.Context, ids []int64) error {
+	if CurrentUser(ctx).Role != "admin" {
+		return ErrForbidden
+	}
 	if len(ids) > 10000 {
 		return errors.New("单次最多指定 10000 个节点")
 	}

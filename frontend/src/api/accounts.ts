@@ -13,10 +13,15 @@ export interface Provider {
   id: number; username: string; display_name: string; source_count: number; node_count: number
   followers: number; followed: boolean; provider_path: string
 }
-export interface NodeSelection { node_id: number; source_id: number; name?: string }
+export interface NodeSelection { node_id: number; source_id: number; name?: string; source_name?: string }
+export interface RuleProfile {
+  id: number; name: string; routing_enabled: boolean; dns_enabled: boolean; dns_servers: string[]; rules: string[]
+  created_at?: string; updated_at?: string
+}
 export interface Subscription {
   id: number; name: string; node_count: number; source_count: number; created_at: string; updated_at: string
-  url: string; nodes: NodeSelection[]; node_ids: number[]; source_ids: number[]
+  url: string; nodes: NodeSelection[]; node_ids: number[]; source_ids: number[]; rule_profile_id?: number | null
+  node_details?: (NodeSelection & { type: string; server: string; port: number; available: boolean })[]
 }
 export interface SubscriptionResult { subscription: Subscription; truncated: boolean; selected_count: number }
 export const currentUser = ref<User | null>(null)
@@ -27,12 +32,14 @@ export const draftNodes = ref<NodeSelection[]>([])
 export const draftSources = ref<{ id: number; name: string; node_count: number }[]>([])
 export const editingSubscription = ref<number | null>(null)
 export const draftName = ref('我的订阅')
+export const draftRuleProfile = ref<number | null>(null)
+export const selectingNodes = ref(false)
 export const selectionError = ref('')
 export const selectedSources = computed(() => new Set([...draftNodes.value.map(n => n.source_id), ...draftSources.value.map(s => s.id)]))
 export const draftEstimate = computed(() => draftNodes.value.length + draftSources.value.reduce((n, s) => n + s.node_count, 0))
 let accountRevision = 0
-export function resetDraft() { draftNodes.value = []; draftSources.value = []; editingSubscription.value = null; draftName.value = '我的订阅'; selectionError.value = '' }
-export function clearAccount() { accountRevision++; currentUser.value = null; profile.value = null; followed.value = new Set(); resetDraft() }
+export function resetDraft() { draftNodes.value = []; draftSources.value = []; editingSubscription.value = null; draftName.value = '我的订阅'; draftRuleProfile.value = null; selectionError.value = '' }
+export function clearAccount() { accountRevision++; currentUser.value = null; profile.value = null; followed.value = new Set(); resetDraft(); selectingNodes.value = false }
 export async function loadProfile() {
   const revision = accountRevision
   const value = await request<Profile>('/me')
@@ -53,12 +60,12 @@ export function toggleSource(source: { id: number; name: string; node_count: num
   draftSources.value = [...draftSources.value, source]
 }
 export function editSubscription(item: Subscription) {
-  resetDraft(); editingSubscription.value = item.id; draftName.value = item.name
-  draftNodes.value = (item.nodes ?? []).map(n => ({ ...n }))
+  resetDraft(); editingSubscription.value = item.id; draftName.value = item.name; draftRuleProfile.value = item.rule_profile_id ?? null; selectingNodes.value = true
+  draftNodes.value = (item.nodes ?? []).map(n => ({ ...n, ...item.node_details?.find(detail => detail.node_id === n.node_id && detail.source_id === n.source_id) }))
 }
 export async function saveDraft(): Promise<SubscriptionResult> {
   const id = editingSubscription.value
-  const payload = { name: draftName.value.trim(), nodes: draftNodes.value.map(({ node_id, source_id }) => ({ node_id, source_id })), source_ids: draftSources.value.map(s => s.id) }
+  const payload = { name: draftName.value.trim(), nodes: draftNodes.value.map(({ node_id, source_id }) => ({ node_id, source_id })), source_ids: draftSources.value.map(s => s.id), rule_profile_id: draftRuleProfile.value }
   return request<SubscriptionResult>(id ? `/subscriptions/${id}` : '/subscriptions', json(id ? 'PUT' : 'POST', payload))
 }
 export async function toggleFollow(id: number) {

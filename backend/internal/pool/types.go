@@ -67,6 +67,7 @@ type Source struct {
 	ProviderName   string     `json:"provider_name"`
 	MaxUsers       int        `json:"max_users"`
 	ClaimedUsers   int        `json:"claimed_users"`
+	ActiveUsers    int        `json:"active_users"`
 	Name           string     `json:"name"`
 	Kind           string     `json:"kind"`
 	Enabled        bool       `json:"enabled"`

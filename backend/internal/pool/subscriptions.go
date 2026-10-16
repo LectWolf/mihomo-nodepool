@@ -17,23 +17,27 @@ type Selection struct {
 	SourceID int64 `json:"source_id"`
 }
 type SubscriptionInput struct {
-	Name      string      `json:"name"`
-	Nodes     []Selection `json:"nodes"`
-	SourceIDs []int64     `json:"source_ids"`
+	Name           string      `json:"name"`
+	Nodes          []Selection `json:"nodes"`
+	SourceIDs      []int64     `json:"source_ids"`
+	RuleProfileID  *int64      `json:"rule_profile_id"`
+	RuleProfileSet bool        `json:"-"`
 }
 type Subscription struct {
-	ID          int64       `json:"id"`
-	Name        string      `json:"name"`
-	NodeCount   int         `json:"node_count"`
-	SourceCount int         `json:"source_count"`
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
-	URL         string      `json:"url"`
-	Nodes       []Selection `json:"nodes"`
-	NodeIDs     []int64     `json:"node_ids"`
-	SourceIDs   []int64     `json:"source_ids"`
-	UserID      int64       `json:"-"`
-	Token       string      `json:"-"`
+	ID            int64                    `json:"id"`
+	Name          string                   `json:"name"`
+	NodeCount     int                      `json:"node_count"`
+	SourceCount   int                      `json:"source_count"`
+	CreatedAt     time.Time                `json:"created_at"`
+	UpdatedAt     time.Time                `json:"updated_at"`
+	URL           string                   `json:"url"`
+	Nodes         []Selection              `json:"nodes"`
+	NodeIDs       []int64                  `json:"node_ids"`
+	SourceIDs     []int64                  `json:"source_ids"`
+	UserID        int64                    `json:"-"`
+	Token         string                   `json:"-"`
+	RuleProfileID *int64                   `json:"rule_profile_id"`
+	NodeDetails   []SubscriptionNodeDetail `json:"node_details,omitempty"`
 }
 type SavedSubscription struct {
 	Subscription  Subscription `json:"subscription"`
@@ -41,7 +45,7 @@ type SavedSubscription struct {
 	SelectedCount int          `json:"selected_count"`
 }
 
-const subscriptionColumns = `id,user_id,name,token,nodes,source_ids,created_at,updated_at`
+const subscriptionColumns = `id,user_id,name,token,nodes,source_ids,created_at,updated_at,rule_profile_id`
 
 func newToken() (string, error) {
 	var b [32]byte
@@ -51,7 +55,7 @@ func newToken() (string, error) {
 func scanSubscription(row scanner) (Subscription, error) {
 	v := Subscription{Nodes: []Selection{}, NodeIDs: []int64{}, SourceIDs: []int64{}}
 	var nodes, sources []byte
-	e := row.Scan(&v.ID, &v.UserID, &v.Name, &v.Token, &nodes, &sources, &v.CreatedAt, &v.UpdatedAt)
+	e := row.Scan(&v.ID, &v.UserID, &v.Name, &v.Token, &nodes, &sources, &v.CreatedAt, &v.UpdatedAt, &v.RuleProfileID)
 	if e != nil {
 		return v, e
 	}
@@ -91,7 +95,11 @@ func listSubscriptions(ctx context.Context, q queryer, userID int64) ([]Subscrip
 	return items, rows.Err()
 }
 func (s *Store) Subscriptions(ctx context.Context) ([]Subscription, error) {
-	return listSubscriptions(ctx, s.DB, CurrentUser(ctx).ID)
+	items, err := listSubscriptions(ctx, s.DB, CurrentUser(ctx).ID)
+	if err == nil {
+		err = s.subscriptionDetails(ctx, items)
+	}
+	return items, err
 }
 func (s *Store) Usage(ctx context.Context, id int64) (Usage, error) {
 	items, e := listSubscriptions(ctx, s.DB, id)
@@ -147,6 +155,18 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 	}
 	if id > 0 && existing == nil {
 		return out, ErrNotFound
+	}
+	if !in.RuleProfileSet && in.RuleProfileID == nil && existing != nil {
+		in.RuleProfileID = existing.RuleProfileID
+	}
+	if in.RuleProfileID != nil {
+		var found int64
+		if *in.RuleProfileID <= 0 {
+			return out, errors.New("规则配置ID无效")
+		}
+		if e = tx.QueryRowContext(ctx, `SELECT id FROM np_rule_profiles WHERE id=? AND user_id=? FOR UPDATE`, *in.RuleProfileID, u.ID).Scan(&found); e != nil {
+			return out, e
+		}
 	}
 	if (id == 0 && len(items) >= u.SubscriptionLimit) || (id > 0 && len(items) > u.SubscriptionLimit) {
 		return out, ErrQuota
@@ -300,7 +320,7 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 		if e != nil {
 			return out, e
 		}
-		res, e := tx.ExecContext(ctx, `INSERT INTO np_subscriptions(user_id,name,token,nodes,source_ids,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, u.ID, in.Name, token, raw, srcRaw, now, now)
+		res, e := tx.ExecContext(ctx, `INSERT INTO np_subscriptions(user_id,name,token,nodes,source_ids,created_at,updated_at,rule_profile_id) VALUES(?,?,?,?,?,?,?,?)`, u.ID, in.Name, token, raw, srcRaw, now, now, in.RuleProfileID)
 		if e != nil {
 			return out, e
 		}
@@ -309,7 +329,7 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 			return out, e
 		}
 	} else {
-		if _, e = tx.ExecContext(ctx, `UPDATE np_subscriptions SET name=?,nodes=?,source_ids=?,updated_at=? WHERE id=? AND user_id=?`, in.Name, raw, srcRaw, now, id, u.ID); e != nil {
+		if _, e = tx.ExecContext(ctx, `UPDATE np_subscriptions SET name=?,nodes=?,source_ids=?,updated_at=?,rule_profile_id=? WHERE id=? AND user_id=?`, in.Name, raw, srcRaw, now, in.RuleProfileID, id, u.ID); e != nil {
 			return out, e
 		}
 	}
@@ -404,6 +424,7 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 			seenNodes[n.ID] = true
 			seenSources[pair.SourceID] = true
 			if v.ID == target.ID {
+				n.Sources = []Origin{{ID: pair.SourceID, NodeName: n.Name}}
 				out = append(out, n)
 			}
 		}

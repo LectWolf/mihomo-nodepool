@@ -216,7 +216,7 @@ func New(o Options) http.Handler {
 	mux.Handle("/", web.Handler())
 	return o.Auth.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		adminOnly := p == "/api/v1/settings" || strings.HasPrefix(p, "/api/v1/users") || p == "/api/v1/nodes/test" || strings.HasPrefix(p, "/api/v1/releases") || strings.HasPrefix(p, "/api/v1/system/") || strings.HasPrefix(p, "/api/v1/updates")
+		adminOnly := p == "/api/v1/settings" || strings.HasPrefix(p, "/api/v1/users") || p == "/api/v1/nodes/test" || (strings.HasPrefix(p, "/api/v1/nodes/") && strings.HasSuffix(p, "/test")) || strings.HasPrefix(p, "/api/v1/releases") || strings.HasPrefix(p, "/api/v1/system/") || strings.HasPrefix(p, "/api/v1/updates")
 		if adminOnly && pool.CurrentUser(r.Context()).Role != "admin" {
 			writeError(w, pool.ErrForbidden)
 			return
@@ -255,7 +255,7 @@ func writeError(w http.ResponseWriter, e error) {
 	switch {
 	case errors.Is(e, pool.ErrForbidden):
 		code = 403
-	case errors.Is(e, pool.ErrQuota):
+	case errors.Is(e, pool.ErrQuota), errors.Is(e, pool.ErrProfileInUse):
 		code = 409
 	case errors.Is(e, pool.ErrUnexportable):
 		code = 422

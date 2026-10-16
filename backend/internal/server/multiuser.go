@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,6 +15,7 @@ import (
 type businessRegistrar func(string, func(http.ResponseWriter, *http.Request) error)
 
 func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manager) {
+	registerRuleProfiles(business, s)
 	business("GET /api/v1/me", func(w http.ResponseWriter, r *http.Request) error {
 		u := pool.CurrentUser(r.Context())
 		usage, e := s.Usage(r.Context(), u.ID)
@@ -135,6 +138,30 @@ func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manage
 	}
 	business("POST /api/v1/subscriptions", save(true))
 	business("PUT /api/v1/subscriptions/{id}", save(false))
+	business("PATCH /api/v1/subscriptions/{id}", func(w http.ResponseWriter, r *http.Request) error {
+		id, e := idOf(r)
+		if e != nil {
+			return e
+		}
+		var in struct {
+			RuleProfileID json.RawMessage `json:"rule_profile_id"`
+		}
+		if e = decode(w, r, &in); e != nil {
+			return e
+		}
+		if len(in.RuleProfileID) == 0 {
+			return errors.New("请提供rule_profile_id，使用null解除绑定")
+		}
+		var profileID *int64
+		if e = json.Unmarshal(in.RuleProfileID, &profileID); e != nil {
+			return errors.New("规则配置ID必须为正整数或null")
+		}
+		item, e := s.BindSubscriptionRule(r.Context(), id, profileID)
+		if e == nil {
+			writeJSON(w, 200, item)
+		}
+		return e
+	})
 	business("DELETE /api/v1/subscriptions/{id}", func(w http.ResponseWriter, r *http.Request) error {
 		id, e := idOf(r)
 		if e != nil {
@@ -181,12 +208,8 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store) {
 			writeError(w, e)
 			return
 		}
-		nodes, e := s.SubscriptionNodes(ctx, r.PathValue("token"))
-		if e != nil {
-			writeError(w, e)
-			return
-		}
-		raw, skipped, e := pool.ExportSubscription(nodes, format)
+		raw, skipped, routingSkipped, e := s.ExportSavedSubscription(ctx, r.PathValue("token"), format)
+		w.Header().Set("X-Subscription-Routing-Skipped", strconv.Itoa(routingSkipped))
 		w.Header().Set("X-Subscription-Skipped", strconv.Itoa(skipped))
 		w.Header().Set("X-Subscription-Format", format)
 		if e != nil {

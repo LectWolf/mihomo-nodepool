@@ -1,9 +1,9 @@
 import { reactive, readonly, shallowRef } from 'vue'
 
-export type Section = 'nodes' | 'sources' | 'settings' | 'providers' | 'subscriptions' | 'users' | 'account'
+export type Section = 'nodes' | 'sources' | 'settings' | 'providers' | 'subscriptions' | 'rules' | 'users' | 'account'
 interface AppRoute { section: Section; path: string; query: string }
-const paths: Record<Section, string> = { nodes: '/nodes', sources: '/sources', settings: '/settings', providers: '/providers', subscriptions: '/subscriptions', users: '/users', account: '/account' }
-const titles: Record<Section, string> = { nodes: '节点总览', sources: '我的来源', settings: '运行设置', providers: '提供方', subscriptions: '我的订阅', users: '用户管理', account: '我的账号' }
+const paths: Record<Section, string> = { nodes: '/nodes', sources: '/sources', settings: '/settings', providers: '/providers', subscriptions: '/subscriptions', rules: '/rules', users: '/users', account: '/account' }
+const titles: Record<Section, string> = { nodes: '节点总览', sources: '我的来源', settings: '运行设置', providers: '提供方', subscriptions: '我的订阅', rules: '规则组合', users: '用户管理', account: '我的账号' }
 const remembered = reactive(new Map<Section, string>())
 function readLocation(): AppRoute {
   const path = location.pathname.replace(/\/+$/, '')

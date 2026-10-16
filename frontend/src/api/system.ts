@@ -10,7 +10,7 @@ export interface Source {
   id: number; name: string; kind: 'url' | 'file' | 'links'; enabled: boolean; exclude_pattern: string
   status: 'queued' | 'processing' | 'ready' | 'error'; node_count: number; excluded_count: number
   last_error: string; last_refresh_at: string | null; next_refresh_at: string | null; created_at: string
-  owner_id?: number; provider_name?: string; max_users?: number; claimed_users?: number
+  owner_id?: number; provider_name?: string; max_users?: number; claimed_users?: number; active_users?: number
 }
 export interface PoolNode {
   id: number; name: string; type: string; server: string; port: number; latency_ms: number | null

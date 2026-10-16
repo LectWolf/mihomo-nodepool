@@ -89,8 +89,8 @@ func TestMySQLMultiuserSourceOwnershipAndDiscovery(t *testing.T) {
 	if e = s.NodePermission(bc, page.Items[0].ID); !errors.Is(e, pool.ErrForbidden) {
 		t.Fatalf("foreign test permission: %v", e)
 	}
-	if e = s.NodePermission(ac, page.Items[0].ID); e != nil {
-		t.Fatal(e)
+	if e = s.NodePermission(ac, page.Items[0].ID); !errors.Is(e, pool.ErrForbidden) {
+		t.Fatalf("owner is not admin: %v", e)
 	}
 	_, _ = s.DB.Exec(`UPDATE np_nodes SET country_code='JP' WHERE id=?`, page.Items[0].ID)
 	_, _ = s.DB.Exec(`UPDATE np_nodes SET country_code='US' WHERE id=?`, page.Items[1].ID)

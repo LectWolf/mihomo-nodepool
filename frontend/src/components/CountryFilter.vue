@@ -22,10 +22,10 @@ function keydown(event: KeyboardEvent) {
 }
 </script>
 <template>
-  <FilterPopover label="国家或地区" :text="text" :active="modelValue.length > 0" :width="460">
+  <FilterPopover label="国家或地区" :text="text" :active="modelValue.length > 0" :width="760">
     <div class="popup-heading"><strong>国家 / 地区</strong><button type="button" class="text-button" :disabled="!modelValue.length" @click="emit('update:modelValue', [])">清空</button></div>
     <label class="search-field popup-search"><span class="sr-only">搜索地区</span><AppIcon name="search" /><input v-model="search" type="search" placeholder="搜索国家、地区或代码" /></label>
-    <div class="region-grid" @keydown="keydown"><button type="button" class="region-cell" :class="{ on: !modelValue.length }" :aria-pressed="!modelValue.length" @click="emit('update:modelValue', [])"><AppIcon name="nodes" /><span>全部</span></button><button v-for="country in items" :key="country.code" type="button" class="region-cell" :class="{ on: modelValue.includes(country.code) }" :aria-pressed="modelValue.includes(country.code)" @click="toggle(country.code)"><img v-if="flags[`../../node_modules/flag-icons/flags/4x3/${country.code.toLowerCase()}.svg`]" :src="flags[`../../node_modules/flag-icons/flags/4x3/${country.code.toLowerCase()}.svg`]" alt="" width="20" height="15" /><AppIcon v-else name="globe" /><span>{{ country.name }}</span><small v-if="country.count !== undefined">{{ country.count }}</small></button></div>
+    <div class="region-grid" @keydown="keydown"><button type="button" class="region-cell" :class="{ on: !modelValue.length }" :aria-pressed="!modelValue.length" @click="emit('update:modelValue', [])"><AppIcon name="nodes" /><span>全部</span></button><button v-for="country in items" :key="country.code" type="button" class="region-cell" :title="country.name" :aria-label="country.name" :class="{ on: modelValue.includes(country.code) }" :aria-pressed="modelValue.includes(country.code)" @click="toggle(country.code)"><img v-if="flags[`../../node_modules/flag-icons/flags/4x3/${country.code.toLowerCase()}.svg`]" :src="flags[`../../node_modules/flag-icons/flags/4x3/${country.code.toLowerCase()}.svg`]" alt="" width="20" height="15" /><AppIcon v-else name="globe" /><span>{{ country.name }}</span><small v-if="country.count !== undefined">{{ country.count }}</small></button></div>
     <p v-if="!items.length" class="small muted popup-empty">没有匹配的地区</p>
   </FilterPopover>
 </template>

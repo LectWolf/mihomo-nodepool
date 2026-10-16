@@ -22,16 +22,16 @@ User = {id,username,display_name,role:"admin"|"user",enabled,node_limit,source_l
 - POST /users {username,password,display_name,node_limit,source_limit,subscription_limit} -> User 201
 - PATCH /users/{id} {display_name?,password?,enabled?,node_limit?,source_limit?,subscription_limit?} -> User
 
-Source 在已有响应上增加 {owner_id,provider_name,max_users,claimed_users}；新建/编辑支持 max_users。GET /sources 为本人管理来源（admin全部）。写/删/刷新检查所有权或admin；原始URL和节点凭据永不展示。
+Source 在已有响应上增加 {owner_id,provider_name,max_users,claimed_users,active_users}；新建/编辑支持 max_users。claimed_users 保留历史唯一领取，active_users 按仍有组合引用来源的启用账号去重，删除最后引用或覆盖来源会下降。GET /sources 为本人管理来源（admin全部）。写/删/刷新检查所有权或admin；原始URL和节点凭据永不展示。
 - GET /sources/catalog?q=&provider_id=&following=1&page=1&page_size=20 -> {items:Source[],total,page,page_size}（只共享可用来源）；供可搜索分页来源选择与整来源选取。
 - GET /providers?q=&following=1&page=1&page_size=20 -> {items:Provider[],total,page,page_size}
   Provider = {id,username,display_name,source_count,node_count,followers,followed,provider_path}
 - POST /providers/{id}/follow；DELETE /providers/{id}/follow -> {followed:boolean}
 
 Node.sources 的 Origin 增加 {owner_id,provider_name}。Nodes查询新增 provider_id、following=1、countries=JP,US（兼容旧country）。Options仍types/countries；可附count但前端不依赖。
-- GET /nodes 保持原分页协议，浏览正常有效共享节点；普通用户不能触发检测（admin/本人来源节点可手动）。所有普通API都验证账号enabled。
+- GET /nodes 保持原分页协议，浏览正常有效共享节点；所有手动节点检测仅admin。所有普通API都验证账号enabled。
 
-Subscription = {id,name,node_count,source_count,created_at,updated_at,url:string,nodes:[{node_id,source_id}],node_ids:number[],source_ids:number[]}
+Subscription = {id,name,node_count,source_count,created_at,updated_at,url:string,nodes:[{node_id,source_id}],node_ids:number[],source_ids:number[],rule_profile_id:number|null}
 - GET /subscriptions -> {items:Subscription[]}
 - POST /subscriptions {name,nodes:[{node_id,source_id}],source_ids:number[]} -> {subscription:Subscription,truncated:boolean,selected_count:number} 201
 - PUT /subscriptions/{id} 同输入 -> 同输出 200
@@ -40,6 +40,8 @@ Subscription = {id,name,node_count,source_count,created_at,updated_at,url:string
 - POST /subscriptions/{id}/rotate -> Subscription；旧token立即失效。
 - GET /sub/{token}?format=clash|v2ray|auto（不带/api/v1）客户端公开令牌入口。显式格式优先；auto按UA决定，默认clash。clash返回有效可导入完整YAML配置，v2ray返回UTF8分享URI按行连接再base64；支持SS、VMess、VLESS、Trojan、Hysteria2、TUIC、http/socks有条件转换；不支持协议/参数不能生成丢配置假节点，应跳过并返回跳过数Header，全部不可转换则422。停用用户或来源/账号无权限立即禁止输出；Content-Type/Cache-Control/Vary/User-Agent及inline文件名合理。令牌不计入请求日志。
 
+规则组合 API：GET /rule-profiles -> {items:RuleProfile[]}，GET /rule-profiles/default -> 默认模板，POST /rule-profiles、PUT/DELETE /rule-profiles/{id}。RuleProfile = {id,name,routing_enabled,dns_enabled,dns_servers:string[],rules:string[],created_at,updated_at}，各账号私有。订阅保存传 rule_profile_id 绑定，null解除；被绑定规则删除409。仅Clash应用，DNS留空默认三个地址、关闭不写DNS；分流默认沿用本机订阅共享完整规则，关闭合并缓存源本地分流；v2ray和未绑定旧订阅不变。
+
 ## 界面
 
 - 亮暗图标一键切换，首次跟系统；版本为纯文字可聚焦触发器，显示实际版本不伪造v0.0.1。
@@ -47,6 +49,7 @@ Subscription = {id,name,node_count,source_count,created_at,updated_at,url:string
 - 节点搜索、协议、可搜索来源、国家/地区多选、状态、排序、重置图标在一条工具栏；桌面一行，窄屏允许横向工具条/合理紧凑换行，不挤坏控件。移除最大延迟UI及新URL状态。
 - 来源面板参考 Token分享 account-table.html 的内置搜索、勾选摘要与清空；地区网格参考本机订阅共享 CatalogView.vue／RegionCell.vue。复用自绘可访问浮层，不依赖原生 select。
 - 节点可多选，展示提供方、可关注/按提供方查看。提供方页分页搜索和关注；来源弹窗可搜索分页选择整个来源；组合页查看/编辑/复制自动、Clash、v2ray链接及重置令牌、删除。
+- 紧凑卡片单行标题并悬浮全文；浏览整卡看详情，选择模式整卡选择。检测仅管理员详情。桌面地区五列、单行名称、内部滚动；整来源弹窗显示当前选区和每来源状态。保存弹窗可覆盖已有组合并保留原链接，满额仍能进入选择。
 - 管理员用户管理显示和编辑额度；普通用户账号页显示额度/已用、自己的提供方链接。
 - 所有表单字段统一：第一行标签（可选标记同行），第二行输入，第三行说明（可选）；并排字段顶端/输入框对齐，禁用额外的可选标记独占行。
 

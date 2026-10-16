@@ -123,7 +123,7 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 }
 
 const sourceBaseColumns = `id,name,kind,enabled,exclude_pattern,status,node_count,excluded_count,last_error,last_refresh_at,next_refresh_at,created_at`
-const sourceOwnerColumns = `revision,cached,owner_id,max_users,(SELECT COUNT(*) FROM np_source_claims c WHERE c.source_id=np_sources.id),COALESCE((SELECT display_name FROM np_users u WHERE u.id=np_sources.owner_id),'')`
+const sourceOwnerColumns = `revision,cached,owner_id,max_users,(SELECT COUNT(*) FROM np_source_claims c WHERE c.source_id=np_sources.id),(SELECT COUNT(DISTINCT sub.user_id) FROM np_subscriptions sub JOIN np_users au ON au.id=sub.user_id AND au.enabled=1 WHERE JSON_CONTAINS(sub.source_ids,CAST(np_sources.id AS CHAR))),COALESCE((SELECT display_name FROM np_users u WHERE u.id=np_sources.owner_id),'')`
 const sourceColumns = sourceBaseColumns + `,url,content,` + sourceOwnerColumns
 const publicSourceColumns = sourceBaseColumns + `,'','',` + sourceOwnerColumns
 
@@ -131,7 +131,7 @@ type scanner interface{ Scan(...any) error }
 
 func scanSource(row scanner) (Source, error) {
 	var v Source
-	e := row.Scan(&v.ID, &v.Name, &v.Kind, &v.Enabled, &v.ExcludePattern, &v.Status, &v.NodeCount, &v.ExcludedCount, &v.LastError, &v.LastRefreshAt, &v.NextRefreshAt, &v.CreatedAt, &v.URL, &v.Content, &v.Revision, &v.Cached, &v.OwnerID, &v.MaxUsers, &v.ClaimedUsers, &v.ProviderName)
+	e := row.Scan(&v.ID, &v.Name, &v.Kind, &v.Enabled, &v.ExcludePattern, &v.Status, &v.NodeCount, &v.ExcludedCount, &v.LastError, &v.LastRefreshAt, &v.NextRefreshAt, &v.CreatedAt, &v.URL, &v.Content, &v.Revision, &v.Cached, &v.OwnerID, &v.MaxUsers, &v.ClaimedUsers, &v.ActiveUsers, &v.ProviderName)
 	return v, e
 }
 func (s *Store) Sources(ctx context.Context) ([]Source, error) {

@@ -26,12 +26,12 @@ const location = computed(() => {
 </script>
 
 <template>
-  <div class="node-location">
-    <div class="node-location-exit">
+  <span class="node-location">
+    <span class="node-location-exit">
       <img v-if="flagUrl && !failed" :src="flagUrl" :alt="`${country || code}国旗`" class="country-flag" width="20" height="15" loading="lazy" @error="failed = true" />
       <svg v-else class="country-flag unknown-flag" viewBox="0 0 20 16" role="img" aria-label="国家待识别"><rect x=".5" y=".5" width="19" height="15" rx="2" fill="currentColor" opacity=".12" /><circle cx="10" cy="8" r="5" fill="none" stroke="currentColor" /><path d="M5 8h10M10 3c3 3 3 7 0 10-3-3-3-7 0-10Z" fill="none" stroke="currentColor" stroke-width=".8" /></svg>
       <span class="mono">{{ node.exit_ip?.trim() || '出口 IP 待识别' }}</span>
-    </div>
-    <span class="node-location-region">{{ location }}</span>
-  </div>
+    </span>
+    <span class="node-location-region" :title="location">{{ location }}</span>
+  </span>
 </template>

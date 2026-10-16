@@ -25,11 +25,11 @@
 
 GET `/system`：管理员返回 `{name,version,commit,build_time,database:{configured,connected},core:{state,version},tasks:{pending_sources,pending_nodes,active_sources,active_nodes}}`；普通用户仅返回 `{name,version}`。
 
-全局设置、用户管理、批量检测、Release 查询以及更新／回退／重启仅管理员可用。普通用户只能管理本人来源，手动检测本人来源关联的节点。
+全局设置、用户管理、所有手动检测、Release 查询以及更新／回退／重启仅管理员可用。普通用户只能管理本人来源；检测按钮仅出现在管理员的节点详情内。
 
 ## 来源与提供方
 
-`Source = {id,owner_id,provider_name,max_users,claimed_users,name,kind,enabled,exclude_pattern,status:"queued"|"processing"|"ready"|"error",node_count,excluded_count,last_error,last_refresh_at,next_refresh_at,created_at}`。
+`Source = {id,owner_id,provider_name,max_users,claimed_users,active_users,name,kind,enabled,exclude_pattern,status:"queued"|"processing"|"ready"|"error",node_count,excluded_count,last_error,last_refresh_at,next_refresh_at,created_at}`。
 
 - GET `/sources` → `{items:Source[]}`；普通用户仅本人，管理员全部。
 - POST `/sources` `{name,kind:"url"|"file"|"links",url?,content?,exclude_pattern?,max_users?}` → Source，202。URL 来源传 url，其余传 content。
@@ -44,6 +44,8 @@ GET `/system`：管理员返回 `{name,version,commit,build_time,database:{confi
 
 `max_users=0` 表示不限。领取人数为 `(source_id,user_id)` 历史唯一账号数：同账号领取多个节点、多个组合及客户端刷新只计一次；保存事务成功才占名额，失败不占。删除组合和取消关注不回收历史名额，降低人数上限不会踢出已领取账号。来源 URL 唯一性按 owner_id＋URL 哈希计算；节点仍按完整有效配置全局去重。管理列表和共享目录不返回来源 URL、缓存内容或节点凭据。
 
+`active_users` 表示仍有组合引用此来源的不同启用账号数，同账号多个组合只计一人；删除最后一个引用组合或覆盖为其他来源后减少。页面将“当前使用”与“历史领取／上限”分开展示，上限仍按历史领取判断。
+
 ## 节点
 
 GET `/nodes?page=1&page_size=50&q=&type=&countries=JP,US&source_id=&provider_id=&following=1&status=&sort=latency|name|created` → `{items:Node[],total,page,page_size,stats:{total,healthy,unhealthy,pending}}`。
@@ -52,7 +54,7 @@ GET `/nodes?page=1&page_size=50&q=&type=&countries=JP,US&source_id=&provider_id=
 
 `Node = {id,name,type,server,port,latency_ms:number|null,status:"unknown"|"healthy"|"unhealthy",country,country_code,region,city,exit_ip,last_checked_at,next_check_at,last_error,sources:[{id,name,node_name,owner_id,provider_name}]}`。
 
-- POST `/nodes/{id}/test` → `{queued:true}`；管理员或本人来源关联节点。
+- POST `/nodes/{id}/test` → `{queued:true}`，仅管理员。
 - POST `/nodes/test` `{ids?:number[]}` → `{queued:true}`，仅管理员；省略 ids 检测全部有效节点。
 - GET `/options` → `{types:string[],countries:[{code,name}]}`。
 
@@ -60,17 +62,41 @@ GET `/nodes?page=1&page_size=50&q=&type=&countries=JP,US&source_id=&provider_id=
 
 ## 组合订阅
 
-`Subscription = {id,name,node_count,source_count,created_at,updated_at,url,nodes:[{node_id,source_id}],node_ids:number[],source_ids:number[]}`。`url` 是相对地址 `/sub/{token}`，前端复制时补当前站点源。
+`Subscription = {id,name,node_count,source_count,created_at,updated_at,url,nodes:[{node_id,source_id}],node_ids:number[],source_ids:number[],rule_profile_id:number|null}`。`url` 是相对地址 `/sub/{token}`，前端复制时补当前站点源。
 
 - GET `/subscriptions` → `{items:Subscription[]}`，仅本人。
-- POST `/subscriptions` `{name,nodes:[{node_id,source_id}],source_ids:number[]}` → `{subscription,truncated,selected_count}`，201。
+
+GET 列表另带 `node_details:[{node_id,source_id,name,source_name,type,server,port,available}]`，仅提供显示信息，不含节点凭据。保存仍只提交 `nodes` 的 ID 对；关系已删除的快照条目保留 ID 并标为不可用。
+
+- POST `/subscriptions` `{name,nodes:[{node_id,source_id}],source_ids:number[],rule_profile_id?:number|null}` → `{subscription,truncated,selected_count}`，201。
 - PUT `/subscriptions/{id}` 同输入／输出，200，仅本人。
+- PATCH `/subscriptions/{id}` `{rule_profile_id:number|null}` → Subscription，200；仅更新规则绑定，不重新校验或领取历史快照节点。即使来源已停用／删除也可切换或解绑，保留节点清单及令牌。
 - DELETE `/subscriptions/{id}` → `{deleted:true}`，原链接立即失效。
 - POST `/subscriptions/{id}/rotate` → Subscription，旧令牌立即失效。
 
 显式节点须附真实来源归属；保存按账号全部组合合计去重计额，事务锁定账号及来源以防并发超领。非空 `source_ids` 表示主动选择整个来源，按来源和节点 ID 升序填入剩余额度，超出部分截断并返回提示。输出 `source_ids` 是实际选中节点的来源集合。**原样编辑快照时提交已有 `nodes`，并令 `source_ids:[]`**；把响应 source_ids 直接回传会重新进行整来源选择。
 
 保存后固定节点快照。输出过滤已删除关系、排除／屏蔽节点、停用来源及停用提供方，不补入用户未选择的新节点；同时按最新账号额度重新裁切。降低订阅条数额度时，按已有订阅顺序限制可用输出。
+
+PUT 覆盖会先排除目标组合的旧用量再校验账号合计额度，保留原令牌。网页保存弹窗可选择新建或覆盖，订阅数满额时仍可选节点并覆盖。`rule_profile_id` 仅可绑定本人规则组合，编辑省略保留，显式 `null` 解除绑定。
+
+## 规则组合
+
+`RuleProfile = {id,name,routing_enabled,dns_enabled,dns_servers:string[],rules:string[],created_at,updated_at}`，按账号隔离，可创建多套供订阅复用。
+
+- GET `/rule-profiles` → `{items:RuleProfile[]}`。
+- GET `/rule-profiles/default` → 默认模板，复制时创建私人规则组合。
+- POST `/rule-profiles` 同上配置字段 → RuleProfile，201。
+- PUT `/rule-profiles/{id}` 同上配置字段 → RuleProfile。
+- DELETE `/rule-profiles/{id}` → `{deleted:true}`；仍被订阅绑定时 409，须先解绑。
+
+默认分流沿用本机“订阅共享”的完整规则表，主代理组名统一为 `NodePool`，包含自动选择、故障转移、Cloudflare、国内网站、拦截广告和漏网之鱼。规则按序匹配，可编辑；不加入品牌或流量信息假节点。默认 DNS 开启且留空时写入 `223.5.5.5`、`119.29.29.29`、`8.8.8.8`。关闭 DNS 则不写入 DNS 段。
+
+仅 Clash 应用规则组合，v2ray 导出保持节点 URI。未绑定规则组合的旧订阅维持现有仅节点配置。关闭分流则从已缓存来源配置合并可保留的本地规则／策略组，按来源稳定排序并区分同名引用，只包含本次选中节点；无来源规则时使用 `MATCH,NodePool` 兜底。
+
+自定义规则支持 `DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR`、`IP-CIDR6`、`DST-PORT`、`SRC-PORT`、`NETWORK`、`GEOIP(CN/LAN)`、`MATCH`，IP／GEOIP 支持 `no-resolve`；目标限定为上述策略组、DIRECT 和 REJECT。最多 20,000 条、每条 4,096 字节、合计 2 MiB。DNS 最多 32 项，支持 IP 或 TLS／HTTPS／UDP／TCP 地址。
+
+跟随来源时保留 `select/url-test/fallback/load-balance` 的本地已选成员，采用安全默认组参数及固定 gstatic 探测地址。外部 `proxy-providers`、`rule-providers`、`use`、`RULE-SET` 不透传；不支持的规则、空组、无效引用计入 `X-Subscription-Routing-Skipped` 响应头。多来源具体规则按来源 ID／内部顺序匹配，末尾使用最小来源 ID 的首个有效 MATCH。节点 `dialer-proxy` 依赖须在本来源已选节点中，缺失或循环返回 422，避免输出失效配置。
 
 ## 客户端下载
 
@@ -82,7 +108,7 @@ GET `/sub/{token}?format=clash|v2ray|auto`，**无 `/api/v1` 前缀**，无 Cook
 
 URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集合伪装为 JSON。复杂插件、传输头、证书选项等无法保真时，请使用 Clash 格式。
 
-响应提供 `X-Subscription-Format`、`X-Subscription-Skipped`；v2ray 另带 `X-Subscription-Compatibility: v2ray-compatible URI import only`。设置合理 Content-Type、inline 文件名、`Cache-Control: no-store, private, max-age=0`、`Vary: User-Agent` 与 `Referrer-Policy: no-referrer`。
+响应提供 `X-Subscription-Format`、`X-Subscription-Skipped`、`X-Subscription-Routing-Skipped`；v2ray 另带 `X-Subscription-Compatibility: v2ray-compatible URI import only`。设置合理 Content-Type、inline 文件名、`Cache-Control: no-store, private, max-age=0`、`Vary: User-Agent` 与 `Referrer-Policy: no-referrer`。
 
 ## 设置和版本
 
@@ -101,8 +127,11 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 - `/sources`：本人来源管理，管理员可管理全部；`q` 保存来源名称搜索。
 - `/providers`：提供方目录，`q`、`following`、`page` 可还原。
 - `/subscriptions`、`/account`：个人组合订阅和账号额度／设置。
+- `/rules`：规则组合管理，创建默认模板副本、编辑、复制和删除。
 - `/users`、`/settings`：管理员页面。
 
 默认卡片；`page=1`、`page_size=50`、`sort=latency`、`view=cards` 从 URL 省略。离散筛选、分页和视图切换保留历史，搜索输入替换历史。节点选区在当前登录会话内跨页保留，退出或账号失效时清空。
+
+节点默认整卡点击查看详情，进入选择模式后整卡选择，支持键盘操作。卡片单行标题省略并提供悬浮全文。桌面地区面板每行 5 项，名称一行、内部滚动；整来源弹窗并列显示当前选区与来源的选择状态。
 
 首次跟随系统亮暗，太阳／月亮图标切换后保存显式偏好。版本入口显示后端真实版本文字；普通用户仅查看版本，管理员打开更新弹窗。顶栏不显示正常数据库连接说明，异常仍有明确提示。

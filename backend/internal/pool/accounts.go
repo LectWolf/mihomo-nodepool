@@ -276,16 +276,7 @@ func (s *Store) SourcePermission(ctx context.Context, id int64) error {
 	return nil
 }
 func (s *Store) NodePermission(ctx context.Context, id int64) error {
-	u := CurrentUser(ctx)
-	if u.Role == "admin" {
-		return nil
-	}
-	var count int
-	e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id WHERE sn.node_id=? AND s.owner_id=? AND s.enabled=1 AND sn.excluded=0`, id, u.ID).Scan(&count)
-	if e != nil {
-		return e
-	}
-	if count == 0 {
+	if CurrentUser(ctx).Role != "admin" {
 		return ErrForbidden
 	}
 	return nil

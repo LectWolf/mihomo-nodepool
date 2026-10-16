@@ -145,7 +145,8 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 	page, _ := s.Nodes(context.Background(), pool.Filter{})
 	nodePath := fmt.Sprintf("/api/v1/nodes/%d/test", page.Items[0].ID)
 	call("POST", nodePath, "", bc, "", 403)
-	call("POST", nodePath, "", ac, "", 202)
+	call("POST", nodePath, "", ac, "", 403)
+	call("POST", nodePath, "", admin, "", 202)
 	subBody := fmt.Sprintf(`{"name":"my subscription","nodes":[{"node_id":%d,"source_id":%d}],"source_ids":[]}`, page.Items[0].ID, src.ID)
 	savedResponse := call("POST", "/api/v1/subscriptions", subBody, ac, "", 201)
 	var saved pool.SavedSubscription
@@ -168,6 +169,52 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 	if !strings.Contains(clash.Body.String(), "proxy-groups:") || !strings.Contains(clash.Body.String(), "rules:") {
 		t.Fatal("explicit clash priority")
 	}
+	profileDefault := call("GET", "/api/v1/rule-profiles/default", "", ac, "", 200)
+	var template pool.RuleProfile
+	if e = json.Unmarshal(profileDefault.Body.Bytes(), &template); e != nil || len(template.Rules) != 9735 || !template.RoutingEnabled || !template.DNSEnabled {
+		t.Fatal("default profile contract")
+	}
+	call("GET", "/api/v1/rule-profiles", "", ac, "", 200)
+	profileBody := `{"name":"my rules","routing_enabled":true,"dns_enabled":true,"dns_servers":[],"rules":["DOMAIN-SUFFIX,example.com,DIRECT","MATCH,NodePool"]}`
+	profileResponse := call("POST", "/api/v1/rule-profiles", profileBody, ac, "", 201)
+	var profile pool.RuleProfile
+	if e = json.Unmarshal(profileResponse.Body.Bytes(), &profile); e != nil || profile.ID <= 0 {
+		t.Fatal("created profile contract")
+	}
+	profilePath := fmt.Sprintf("/api/v1/rule-profiles/%d", profile.ID)
+	call("PUT", profilePath, profileBody, bc, "", 404)
+	call("DELETE", profilePath, "", bc, "", 404)
+	call("POST", "/api/v1/rule-profiles", `{"name":"bad","rules":["MATCH,unsafe"]}`, ac, "", 400)
+	foreignBind := fmt.Sprintf(`{"name":"foreign","source_ids":[%d],"rule_profile_id":%d}`, src.ID, profile.ID)
+	call("POST", "/api/v1/subscriptions", foreignBind, bc, "", 404)
+	bindBody := fmt.Sprintf(`{"name":"bound","source_ids":[%d],"rule_profile_id":%d}`, src.ID, profile.ID)
+	call("PUT", path, bindBody, ac, "", 200)
+	conflict := call("DELETE", profilePath, "", ac, "", 409)
+	if !strings.Contains(conflict.Body.String(), "规则配置仍被订阅引用") {
+		t.Fatal("profile conflict message")
+	}
+	legacyEdit := call("PUT", path, subBody, ac, "", 200)
+	var retained pool.SavedSubscription
+	if e = json.Unmarshal(legacyEdit.Body.Bytes(), &retained); e != nil || retained.Subscription.RuleProfileID == nil || *retained.Subscription.RuleProfileID != profile.ID {
+		t.Fatal("legacy edit lost profile")
+	}
+	boundDownload := call("GET", saved.Subscription.URL+"?format=clash", "", nil, "", 200)
+	if !strings.Contains(boundDownload.Body.String(), "223.5.5.5") || boundDownload.Header().Get("X-Subscription-Routing-Skipped") != "0" {
+		t.Fatal("bound profile export contract")
+	}
+	patchBinding := fmt.Sprintf(`{"rule_profile_id":%d}`, profile.ID)
+	call("PATCH", path, patchBinding, bc, "", 404)
+	call("PATCH", path, `{}`, ac, "", 400)
+	call("PATCH", path, `{"rule_profile_id":-1}`, ac, "", 400)
+	call("PATCH", path, patchBinding, ac, "", 200)
+	call("PATCH", fmt.Sprintf("/api/v1/sources/%d", src.ID), `{"enabled":false}`, ac, "", 200)
+	detached := call("PATCH", path, `{"rule_profile_id":null}`, ac, "", 200)
+	var snapshot pool.Subscription
+	if e = json.Unmarshal(detached.Body.Bytes(), &snapshot); e != nil || snapshot.RuleProfileID != nil || snapshot.URL != saved.Subscription.URL || len(snapshot.Nodes) != len(saved.Subscription.Nodes) {
+		t.Fatal("rule-only update changed snapshot")
+	}
+	call("PATCH", fmt.Sprintf("/api/v1/sources/%d", src.ID), `{"enabled":true}`, ac, "", 200)
+	call("DELETE", profilePath, "", ac, "", 200)
 	call("PATCH", "/api/v1/me", `{"display_name":"Alice Updated","password":"alice-new-password"}`, ac, "", 200)
 	call("GET", "/api/v1/me", "", ac, "", 200)
 	call("GET", "/api/v1/me", "", ac2, "", 401)

@@ -8,6 +8,7 @@ import SourcesView from './components/SourcesView.vue'
 import SettingsView from './components/SettingsView.vue'
 import ProvidersView from './components/ProvidersView.vue'
 import SubscriptionsView from './components/SubscriptionsView.vue'
+import RulesView from './components/RulesView.vue'
 import UsersView from './components/UsersView.vue'
 import AccountView from './components/AccountView.vue'
 import VersionsDialog from './components/VersionsDialog.vue'
@@ -30,6 +31,7 @@ const allSections = [
   { id: 'sources', label: '来源管理', icon: 'sources', admin: false },
   { id: 'providers', label: '提供方', icon: 'users', admin: false },
   { id: 'subscriptions', label: '我的订阅', icon: 'link', admin: false },
+  { id: 'rules', label: '规则组合', icon: 'settings', admin: false },
   { id: 'account', label: '我的账号', icon: 'user', admin: false },
   { id: 'users', label: '用户管理', icon: 'users', admin: true },
   { id: 'settings', label: '运行设置', icon: 'settings', admin: true },
@@ -184,6 +186,7 @@ onBeforeUnmount(() => {
         <SourcesView v-if="visited.has('sources')" v-show="section === 'sources'" :items="sources" :loading="sourcesLoading" :error="sourcesError" @reload="loadSources" @updated="updateSource" @removed="removeSource" />
         <ProvidersView v-if="visited.has('providers')" v-show="section === 'providers'" :paused="reconnecting || section !== 'providers'" />
         <SubscriptionsView v-if="visited.has('subscriptions')" v-show="section === 'subscriptions'" :paused="reconnecting || section !== 'subscriptions'" />
+        <RulesView v-if="visited.has('rules')" v-show="section === 'rules'" :paused="reconnecting || section !== 'rules'" />
         <AccountView v-if="visited.has('account')" v-show="section === 'account'" :paused="reconnecting || section !== 'account'" />
         <UsersView v-if="isAdmin && visited.has('users')" v-show="section === 'users'" :paused="reconnecting || section !== 'users'" />
         <SettingsView v-if="isAdmin && visited.has('settings')" v-show="section === 'settings'" :system="system" />

@@ -25,6 +25,12 @@ var multiuserSchema = []string{
  PRIMARY KEY(source_id,user_id), FOREIGN KEY(source_id) REFERENCES np_sources(id) ON DELETE CASCADE,
  FOREIGN KEY(user_id) REFERENCES np_users(id) ON DELETE CASCADE
  ) ENGINE=InnoDB`,
+	`CREATE TABLE IF NOT EXISTS np_rule_profiles (
+ id BIGINT PRIMARY KEY AUTO_INCREMENT, user_id BIGINT NOT NULL, name VARCHAR(200) NOT NULL,
+ routing_enabled BOOLEAN NOT NULL, dns_enabled BOOLEAN NOT NULL, dns_servers JSON NOT NULL, rules JSON NOT NULL,
+ created_at DATETIME(6) NOT NULL, updated_at DATETIME(6) NOT NULL,
+ INDEX(user_id), FOREIGN KEY(user_id) REFERENCES np_users(id) ON DELETE CASCADE
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
 	`CREATE TABLE IF NOT EXISTS np_subscriptions (
  id BIGINT PRIMARY KEY AUTO_INCREMENT, user_id BIGINT NOT NULL, name VARCHAR(200) NOT NULL,
  token CHAR(64) NOT NULL UNIQUE, nodes JSON NOT NULL, source_ids JSON NOT NULL,
@@ -36,6 +42,15 @@ var multiuserSchema = []string{
 func (s *Store) ensureMultiuser(ctx context.Context) error {
 	for _, q := range multiuserSchema {
 		if _, e := s.DB.ExecContext(ctx, q); e != nil {
+			return e
+		}
+	}
+	var profileColumn int
+	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='np_subscriptions' AND COLUMN_NAME='rule_profile_id'`).Scan(&profileColumn); e != nil {
+		return e
+	}
+	if profileColumn == 0 {
+		if _, e := s.DB.ExecContext(ctx, `ALTER TABLE np_subscriptions ADD COLUMN rule_profile_id BIGINT NULL, ADD INDEX(rule_profile_id)`); e != nil {
 			return e
 		}
 	}
