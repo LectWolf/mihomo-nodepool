@@ -139,6 +139,9 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 	if !u.Enabled {
 		return out, ErrForbidden
 	}
+	if u.SubscriptionExpiresAt == nil || !u.SubscriptionExpiresAt.After(utcNow()) {
+		return out, ErrSubscriptionInactive
+	}
 	items, e := listSubscriptions(ctx, tx, u.ID)
 	if e != nil {
 		return out, e
@@ -197,12 +200,10 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 		sourceOrder = append(sourceOrder, sid)
 	}
 	sort.Slice(sourceOrder, func(i, j int) bool { return sourceOrder[i] < sourceOrder[j] })
-	maxUsers := map[int64]int{}
 	for _, sid := range sourceOrder {
 		var enabled, ownerEnabled bool
 		var owner int64
-		var max int
-		e = tx.QueryRowContext(ctx, `SELECT owner_id,enabled,max_users FROM np_sources WHERE id=? FOR UPDATE`, sid).Scan(&owner, &enabled, &max)
+		e = tx.QueryRowContext(ctx, `SELECT owner_id,enabled FROM np_sources WHERE id=? FOR UPDATE`, sid).Scan(&owner, &enabled)
 		if e != nil {
 			return out, e
 		}
@@ -212,7 +213,6 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 		if !enabled || !ownerEnabled {
 			return out, ErrForbidden
 		}
-		maxUsers[sid] = max
 	}
 	chosen := []Selection{}
 	seen := map[int64]bool{}
@@ -300,21 +300,8 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 			continue
 		}
 		sources = append(sources, sid)
-		var claimed int
-		if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_source_claims WHERE source_id=? AND user_id=?`, sid, u.ID).Scan(&claimed); e != nil {
+		if e = claimSeat(ctx, tx, u, sid, *u.SubscriptionExpiresAt); e != nil {
 			return out, e
-		}
-		if claimed == 0 {
-			var count int
-			if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_source_claims WHERE source_id=?`, sid).Scan(&count); e != nil {
-				return out, e
-			}
-			if maxUsers[sid] > 0 && count >= maxUsers[sid] {
-				return out, ErrQuota
-			}
-			if _, e = tx.ExecContext(ctx, `INSERT INTO np_source_claims(source_id,user_id,created_at) VALUES(?,?,?)`, sid, u.ID, utcNow()); e != nil {
-				return out, e
-			}
 		}
 	}
 	raw, _ := json.Marshal(chosen)
@@ -334,6 +321,9 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 			return out, e
 		}
 	} else {
+		if e = archiveSubscription(ctx, tx, *existing, "replaced"); e != nil {
+			return out, e
+		}
 		if _, e = tx.ExecContext(ctx, `UPDATE np_subscriptions SET name=?,nodes=?,source_ids=?,updated_at=?,rule_profile_id=? WHERE id=? AND user_id=?`, in.Name, raw, srcRaw, now, in.RuleProfileID, id, u.ID); e != nil {
 			return out, e
 		}
@@ -343,6 +333,9 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 		return out, e
 	}
 	out.SelectedCount = len(chosen)
+	if e = releaseUnusedSeats(ctx, tx, u.ID); e != nil {
+		return out, e
+	}
 	return out, tx.Commit()
 }
 func (s *Store) MutateSubscription(ctx context.Context, id int64, rotate bool) (Subscription, error) {
@@ -371,10 +364,23 @@ func (s *Store) MutateSubscription(ctx context.Context, id int64, rotate bool) (
 		v.UpdatedAt = utcNow()
 		_, e = tx.ExecContext(ctx, `UPDATE np_subscriptions SET token=?,updated_at=? WHERE id=?`, v.Token, v.UpdatedAt, id)
 	} else {
+		if e = archiveSubscription(ctx, tx, v, "deleted"); e != nil {
+			return v, e
+		}
 		_, e = tx.ExecContext(ctx, `DELETE FROM np_subscriptions WHERE id=?`, id)
 	}
 	if e != nil {
 		return v, e
+	}
+	if !rotate {
+		if e = releaseUnusedSeats(ctx, tx, v.UserID); e != nil {
+			return v, e
+		}
+	}
+	if rotate {
+		if _, e = tx.ExecContext(ctx, `UPDATE np_users SET probe_uuid=NULL WHERE id=?`, v.UserID); e != nil {
+			return v, e
+		}
 	}
 	return v, tx.Commit()
 }
@@ -401,6 +407,9 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 	if !u.Enabled {
 		return nil, ErrForbidden
 	}
+	if u.SubscriptionExpiresAt == nil || !u.SubscriptionExpiresAt.After(utcNow()) {
+		return nil, ErrSubscriptionInactive
+	}
 	items, e := listSubscriptions(ctx, tx, u.ID)
 	if e != nil {
 		return nil, e
@@ -416,7 +425,7 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 			found = true
 		}
 		for _, pair := range v.Nodes {
-			n, e := scanNode(tx.QueryRowContext(ctx, `SELECT `+strings.Replace(nodeColumns, "n.name", "sn.node_name", 1)+` FROM np_nodes n JOIN np_source_nodes sn ON sn.node_id=n.id JOIN np_sources s ON s.id=sn.source_id JOIN np_users p ON p.id=s.owner_id JOIN np_source_claims c ON c.source_id=s.id AND c.user_id=? WHERE n.id=? AND s.id=? AND sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND p.enabled=1`, u.ID, pair.NodeID, pair.SourceID))
+			n, e := scanNode(tx.QueryRowContext(ctx, `SELECT `+strings.Replace(nodeColumns, "n.name", "sn.node_name", 1)+` FROM np_nodes n JOIN np_source_nodes sn ON sn.node_id=n.id JOIN np_sources s ON s.id=sn.source_id JOIN np_users p ON p.id=s.owner_id JOIN np_source_seats c ON c.source_id=s.id AND c.user_id=? AND c.state='active' AND c.expires_at>UTC_TIMESTAMP(6) WHERE n.id=? AND s.id=? AND sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND p.enabled=1 AND (s.min_level<=? OR s.owner_id=? OR ?='admin')`, u.ID, pair.NodeID, pair.SourceID, u.Level, u.ID, u.Role))
 			if errors.Is(e, sql.ErrNoRows) {
 				continue
 			}

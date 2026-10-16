@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,6 +16,9 @@ func scanNode(row scanner) (Node, error) {
 	var n Node
 	n.Sources = []Origin{}
 	e := row.Scan(&n.ID, &n.Name, &n.Type, &n.Server, &n.Port, &n.LatencyMS, &n.Status, &n.Country, &n.CountryCode, &n.Region, &n.City, &n.ExitIP, &n.LastCheckedAt, &n.LastSuccessAt, &n.ExitCheckedAt, &n.NextCheckAt, &n.LastError, &n.Config, &n.CreatedAt, &n.Failures, &n.Successes, &n.Blocked)
+	if e == nil {
+		n.Insights = InspectNode(n)
+	}
 	return n, e
 }
 
@@ -60,7 +64,7 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 			where += " AND n.country_code IN (" + strings.Join(marks, ",") + ")"
 		}
 	}
-	if f.SourceID > 0 || f.ProviderID > 0 || f.Following {
+	if f.SourceID > 0 || f.ProviderID > 0 || f.Following || f.MinLevel != nil {
 		where += ` AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1 AND u.enabled=1`
 		if f.SourceID > 0 {
 			where += ` AND s.id=?`
@@ -73,6 +77,13 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		if f.Following {
 			where += ` AND EXISTS(SELECT 1 FROM np_follows f WHERE f.provider_id=s.owner_id AND f.user_id=?)`
 			args = append(args, f.UserID)
+		}
+		if f.MinLevel != nil {
+			if *f.MinLevel < 0 || *f.MinLevel > 6 {
+				return out, errors.New("最低等级筛选须为Lv0–Lv6")
+			}
+			where += ` AND s.min_level=?`
+			args = append(args, *f.MinLevel)
 		}
 		where += `)`
 	}
@@ -123,7 +134,7 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		originArgs[i] = n.ID
 		index[n.ID] = i
 	}
-	origins, e := s.DB.QueryContext(ctx, `SELECT sn.node_id,s.id,s.name,sn.node_name,s.owner_id,u.display_name FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE u.enabled=1 AND s.enabled=1 AND sn.excluded=0 AND sn.node_id IN (`+strings.Join(marks, ",")+`) ORDER BY s.id`, originArgs...)
+	origins, e := s.DB.QueryContext(ctx, `SELECT sn.node_id,s.id,s.name,sn.node_name,s.owner_id,u.display_name,s.min_level,s.subscription_usage FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE u.enabled=1 AND s.enabled=1 AND sn.excluded=0 AND sn.node_id IN (`+strings.Join(marks, ",")+`) ORDER BY s.id`, originArgs...)
 	if e != nil {
 		return out, e
 	}
@@ -131,9 +142,16 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 	for origins.Next() {
 		var id int64
 		var v Origin
-		if e = origins.Scan(&id, &v.ID, &v.Name, &v.NodeName, &v.OwnerID, &v.ProviderName); e != nil {
+		var usage []byte
+		if e = origins.Scan(&id, &v.ID, &v.Name, &v.NodeName, &v.OwnerID, &v.ProviderName, &v.MinLevel, &usage); e != nil {
 			return out, e
 		}
+		if len(usage) > 0 {
+			if e = json.Unmarshal(usage, &v.SubscriptionUsage); e != nil {
+				return out, e
+			}
+		}
+		refreshUsageStatus(v.SubscriptionUsage)
 		i := index[id]
 		out.Items[i].Sources = append(out.Items[i].Sources, v)
 		if len(out.Items[i].Sources) == 1 {

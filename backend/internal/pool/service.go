@@ -30,9 +30,22 @@ func NewService(store *Store, prober Prober) *Service {
 }
 func (s *Service) Run(ctx context.Context) {
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); s.sourceLoop(ctx) }()
 	go func() { defer wg.Done(); s.nodeLoop(ctx) }()
+	go func() {
+		defer wg.Done()
+		for ctx.Err() == nil {
+			if s.ready(ctx) {
+				if err := s.Store.SweepCommunity(ctx); err != nil {
+					log.Print("订阅席位维护失败，将自动重试")
+				}
+			}
+			if !wait(ctx, time.Minute) {
+				return
+			}
+		}
+	}()
 	wg.Wait()
 }
 func wait(ctx context.Context, d time.Duration) bool {
@@ -115,6 +128,11 @@ func (s *Service) Refresh(parent context.Context, src Source) {
 			return
 		}
 		body = string(b)
+		src.SubscriptionUsage = ParseSubscriptionUsage(resp.Header.Get("Subscription-Userinfo"))
+		if src.SubscriptionUsage != nil {
+			fetched := utcNow()
+			src.SubscriptionUsage.FetchedAt = &fetched
+		}
 	}
 	parsed, e := Parse(body, s.Prober.Validate)
 	if e != nil {

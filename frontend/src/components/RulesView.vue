@@ -44,8 +44,8 @@ async function save(item: RuleProfile) {
   if (busy.value || viewing.value) return
   busy.value = true; formError.value = ''
   try {
-    const { name, routing_enabled, dns_enabled, dns_servers, rules } = item
-    await api(editing.value ? `/rule-profiles/${editing.value}` : '/rule-profiles', json(editing.value ? 'PUT' : 'POST', { name, routing_enabled, dns_enabled, dns_servers, rules }))
+    const { name, routing_enabled, dns_enabled, dns_servers, rules, groups } = item
+    await api(editing.value ? `/rule-profiles/${editing.value}` : '/rule-profiles', json(editing.value ? 'PUT' : 'POST', { name, routing_enabled, dns_enabled, dns_servers, rules, groups }))
     editor.value = null; message.value = '规则组合已保存，绑定它的订阅将在客户端下次更新时应用。'; await load()
   } catch (cause) { if (!isCancelled(cause)) formError.value = errorText(cause) }
   finally { busy.value = false }

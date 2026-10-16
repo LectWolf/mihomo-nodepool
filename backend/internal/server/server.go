@@ -142,7 +142,15 @@ func New(o Options) http.Handler {
 		if q.Get("countries") != "" {
 			countries = strings.Split(q.Get("countries"), ",")
 		}
-		v, e := store.Nodes(r.Context(), pool.Filter{Page: page, PageSize: size, Q: q.Get("q"), Type: q.Get("type"), Country: q.Get("country"), Countries: countries, ProviderID: provider, Following: q.Get("following") == "1", UserID: pool.CurrentUser(r.Context()).ID, Status: q.Get("status"), SourceID: source, Sort: q.Get("sort"), MaxLatency: max})
+		var minLevel *int
+		if value := q.Get("min_level"); value != "" {
+			v, err := strconv.Atoi(value)
+			if err != nil || v < 0 || v > 6 {
+				return errors.New("等级筛选须为Lv0–Lv6")
+			}
+			minLevel = &v
+		}
+		v, e := store.Nodes(r.Context(), pool.Filter{Page: page, PageSize: size, Q: q.Get("q"), Type: q.Get("type"), Country: q.Get("country"), Countries: countries, ProviderID: provider, Following: q.Get("following") == "1", UserID: pool.CurrentUser(r.Context()).ID, Status: q.Get("status"), SourceID: source, Sort: q.Get("sort"), MaxLatency: max, MinLevel: minLevel})
 		if e == nil {
 			writeJSON(w, 200, v)
 		}
@@ -205,6 +213,8 @@ func New(o Options) http.Handler {
 	})
 	registerMultiuser(business, store, o.Auth)
 	registerSubscriptionDownload(mux, store)
+	registerSourceLink(mux, store)
+	registerLeaseProbe(mux, store)
 	o.Auth.Register(mux)
 	updatesMux := http.NewServeMux()
 	if o.Updates != nil {

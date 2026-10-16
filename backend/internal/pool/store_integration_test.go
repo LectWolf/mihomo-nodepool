@@ -38,7 +38,7 @@ func testStore(t *testing.T) *pool.Store {
 	if e = store.Ensure(context.Background()); e != nil {
 		t.Fatal(e)
 	}
-	for _, q := range []string{`DELETE FROM np_source_nodes`, `DELETE FROM np_sources`, `DELETE FROM np_nodes`} {
+	for _, q := range []string{`DELETE FROM np_subscriptions`, `DELETE FROM np_subscription_archives`, `DELETE FROM np_source_events`, `DELETE FROM np_source_nodes`, `DELETE FROM np_sources`, `DELETE FROM np_nodes`} {
 		if _, e = db.Exec(q); e != nil {
 			t.Fatal(e)
 		}

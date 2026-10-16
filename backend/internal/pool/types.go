@@ -22,19 +22,31 @@ var ErrNotFound = errors.New("记录不存在")
 var ErrUnavailable = errors.New("MySQL 尚未配置或暂不可用")
 
 type Settings struct {
-	ExcludePattern    string `json:"exclude_pattern"`
-	TestURL           string `json:"test_url"`
-	TimeoutMS         int    `json:"timeout_ms"`
-	ProbeConcurrency  int    `json:"probe_concurrency"`
-	SourceConcurrency int    `json:"source_concurrency"`
-	RefreshHours      int    `json:"refresh_hours"`
-	CheckHours        int    `json:"check_hours"`
+	ExcludePattern        string `json:"exclude_pattern"`
+	TestURL               string `json:"test_url"`
+	TimeoutMS             int    `json:"timeout_ms"`
+	ProbeConcurrency      int    `json:"probe_concurrency"`
+	SourceConcurrency     int    `json:"source_concurrency"`
+	RefreshHours          int    `json:"refresh_hours"`
+	CheckHours            int    `json:"check_hours"`
+	SubscriptionLeaseDays int    `json:"subscription_lease_days"`
+	HistoryRetentionDays  int    `json:"history_retention_days"`
+	PublicURL             string `json:"public_url"`
 }
 
 func Defaults() Settings {
-	return Settings{DefaultExclude, "https://www.gstatic.com/generate_204", 5000, 16, 5, 6, 6}
+	return Settings{ExcludePattern: DefaultExclude, TestURL: "https://www.gstatic.com/generate_204", TimeoutMS: 5000, ProbeConcurrency: 16, SourceConcurrency: 5, RefreshHours: 6, CheckHours: 6, SubscriptionLeaseDays: 14, HistoryRetentionDays: 30}
 }
 func (s Settings) Validate() error {
+	if s.SubscriptionLeaseDays < 0 || s.SubscriptionLeaseDays > 365 || s.HistoryRetentionDays < 0 || s.HistoryRetentionDays > 3650 {
+		return errors.New("租期须为1–365天，历史保留须为1–3650天")
+	}
+	if s.PublicURL != "" {
+		u, err := url.Parse(s.PublicURL)
+		if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("公网地址须为不带路径的HTTP(S)站点地址")
+		}
+	}
 	if _, err := Pattern(s.ExcludePattern); err != nil {
 		return err
 	}
@@ -62,30 +74,36 @@ func Pattern(raw string) (*regexp.Regexp, error) {
 }
 
 type Source struct {
-	ID             int64      `json:"id"`
-	OwnerID        int64      `json:"owner_id"`
-	ProviderName   string     `json:"provider_name"`
-	MaxUsers       int        `json:"max_users"`
-	ClaimedUsers   int        `json:"claimed_users"`
-	ActiveUsers    int        `json:"active_users"`
-	Name           string     `json:"name"`
-	Kind           string     `json:"kind"`
-	Enabled        bool       `json:"enabled"`
-	ExcludePattern string     `json:"exclude_pattern"`
-	Status         string     `json:"status"`
-	NodeCount      int        `json:"node_count"`
-	ExcludedCount  int        `json:"excluded_count"`
-	LastError      string     `json:"last_error"`
-	LastRefreshAt  *time.Time `json:"last_refresh_at"`
-	NextRefreshAt  *time.Time `json:"next_refresh_at"`
-	CreatedAt      time.Time  `json:"created_at"`
-	URL            string     `json:"-"`
-	Content        string     `json:"-"`
-	Revision       int64      `json:"-"`
-	Cached         bool       `json:"-"`
+	ID                int64              `json:"id"`
+	OwnerID           int64              `json:"owner_id"`
+	ProviderName      string             `json:"provider_name"`
+	MaxUsers          int                `json:"max_users"`
+	ClaimedUsers      int                `json:"claimed_users"`
+	ActiveUsers       int                `json:"active_users"`
+	OccupiedUsers     int                `json:"occupied_users"`
+	MinLevel          int                `json:"min_level"`
+	ShareURL          string             `json:"share_url,omitempty"`
+	ShareToken        string             `json:"-"`
+	SubscriptionUsage *SubscriptionUsage `json:"subscription_usage,omitempty"`
+	Name              string             `json:"name"`
+	Kind              string             `json:"kind"`
+	Enabled           bool               `json:"enabled"`
+	ExcludePattern    string             `json:"exclude_pattern"`
+	Status            string             `json:"status"`
+	NodeCount         int                `json:"node_count"`
+	ExcludedCount     int                `json:"excluded_count"`
+	LastError         string             `json:"last_error"`
+	LastRefreshAt     *time.Time         `json:"last_refresh_at"`
+	NextRefreshAt     *time.Time         `json:"next_refresh_at"`
+	CreatedAt         time.Time          `json:"created_at"`
+	URL               string             `json:"-"`
+	Content           string             `json:"-"`
+	Revision          int64              `json:"-"`
+	Cached            bool               `json:"-"`
 }
 type SourceInput struct {
 	MaxUsers       int    `json:"max_users"`
+	MinLevel       int    `json:"min_level"`
 	Name           string `json:"name"`
 	Kind           string `json:"kind"`
 	URL            string `json:"url"`
@@ -94,17 +112,20 @@ type SourceInput struct {
 }
 type SourcePatch struct {
 	MaxUsers       *int    `json:"max_users"`
+	MinLevel       *int    `json:"min_level"`
 	Name           *string `json:"name"`
 	Enabled        *bool   `json:"enabled"`
 	ExcludePattern *string `json:"exclude_pattern"`
 	URL            *string `json:"url"`
 }
 type Origin struct {
-	OwnerID      int64  `json:"owner_id"`
-	ProviderName string `json:"provider_name"`
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	NodeName     string `json:"node_name"`
+	OwnerID           int64              `json:"owner_id"`
+	ProviderName      string             `json:"provider_name"`
+	ID                int64              `json:"id"`
+	Name              string             `json:"name"`
+	NodeName          string             `json:"node_name"`
+	MinLevel          int                `json:"min_level"`
+	SubscriptionUsage *SubscriptionUsage `json:"subscription_usage,omitempty"`
 }
 type Node struct {
 	ID            int64           `json:"id"`
@@ -123,6 +144,7 @@ type Node struct {
 	NextCheckAt   time.Time       `json:"next_check_at"`
 	LastError     string          `json:"last_error"`
 	Sources       []Origin        `json:"sources"`
+	Insights      NodeInsights    `json:"insights"`
 	Config        json.RawMessage `json:"-"`
 	CreatedAt     time.Time       `json:"-"`
 	Failures      int             `json:"-"`
@@ -162,6 +184,7 @@ type Filter struct {
 	Q, Type, Country, Status, Sort string
 	SourceID                       int64
 	MaxLatency                     int
+	MinLevel                       *int
 }
 type Tasks struct {
 	PendingSources int `json:"pending_sources"`
@@ -212,6 +235,9 @@ func RetryDelay(failures int) time.Duration {
 }
 func cleanName(s string) string { return strings.TrimSpace(s) }
 func checkSource(in SourceInput) error {
+	if in.MinLevel < 0 || in.MinLevel > 6 {
+		return errors.New("最低等级须为Lv0–Lv6")
+	}
 	if in.MaxUsers < 0 {
 		return errors.New("领取人数上限不能为负数")
 	}

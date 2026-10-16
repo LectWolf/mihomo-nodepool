@@ -22,23 +22,25 @@ var ErrOfficialProfileReadOnly = fmt.Errorf("官方默认规则只读，请复�
 
 // RuleProfile is either the shared official template (ID 0) or private to its owner.
 type RuleProfile struct {
-	ID             int64     `json:"id"`
-	Name           string    `json:"name"`
-	Official       bool      `json:"official"`
-	Readonly       bool      `json:"readonly"`
-	RoutingEnabled bool      `json:"routing_enabled"`
-	DNSEnabled     bool      `json:"dns_enabled"`
-	DNSServers     []string  `json:"dns_servers"`
-	Rules          []string  `json:"rules"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             int64       `json:"id"`
+	Name           string      `json:"name"`
+	Official       bool        `json:"official"`
+	Readonly       bool        `json:"readonly"`
+	RoutingEnabled bool        `json:"routing_enabled"`
+	DNSEnabled     bool        `json:"dns_enabled"`
+	DNSServers     []string    `json:"dns_servers"`
+	Rules          []string    `json:"rules"`
+	Groups         []RuleGroup `json:"groups"`
+	CreatedAt      time.Time   `json:"created_at"`
+	UpdatedAt      time.Time   `json:"updated_at"`
 }
 type RuleProfileInput struct {
-	Name           string   `json:"name"`
-	RoutingEnabled bool     `json:"routing_enabled"`
-	DNSEnabled     bool     `json:"dns_enabled"`
-	DNSServers     []string `json:"dns_servers"`
-	Rules          []string `json:"rules"`
+	Name           string      `json:"name"`
+	RoutingEnabled bool        `json:"routing_enabled"`
+	DNSEnabled     bool        `json:"dns_enabled"`
+	DNSServers     []string    `json:"dns_servers"`
+	Rules          []string    `json:"rules"`
+	Groups         []RuleGroup `json:"groups"`
 }
 
 var referenceGroups = []string{"NodePool", "♻️ 自动选择", "🚑 故障转移", "🌩️ Cloudflare", "🇨🇳 国内网站", "🛑 拦截广告", "🐟 漏网之鱼"}
@@ -51,7 +53,7 @@ func DefaultRuleProfile() RuleProfile {
 			rules = append(rules, line)
 		}
 	}
-	return RuleProfile{ID: 0, Name: "官方默认规则", Official: true, Readonly: true, RoutingEnabled: true, DNSEnabled: true, DNSServers: []string{}, Rules: rules}
+	return RuleProfile{ID: 0, Name: "官方默认规则", Official: true, Readonly: true, RoutingEnabled: true, DNSEnabled: true, DNSServers: []string{}, Rules: rules, Groups: defaultRuleGroups()}
 }
 func safeScalar(s string) bool { return !strings.ContainsFunc(s, unicode.IsControl) }
 func validDNS(s string) bool {
@@ -198,9 +200,14 @@ func (in *RuleProfileInput) Validate() error {
 		}
 		in.DNSServers[i] = s
 	}
+	groups, err := normalizeRuleGroups(in.Groups)
+	if err != nil {
+		return err
+	}
+	in.Groups = groups
 	allowed := map[string]bool{"DIRECT": true, "REJECT": true}
-	for _, g := range referenceGroups {
-		allowed[g] = true
+	for _, g := range groups {
+		allowed[g.Name] = true
 	}
 	total := 0
 	for i, s := range in.Rules {
@@ -221,17 +228,23 @@ func (in *RuleProfileInput) Validate() error {
 	return nil
 }
 
-const ruleProfileColumns = `id,name,routing_enabled,dns_enabled,dns_servers,rules,created_at,updated_at`
+const ruleProfileColumns = "id,name,routing_enabled,dns_enabled,dns_servers,rules,`groups`,created_at,updated_at"
 
 func scanRuleProfile(row scanner) (RuleProfile, error) {
 	p := RuleProfile{}
-	var dns, rules []byte
-	e := row.Scan(&p.ID, &p.Name, &p.RoutingEnabled, &p.DNSEnabled, &dns, &rules, &p.CreatedAt, &p.UpdatedAt)
+	var dns, rules, groups []byte
+	e := row.Scan(&p.ID, &p.Name, &p.RoutingEnabled, &p.DNSEnabled, &dns, &rules, &groups, &p.CreatedAt, &p.UpdatedAt)
 	if e == nil {
 		e = json.Unmarshal(dns, &p.DNSServers)
 	}
 	if e == nil {
 		e = json.Unmarshal(rules, &p.Rules)
+	}
+	if e == nil && len(groups) > 0 {
+		e = json.Unmarshal(groups, &p.Groups)
+	}
+	if e == nil {
+		p.Groups, e = normalizeRuleGroups(p.Groups)
 	}
 	return p, e
 }
@@ -277,15 +290,16 @@ func (s *Store) SaveRuleProfile(ctx context.Context, id int64, in RuleProfileInp
 	}
 	dns, _ := json.Marshal(in.DNSServers)
 	rules, _ := json.Marshal(in.Rules)
+	groups, _ := json.Marshal(in.Groups)
 	now := utcNow()
 	if id == 0 {
-		res, err := tx.ExecContext(ctx, `INSERT INTO np_rule_profiles(user_id,name,routing_enabled,dns_enabled,dns_servers,rules,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, CurrentUser(ctx).ID, in.Name, in.RoutingEnabled, in.DNSEnabled, dns, rules, now, now)
+		res, err := tx.ExecContext(ctx, "INSERT INTO np_rule_profiles(user_id,name,routing_enabled,dns_enabled,dns_servers,rules,`groups`,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", CurrentUser(ctx).ID, in.Name, in.RoutingEnabled, in.DNSEnabled, dns, rules, groups, now, now)
 		if err != nil {
 			return RuleProfile{}, err
 		}
 		id, e = res.LastInsertId()
 	} else {
-		_, e = tx.ExecContext(ctx, `UPDATE np_rule_profiles SET name=?,routing_enabled=?,dns_enabled=?,dns_servers=?,rules=?,updated_at=? WHERE id=?`, in.Name, in.RoutingEnabled, in.DNSEnabled, dns, rules, now, id)
+		_, e = tx.ExecContext(ctx, "UPDATE np_rule_profiles SET name=?,routing_enabled=?,dns_enabled=?,dns_servers=?,rules=?,`groups`=?,updated_at=? WHERE id=?", in.Name, in.RoutingEnabled, in.DNSEnabled, dns, rules, groups, now, id)
 	}
 	if e != nil {
 		return RuleProfile{}, e

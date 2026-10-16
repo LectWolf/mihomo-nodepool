@@ -2,6 +2,8 @@ package pool
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -9,17 +11,26 @@ import (
 // SubscriptionNodeDetail contains display metadata only. Saved selections remain
 // unchanged, including entries whose source membership has since disappeared.
 type SubscriptionNodeDetail struct {
-	NodeID     int64  `json:"node_id"`
-	SourceID   int64  `json:"source_id"`
-	Name       string `json:"name"`
-	SourceName string `json:"source_name"`
-	Type       string `json:"type"`
-	Server     string `json:"server"`
-	Port       int    `json:"port"`
-	Available  bool   `json:"available"`
+	NodeID            int64              `json:"node_id"`
+	SourceID          int64              `json:"source_id"`
+	Name              string             `json:"name"`
+	SourceName        string             `json:"source_name"`
+	Type              string             `json:"type"`
+	Server            string             `json:"server"`
+	Port              int                `json:"port"`
+	Available         bool               `json:"available"`
+	Insights          NodeInsights       `json:"insights"`
+	MinLevel          int                `json:"min_level"`
+	SubscriptionUsage *SubscriptionUsage `json:"subscription_usage,omitempty"`
 }
 
 func (s *Store) subscriptionDetails(ctx context.Context, items []Subscription) error {
+	return subscriptionDetailsFrom(ctx, s.DB, items)
+}
+
+func subscriptionDetailsFrom(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, items []Subscription) error {
 	pairs := []Selection{}
 	seen := map[Selection]bool{}
 	for _, item := range items {
@@ -39,16 +50,25 @@ func (s *Store) subscriptionDetails(ctx context.Context, items []Subscription) e
 			placeholders = append(placeholders, "(?,?)")
 			args = append(args, pair.NodeID, pair.SourceID)
 		}
-		rows, err := s.DB.QueryContext(ctx, `SELECT n.id,s.id,sn.node_name,s.name,n.type,n.server,n.port,(sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND u.enabled=1) FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE (sn.node_id,sn.source_id) IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		rows, err := db.QueryContext(ctx, `SELECT n.id,s.id,sn.node_name,s.name,n.type,n.server,n.port,(sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND u.enabled=1),n.config,s.min_level,s.subscription_usage FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE (sn.node_id,sn.source_id) IN (`+strings.Join(placeholders, ",")+`)`, args...)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var detail SubscriptionNodeDetail
-			if err = rows.Scan(&detail.NodeID, &detail.SourceID, &detail.Name, &detail.SourceName, &detail.Type, &detail.Server, &detail.Port, &detail.Available); err != nil {
+			var config, usage []byte
+			if err = rows.Scan(&detail.NodeID, &detail.SourceID, &detail.Name, &detail.SourceName, &detail.Type, &detail.Server, &detail.Port, &detail.Available, &config, &detail.MinLevel, &usage); err != nil {
 				rows.Close()
 				return err
 			}
+			detail.Insights = InspectNode(Node{Config: config})
+			if len(usage) > 0 {
+				if err = json.Unmarshal(usage, &detail.SubscriptionUsage); err != nil {
+					rows.Close()
+					return err
+				}
+			}
+			refreshUsageStatus(detail.SubscriptionUsage)
 			found[Selection{NodeID: detail.NodeID, SourceID: detail.SourceID}] = detail
 		}
 		err = rows.Err()

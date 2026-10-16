@@ -17,17 +17,24 @@ var ErrForbidden = errors.New("没有权限执行此操作")
 var ErrQuota = errors.New("超过账号额度或来源领取人数上限")
 
 type User struct {
-	ID                int64     `json:"id"`
-	Username          string    `json:"username"`
-	DisplayName       string    `json:"display_name"`
-	Role              string    `json:"role"`
-	Enabled           bool      `json:"enabled"`
-	NodeLimit         int       `json:"node_limit"`
-	SourceLimit       int       `json:"source_limit"`
-	SubscriptionLimit int       `json:"subscription_limit"`
-	CreatedAt         time.Time `json:"created_at"`
-	PasswordHash      string    `json:"-"`
-	AuthVersion       int64     `json:"-"`
+	ID                    int64      `json:"id"`
+	Username              string     `json:"username"`
+	DisplayName           string     `json:"display_name"`
+	Role                  string     `json:"role"`
+	Enabled               bool       `json:"enabled"`
+	NodeLimit             int        `json:"node_limit"`
+	SourceLimit           int        `json:"source_limit"`
+	SubscriptionLimit     int        `json:"subscription_limit"`
+	CreatedAt             time.Time  `json:"created_at"`
+	XP                    int64      `json:"xp"`
+	Points                int64      `json:"points"`
+	Level                 int        `json:"level"`
+	CheckinOn             string     `json:"checkin_on"`
+	CheckinStreak         int        `json:"checkin_streak"`
+	SubscriptionExpiresAt *time.Time `json:"subscription_expires_at"`
+	ProbeUUID             string     `json:"-"`
+	PasswordHash          string     `json:"-"`
+	AuthVersion           int64      `json:"-"`
 }
 type UserInput struct {
 	Username          string `json:"username"`
@@ -44,6 +51,8 @@ type UserPatch struct {
 	NodeLimit         *int    `json:"node_limit"`
 	SourceLimit       *int    `json:"source_limit"`
 	SubscriptionLimit *int    `json:"subscription_limit"`
+	XP                *int64  `json:"xp"`
+	Points            *int64  `json:"points"`
 }
 type Usage struct {
 	Nodes         int `json:"nodes"`
@@ -62,11 +71,12 @@ func CurrentUser(ctx context.Context) User {
 	return User{ID: 1, Username: "admin", Role: "admin", Enabled: true}
 }
 
-const userColumns = `id,username,display_name,role,enabled,node_limit,source_limit,subscription_limit,created_at,password_hash,auth_version`
+const userColumns = `id,username,display_name,role,enabled,node_limit,source_limit,subscription_limit,created_at,password_hash,auth_version,xp,points,checkin_on,checkin_streak,subscription_expires_at,COALESCE(probe_uuid,'')`
 
 func scanUser(row scanner) (User, error) {
 	var u User
-	e := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.NodeLimit, &u.SourceLimit, &u.SubscriptionLimit, &u.CreatedAt, &u.PasswordHash, &u.AuthVersion)
+	e := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.NodeLimit, &u.SourceLimit, &u.SubscriptionLimit, &u.CreatedAt, &u.PasswordHash, &u.AuthVersion, &u.XP, &u.Points, &u.CheckinOn, &u.CheckinStreak, &u.SubscriptionExpiresAt, &u.ProbeUUID)
+	u.Level = LevelForXP(u.XP)
 	return u, e
 }
 func (s *Store) User(ctx context.Context, id int64) (User, error) {
@@ -99,6 +109,9 @@ func (s *Store) BootstrapAdmin(ctx context.Context, hash string) error {
 	return e
 }
 func validateLimits(u User) error {
+	if u.XP < 0 || u.Points < 0 || u.XP > 1000000000 || u.Points > 1000000000 {
+		return errors.New("经验和积分须为0–1000000000")
+	}
 	if u.NodeLimit < 1 || u.SourceLimit < 1 || u.SubscriptionLimit < 1 {
 		return errors.New("额度须为正整数")
 	}
@@ -131,7 +144,12 @@ func (s *Store) CreateUser(ctx context.Context, in UserInput) (User, error) {
 	if e != nil {
 		return u, e
 	}
-	res, e := s.DB.ExecContext(ctx, `INSERT INTO np_users(username,display_name,role,enabled,node_limit,source_limit,subscription_limit,created_at,password_hash) VALUES(?,?,'user',1,?,?,?,?,?)`, u.Username, u.DisplayName, u.NodeLimit, u.SourceLimit, u.SubscriptionLimit, utcNow(), hash)
+	settings, e := s.Settings(ctx)
+	if e != nil {
+		return u, e
+	}
+	until := utcNow().Add(time.Duration(settings.SubscriptionLeaseDays) * 24 * time.Hour)
+	res, e := s.DB.ExecContext(ctx, `INSERT INTO np_users(username,display_name,role,enabled,node_limit,source_limit,subscription_limit,created_at,password_hash,subscription_expires_at) VALUES(?,?,'user',1,?,?,?,?,?,?)`, u.Username, u.DisplayName, u.NodeLimit, u.SourceLimit, u.SubscriptionLimit, utcNow(), hash, until)
 	if e != nil {
 		return u, e
 	}
@@ -177,6 +195,13 @@ func (s *Store) PatchUser(ctx context.Context, id int64, p UserPatch) (User, err
 	if p.SubscriptionLimit != nil {
 		u.SubscriptionLimit = *p.SubscriptionLimit
 	}
+	if p.XP != nil {
+		u.XP = *p.XP
+	}
+	if p.Points != nil {
+		u.Points = *p.Points
+	}
+	u.Level = LevelForXP(u.XP)
 	if e = validateLimits(u); e != nil {
 		return u, e
 	}
@@ -187,11 +212,17 @@ func (s *Store) PatchUser(ctx context.Context, id int64, p UserPatch) (User, err
 	if revoke {
 		u.AuthVersion++
 	}
-	_, e = tx.ExecContext(ctx, `UPDATE np_users SET display_name=?,enabled=?,node_limit=?,source_limit=?,subscription_limit=?,password_hash=?,auth_version=? WHERE id=?`, u.DisplayName, u.Enabled, u.NodeLimit, u.SourceLimit, u.SubscriptionLimit, u.PasswordHash, u.AuthVersion, id)
+	_, e = tx.ExecContext(ctx, `UPDATE np_users SET display_name=?,enabled=?,node_limit=?,source_limit=?,subscription_limit=?,password_hash=?,auth_version=?,xp=?,points=? WHERE id=?`, u.DisplayName, u.Enabled, u.NodeLimit, u.SourceLimit, u.SubscriptionLimit, u.PasswordHash, u.AuthVersion, u.XP, u.Points, id)
 	if e != nil {
 		return u, e
 	}
 	if p.Enabled != nil && !*p.Enabled { // Re-enabling must never resurrect a token issued before suspension.
+		if e = releaseDisabledUserSeats(ctx, tx, id); e != nil {
+			return u, e
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE np_users SET probe_uuid=NULL WHERE id=?`, id); e != nil {
+			return u, e
+		}
 		rows, e := tx.QueryContext(ctx, `SELECT id FROM np_subscriptions WHERE user_id=? ORDER BY id FOR UPDATE`, id)
 		if e != nil {
 			return u, e

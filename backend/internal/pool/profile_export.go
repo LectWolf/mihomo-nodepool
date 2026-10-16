@@ -18,16 +18,38 @@ func ExportSubscriptionWithProfile(nodes []Node, format string, profile *RulePro
 		raw, n, e := ExportSubscription(nodes, format)
 		return raw, n, 0, e
 	}
+	var configured []RuleGroup
+	if profile.RoutingEnabled {
+		var err error
+		configured, err = normalizeRuleGroups(profile.Groups)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("%w：%v", ErrUnexportable, err)
+		}
+		allowed := map[string]bool{"DIRECT": true, "REJECT": true}
+		for _, g := range configured {
+			allowed[g.Name] = true
+		}
+		for _, rule := range profile.Rules {
+			parts, target, err := splitLocalRule(rule)
+			if err != nil || !allowed[parts[target]] {
+				return nil, 0, 0, fmt.Errorf("%w：规则格式或策略组目标无效", ErrUnexportable)
+			}
+		}
+	}
 	doc := map[string]any{"mixed-port": 7890, "allow-lan": false, "mode": "rule", "log-level": "info"}
 	skipped := 0
 	// Decode the node maps directly to preserve all supported protocol fields.
 	configOrigins := [][]Origin{}
 	configs := []map[string]any{}
 	names := []string{}
+	exportedNodes := []Node{}
 	selected := map[int64]map[string]string{}
 	reserved := map[string]bool{"DIRECT": true, "REJECT": true, "GLOBAL": true}
-	for _, g := range referenceGroups {
-		reserved[g] = true
+	for _, name := range referenceGroups {
+		reserved[name] = true
+	}
+	for _, g := range configured {
+		reserved[g.Name] = true
 	}
 	for _, n := range nodes {
 		var m map[string]any
@@ -59,6 +81,7 @@ func ExportSubscriptionWithProfile(nodes []Node, format string, profile *RulePro
 			selected[o.ID][o.NodeName] = name
 		}
 		configs = append(configs, m)
+		exportedNodes = append(exportedNodes, n)
 		names = append(names, name)
 	}
 	if len(configs) == 0 {
@@ -94,7 +117,7 @@ func ExportSubscriptionWithProfile(nodes []Node, format string, profile *RulePro
 	rules := []string{}
 	warnings := 0
 	if profile.RoutingEnabled {
-		groups = referenceProxyGroups(names)
+		groups = configuredProxyGroups(configured, exportedNodes, names)
 		rules = append(rules, profile.Rules...)
 	} else {
 		sources = append([]Source(nil), sources...)

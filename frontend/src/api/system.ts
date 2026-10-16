@@ -1,4 +1,5 @@
 import { onBeforeUnmount } from 'vue'
+import type { NodeInsights, SubscriptionUsage } from '../community'
 
 export interface SystemInfo {
   name: string; version: string; commit: string; build_time: string
@@ -11,13 +12,15 @@ export interface Source {
   status: 'queued' | 'processing' | 'ready' | 'error'; node_count: number; excluded_count: number
   last_error: string; last_refresh_at: string | null; next_refresh_at: string | null; created_at: string
   owner_id?: number; provider_name?: string; max_users?: number; claimed_users?: number; active_users?: number
+  occupied_users?: number; min_level?: number; share_url?: string; subscription_usage?: SubscriptionUsage | null
 }
 export interface PoolNode {
   id: number; name: string; type: string; server: string; port: number; latency_ms: number | null
   status: 'unknown' | 'healthy' | 'unhealthy'; country: string; country_code: string; exit_ip: string
   region?: string; city?: string
   last_checked_at: string | null; next_check_at: string; last_error: string
-  sources: { id: number; name: string; node_name: string; owner_id?: number; provider_name?: string }[]
+  insights?: NodeInsights
+  sources: { id: number; name: string; node_name: string; owner_id?: number; provider_name?: string; min_level?: number; subscription_usage?: SubscriptionUsage | null }[]
 }
 export interface NodePage {
   items: PoolNode[]; total: number; page: number; page_size: number
@@ -27,6 +30,7 @@ export interface Options { types: string[]; countries: { code: string; name: str
 export interface Settings {
   exclude_pattern: string; test_url: string; timeout_ms: number; probe_concurrency: number
   source_concurrency: number; refresh_hours: number; check_hours: number
+  subscription_lease_days?: number; history_retention_days?: number; public_url?: string
 }
 export interface Release { version: string; name: string; body: string; published_at: string; url: string }
 export interface Releases {
@@ -35,7 +39,7 @@ export interface Releases {
   state: 'idle' | 'checking' | 'downloading' | 'installing' | 'restarting' | 'done' | 'error'
   message: string; releases: Release[]
 }
-export interface NewSource { name: string; kind: Source['kind']; url?: string; content?: string; exclude_pattern?: string; max_users?: number }
+export interface NewSource { name: string; kind: Source['kind']; url?: string; content?: string; exclude_pattern?: string; max_users?: number; min_level?: number }
 export class ApiError extends Error {
   readonly status: number
   constructor(message: string, status = 0) { super(message); this.name = 'ApiError'; this.status = status }

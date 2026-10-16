@@ -16,10 +16,12 @@
   },
   "dependencies": {
     "flag-icons": "^7.5.0",
+    "qrcode": "^1.5.4",
     "vue": "^3.5.44"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.10",
     "@vue/tsconfig": "^0.9.1",
     "typescript": "~6.0.3",

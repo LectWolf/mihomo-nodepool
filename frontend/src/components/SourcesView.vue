@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { errorText, formatDate, isCancelled, json, useApi, type NewSource, type Source } from '../api/system'
+import { currentUser } from '../api/accounts'
+import { useAccountScope } from '../community'
+import SourceLevelSelect from './SourceLevelSelect.vue'
+import SourceSubscribers from './SourceSubscribers.vue'
+import SourceLinkDialog from './SourceLinkDialog.vue'
+import UsageHint from './UsageHint.vue'
+import '../community.css'
 import Modal from './Modal.vue'
 import AppIcon from './AppIcon.vue'
 import { navigate } from '../router'
@@ -8,6 +15,13 @@ import { route, routeParams, setRouteQuery } from '../router'
 const props = defineProps<{ items: Source[]; loading: boolean; error: string }>()
 const emit = defineEmits<{ reload: []; updated: [source: Source]; removed: [id: number] }>()
 const api = useApi()
+const scope = useAccountScope()
+const subscriberSourceID = ref<number | null>(null)
+const linkSourceID = ref<number | null>(null)
+const subscriberSource = computed(() => props.items.find(source => source.id === subscriberSourceID.value))
+const linkSource = computed(() => props.items.find(source => source.id === linkSourceID.value))
+function canManage(source: Source) { return currentUser.value?.role === 'admin' || currentUser.value?.id === source.owner_id }
+function linkUpdated(source: Source) { emit('updated', source); emit('reload') }
 const search = ref(routeParams('sources').get('q') ?? '')
 function viewSource(id: number) { navigate('nodes', new URLSearchParams({ source_id: String(id) })) }
 watch(route, value => { if (value.section === 'sources') search.value = routeParams('sources').get('q') ?? '' }, { flush: 'sync' })
@@ -29,6 +43,7 @@ const importKind = ref<Source['kind']>('url')
 const importName = ref('')
 const importPattern = ref('')
 const importMaxUsers = ref(0)
+const importMinLevel = ref(0)
 const urlText = ref('')
 const linksText = ref('')
 const files = ref<File[]>([])
@@ -45,7 +60,7 @@ const busyIds = reactive(new Set<number>())
 const rowErrors = reactive<Record<number, string>>({})
 const rowMessages = reactive<Record<number, string>>({})
 const editing = ref<Source | null>(null)
-const editForm = reactive({ name: '', exclude_pattern: '', url: '', enabled: true, max_users: 0 })
+const editForm = reactive({ name: '', exclude_pattern: '', url: '', enabled: true, max_users: 0, min_level: 0 })
 const editBusy = ref(false)
 const editError = ref('')
 const deleting = ref<Source | null>(null)
@@ -53,6 +68,9 @@ const deleteBusy = ref(false)
 const deleteError = ref('')
 let active = true
 onBeforeUnmount(() => { active = false })
+watch(() => route.value.section, section => {
+  if (section !== 'sources') { subscriberSourceID.value = null; linkSourceID.value = null; editing.value = null; deleting.value = null; importOpen.value = false }
+})
 watch(() => props.items, items => {
   for (const result of results.value) {
     const source = items.find(item => item.id === result.id)
@@ -69,6 +87,7 @@ function validUrl(value: string) {
 }
 async function startImport() {
   if (!canImport.value || importBusy.value) return
+  const ticket = scope.ticket()
   importBusy.value = true; importError.value = ''; resultsExpanded.value = true
   const kind = importKind.value
   const name = importName.value.trim()
@@ -79,13 +98,13 @@ async function startImport() {
   results.value = rows.map((value, index) => ({ key: index, name: name ? `${name}${rows.length > 1 ? ` · ${index + 1}` : ''}` : kind === 'url' ? `订阅 ${index + 1}` : value, status: 'submitting', error: '' }))
   let cursor = 0
   async function worker() {
-    while (active && cursor < rows.length) {
+    while (active && scope.current(ticket) && cursor < rows.length) {
       const index = cursor++
       const result = results.value[index]
       const value = rows[index]
       if (!result || value === undefined) continue
       try {
-        const payload: NewSource = { name: result.name, kind, exclude_pattern: pattern, max_users: importMaxUsers.value }
+        const payload: NewSource = { name: result.name, kind, exclude_pattern: pattern, max_users: importMaxUsers.value, min_level: importMinLevel.value }
         if (kind === 'url') {
           if (!validUrl(value)) throw new Error(`第 ${index + 1} 行不是有效的 HTTP / HTTPS 订阅地址。`)
           payload.url = value
@@ -95,65 +114,76 @@ async function startImport() {
           payload.content = kind === 'file' && file ? await file.text() : pasted
           if (!payload.content.trim()) throw new Error('内容为空，请选择包含节点的文件或粘贴节点链接。')
         }
+        if (!scope.current(ticket)) return
         const source = await api<Source>('/sources', json('POST', payload))
+        if (!scope.current(ticket)) return
         result.id = source.id; result.name = source.name; result.status = source.status; result.error = source.last_error || ''
         emit('reload')
       } catch (error) {
-        if (isCancelled(error)) return
+        if (!scope.current(ticket) || isCancelled(error)) return
         result.status = 'error'; result.error = errorText(error)
       }
     }
   }
   try {
     await Promise.all(Array.from({ length: Math.min(3, rows.length) }, () => worker()))
-    if (active) { emit('reload'); urlText.value = ''; linksText.value = ''; files.value = [] }
+    if (active && scope.current(ticket)) { emit('reload'); urlText.value = ''; linksText.value = ''; files.value = [] }
   } finally { importBusy.value = false }
 }
 function openEdit(source: Source) {
   editing.value = source
-  Object.assign(editForm, { name: source.name, exclude_pattern: source.exclude_pattern, url: '', enabled: source.enabled, max_users: source.max_users ?? 0 })
+  Object.assign(editForm, { name: source.name, exclude_pattern: source.exclude_pattern, url: '', enabled: source.enabled, max_users: source.max_users ?? 0, min_level: source.min_level ?? 0 })
   editError.value = ''
 }
 async function saveEdit() {
   const source = editing.value
   if (!source || editBusy.value || !editForm.name.trim()) return
+  const ticket = scope.ticket()
   editError.value = ''
   if (source.kind === 'url' && editForm.url.trim() && !validUrl(editForm.url.trim())) { editError.value = '请输入有效的 HTTP / HTTPS 订阅地址，留空则保留原地址。'; return }
   editBusy.value = true
   try {
-    const updated = await api<Source>(`/sources/${source.id}`, json('PATCH', { name: editForm.name.trim(), enabled: editForm.enabled, exclude_pattern: editForm.exclude_pattern, max_users: editForm.max_users, ...(source.kind === 'url' && editForm.url.trim() ? { url: editForm.url.trim() } : {}) }))
+    const updated = await api<Source>(`/sources/${source.id}`, json('PATCH', { name: editForm.name.trim(), enabled: editForm.enabled, exclude_pattern: editForm.exclude_pattern, max_users: editForm.max_users, min_level: editForm.min_level, ...(source.kind === 'url' && editForm.url.trim() ? { url: editForm.url.trim() } : {}) }))
+    if (!scope.current(ticket)) return
     emit('updated', updated); emit('reload'); editing.value = null
-  } catch (error) { if (!isCancelled(error)) editError.value = errorText(error) }
+  } catch (error) { if (scope.current(ticket) && !isCancelled(error)) editError.value = errorText(error) }
   finally { editBusy.value = false }
 }
 async function toggle(source: Source) {
   if (busyIds.has(source.id)) return
+  const ticket = scope.ticket()
   busyIds.add(source.id); rowErrors[source.id] = ''; rowMessages[source.id] = ''
   try {
     const updated = await api<Source>(`/sources/${source.id}`, json('PATCH', { enabled: !source.enabled }))
+    if (!scope.current(ticket)) return
     emit('updated', updated); emit('reload')
-  } catch (error) { if (!isCancelled(error)) rowErrors[source.id] = errorText(error) }
+  } catch (error) { if (scope.current(ticket) && !isCancelled(error)) rowErrors[source.id] = errorText(error) }
   finally { busyIds.delete(source.id) }
 }
 async function refresh(source: Source) {
   if (busyIds.has(source.id)) return
+  const ticket = scope.ticket()
   busyIds.add(source.id); rowErrors[source.id] = ''; rowMessages[source.id] = ''
   try {
     await api(`/sources/${source.id}/refresh`, json('POST'))
+    if (!scope.current(ticket)) return
     emit('updated', { ...source, status: 'queued', last_error: '' })
     rowMessages[source.id] = source.kind === 'url' ? '已加入刷新队列。' : '已加入重新解析队列。'
     emit('reload')
-  } catch (error) { if (!isCancelled(error)) rowErrors[source.id] = errorText(error) }
+  } catch (error) { if (scope.current(ticket) && !isCancelled(error)) rowErrors[source.id] = errorText(error) }
   finally { busyIds.delete(source.id) }
 }
 function confirmDelete(source: Source) { deleting.value = source; deleteError.value = '' }
 async function removeSource() {
-  if (!deleting.value || deleteBusy.value) return
+  const source = deleting.value
+  if (!source || deleteBusy.value) return
+  const ticket = scope.ticket()
   deleteBusy.value = true
   try {
-    await api(`/sources/${deleting.value.id}`, json('DELETE'))
-    emit('removed', deleting.value.id); emit('reload'); deleting.value = null
-  } catch (error) { if (!isCancelled(error)) deleteError.value = errorText(error) }
+    await api(`/sources/${source.id}`, json('DELETE'))
+    if (!scope.current(ticket)) return
+    emit('removed', source.id); emit('reload'); deleting.value = null
+  } catch (error) { if (scope.current(ticket) && !isCancelled(error)) deleteError.value = errorText(error) }
   finally { deleteBusy.value = false }
 }
 </script>
@@ -170,7 +200,9 @@ async function removeSource() {
       <div v-else class="source-list" :aria-busy="loading"><article v-for="source in visibleSources" :key="source.id" :class="['source-card', { disabled: !source.enabled }]">
         <div class="source-card-head"><span class="source-icon" aria-hidden="true"><AppIcon :name="source.kind === 'url' ? 'external' : source.kind === 'file' ? 'upload' : 'link'" /></span><div class="source-title"><h3>{{ source.name }}</h3><span class="small muted">{{ kindLabels[source.kind] }} · 加入于 {{ formatDate(source.created_at) }}</span></div><span :class="['badge', source.status]">{{ source.enabled ? statusLabels[source.status] : '已停用' }}</span><button :class="['switch', { on: source.enabled }]" role="switch" :aria-checked="source.enabled" :aria-label="`${source.enabled ? '停用' : '启用'} ${source.name}`" :disabled="busyIds.has(source.id) || editBusy || deleteBusy" @click="toggle(source)"><span></span></button></div>
         <div class="source-card-body"><div class="source-numbers"><span><strong>{{ source.node_count }}</strong> 个节点</span><span><strong>{{ source.excluded_count }}</strong> 个已排除</span></div><div class="source-schedule"><span>最近刷新 <b>{{ formatDate(source.last_refresh_at) }}</b></span><span>下次刷新 <b>{{ source.enabled ? formatDate(source.next_refresh_at) : '已暂停' }}</b></span></div><div class="source-actions"><button class="compact" :disabled="busyIds.has(source.id) || !source.enabled || source.status === 'queued' || source.status === 'processing'" @click="refresh(source)"><AppIcon name="refresh" />{{ source.kind === 'url' ? '刷新' : '重新解析' }}</button><button class="compact" :disabled="busyIds.has(source.id)" @click="openEdit(source)"><AppIcon name="edit" />编辑</button><button class="compact danger" :disabled="busyIds.has(source.id)" @click="confirmDelete(source)"><AppIcon name="trash" />删除</button></div></div>
-        <div class="source-ownership"><span>提供方：{{ source.provider_name || '管理员' }}</span><strong>当前使用 {{ source.active_users ?? 0 }} 人</strong><span title="历史唯一领取账号数；删除订阅不回收历史名额">历史领取 {{ source.claimed_users ?? 0 }} / {{ source.max_users || '不限' }} 人</span><button class="text-button" @click="viewSource(source.id)">查看节点<AppIcon name="right" /></button></div>
+        <div class="source-ownership"><span>提供方：{{ source.provider_name || '管理员' }}</span><strong>有效席位 {{ source.occupied_users ?? source.active_users ?? 0 }} / {{ source.max_users || '不限' }}</strong><span>{{ source.min_level ? `最低 Lv${source.min_level}` : 'Lv0 不限' }}</span><span class="small muted">删除最后引用释放席位</span><button class="text-button" @click="viewSource(source.id)">查看节点<AppIcon name="right" /></button></div>
+        <div class="source-community-actions"><UsageHint :usage="source.subscription_usage" /><template v-if="canManage(source)"><button class="compact" @click="subscriberSourceID = source.id">订阅用户</button><button v-if="source.share_url" class="compact" @click="linkSourceID = source.id"><AppIcon name="link" />专属订阅直链</button></template></div>
+        <details v-if="source.subscription_usage" class="small source-package-details"><summary>套餐详情</summary><UsageHint :usage="source.subscription_usage" detail /></details>
         <p v-if="source.exclude_pattern" class="source-pattern small"><span class="muted">排除规则</span><code>{{ source.exclude_pattern }}</code></p><p v-if="source.last_error || rowErrors[source.id]" class="notice error" role="alert">{{ rowErrors[source.id] || source.last_error }}<span v-if="source.last_error && source.last_refresh_at">上次成功的节点内容已保留。</span></p><p v-else-if="source.status === 'queued' || source.status === 'processing'" class="small muted source-progress"><span class="spinner"></span>{{ source.status === 'queued' ? '等待后台任务处理，结果将自动更新…' : '正在解析并整理节点，结果将自动更新…' }}</p><p v-else-if="rowMessages[source.id]" class="small green-text">{{ rowMessages[source.id] }}</p>
       </article></div>
     </div>
@@ -178,7 +210,8 @@ async function removeSource() {
       <div class="tab-bar" role="tablist" aria-label="导入方式"><button v-for="kind in (['url', 'file', 'links'] as const)" :key="kind" :class="{ active: importKind === kind }" role="tab" :aria-selected="importKind === kind" :disabled="importBusy" @click="importKind = kind">{{ kindLabels[kind] }}</button></div>
       <form @submit.prevent="startImport"><fieldset :disabled="importBusy">
         <div class="form-grid"><label class="form-field"><span class="field-label">来源名称 <small class="muted">可选</small></span><input v-model="importName" placeholder="留空使用地址或文件名称" maxlength="200" /></label><label class="form-field"><span class="field-label">名称排除正则 <small class="muted">可选</small></span><input v-model="importPattern" placeholder="例如：剩余|流量|到期" /><span class="field-hint">与全局规则共同生效，匹配的节点不会进入有效列表。</span></label></div>
-        <label class="form-field"><span class="field-label">最大领取人数</span><input v-model.number="importMaxUsers" type="number" min="0" max="100000000" step="1" required /><span class="field-hint">0 表示不限。同一账号领取多个节点或重复刷新，只计一人；历史领取不因删除订阅而回收。</span></label>
+        <label class="form-field"><span class="field-label">最大有效订阅人数</span><input v-model.number="importMaxUsers" type="number" min="0" max="100000000" step="1" required /><span class="field-hint">0 表示不限。同一账号引用多个节点只占一席；到期或删除最后引用释放席位，历史记录默认保留 30 天。</span></label>
+        <SourceLevelSelect v-model="importMinLevel" :disabled="importBusy" />
         <label v-if="importKind === 'url'" class="form-field"><span class="field-label">订阅地址 <small class="muted">每行一个</small></span><textarea v-model="urlText" rows="7" placeholder="https://example.com/subscription&#10;https://example.org/subscription" required spellcheck="false"></textarea><span class="field-hint">每个地址独立创建来源，个别失败不影响其他来源。</span></label>
         <div v-else-if="importKind === 'file'"><label class="file-drop"><span class="empty-icon"><AppIcon name="upload" /></span><strong>选择本地文件</strong><span class="small muted">支持一次选择多个文件，读取文本后导入</span><input type="file" multiple @change="selectFiles" /></label><ul class="file-list"><li v-for="(file, index) in files" :key="index"><span>{{ file.name }} <small class="muted">{{ (file.size / 1024).toFixed(1) }} KB</small></span><button type="button" class="text-button danger" :aria-label="`移除 ${file.name}`" @click="files.splice(index, 1)">移除</button></li></ul></div>
         <label v-else class="form-field"><span class="field-label">节点分享链接</span><textarea v-model="linksText" rows="7" placeholder="粘贴 ss://、vmess://、vless://、trojan:// 等节点链接，每行一个" required spellcheck="false"></textarea><span class="field-hint">本次粘贴内容作为一个来源保存。</span></label>
@@ -187,10 +220,13 @@ async function removeSource() {
     <Modal v-if="editing" title="编辑来源" :busy="editBusy" @close="editing = null"><form @submit.prevent="saveEdit"><fieldset :disabled="editBusy">
       <label class="form-field"><span class="field-label">来源名称</span><input v-model="editForm.name" required maxlength="200" /></label>
       <label class="form-field"><span class="field-label">名称排除正则</span><input v-model="editForm.exclude_pattern" placeholder="留空则仅使用全局排除规则" /><span class="field-hint">修改规则后自动按已保存内容重新处理。</span></label>
-      <label class="form-field"><span class="field-label">最大领取人数</span><input v-model.number="editForm.max_users" type="number" min="0" max="100000000" step="1" required /><span class="field-hint">当前使用 {{ editing.active_users ?? 0 }} 人，历史领取 {{ editing.claimed_users ?? 0 }} 人；0 表示不限。上限按历史唯一账号计算，删除订阅不回收名额。</span></label>
+      <label class="form-field"><span class="field-label">最大有效订阅人数</span><input v-model.number="editForm.max_users" type="number" min="0" max="100000000" step="1" required /><span class="field-hint">有效席位 {{ editing.occupied_users ?? editing.active_users ?? 0 }} 人；0 表示不限。到期或删除最后引用会释放席位，历史记录不占名额。</span></label>
+      <SourceLevelSelect v-model="editForm.min_level" :disabled="editBusy" />
       <label v-if="editing.kind === 'url'" class="form-field"><span class="field-label">替换订阅地址 <small class="muted">可选</small></span><input v-model="editForm.url" type="url" autocomplete="off" placeholder="留空保留原订阅地址" /><span class="field-hint">为保护订阅信息，已保存的地址不会回显。</span></label>
       <label class="checkbox-label"><input v-model="editForm.enabled" type="checkbox" />启用此来源</label>
     </fieldset><p v-if="editError" class="notice error" role="alert">{{ editError }}</p><div class="dialog-actions"><button type="button" :disabled="editBusy" @click="editing = null">取消</button><button type="submit" class="primary" :disabled="editBusy || !editForm.name.trim()">{{ editBusy ? '正在保存…' : '保存修改' }}</button></div></form></Modal>
     <Modal v-if="deleting" title="删除来源" :busy="deleteBusy" @close="deleting = null"><p>确定删除「{{ deleting.name }}」吗？此操作无法撤销。</p><p class="muted">仅由此来源提供的节点将移除，其他来源仍引用的节点会保留。</p><p v-if="deleteError" class="notice error" role="alert">{{ deleteError }}</p><div class="dialog-actions"><button :disabled="deleteBusy" @click="deleting = null">取消</button><button class="danger-solid" :disabled="deleteBusy" @click="removeSource">{{ deleteBusy ? '正在删除…' : '确认删除' }}</button></div></Modal>
+    <SourceSubscribers v-if="subscriberSource && route.section === 'sources'" :key="subscriberSource.id" :source="subscriberSource" @close="subscriberSourceID = null" @changed="emit('reload')" />
+    <SourceLinkDialog v-if="linkSource && canManage(linkSource) && route.section === 'sources'" :key="linkSource.id" :source="linkSource" @close="linkSourceID = null" @updated="linkUpdated" />
   </section>
 </template>

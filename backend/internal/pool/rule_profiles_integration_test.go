@@ -148,6 +148,9 @@ func TestMySQLRuleProfilesBindingAndActiveUsers(t *testing.T) {
 	if _, e = s.PatchUser(ctx, other.ID, pool.UserPatch{Enabled: &enabled}); e != nil {
 		t.Fatal(e)
 	}
+	if _, e = s.CheckIn(bc, false); e != nil {
+		t.Fatal(e)
+	}
 	check(2, 2)
 	if _, e = s.MutateSubscription(bc, third.ID, false); e != nil {
 		t.Fatal(e)

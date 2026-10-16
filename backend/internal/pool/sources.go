@@ -26,7 +26,11 @@ func (s *Store) AddSource(ctx context.Context, in SourceInput) (Source, error) {
 		return Source{}, e
 	}
 	now := utcNow()
-	result, e := s.DB.ExecContext(ctx, `INSERT INTO np_sources(owner_id,max_users,name,kind,url,url_hash,content,exclude_pattern,last_error,created_at,next_refresh_at) VALUES(?,?,?,?,?,?,?,?,'',?,?)`, CurrentUser(ctx).ID, in.MaxUsers, cleanName(in.Name), in.Kind, strings.TrimSpace(in.URL), urlHash(in.URL), in.Content, in.ExcludePattern, now, now)
+	token, e := newToken()
+	if e != nil {
+		return Source{}, e
+	}
+	result, e := s.DB.ExecContext(ctx, `INSERT INTO np_sources(owner_id,max_users,min_level,share_token,name,kind,url,url_hash,content,exclude_pattern,last_error,created_at,next_refresh_at) VALUES(?,?,?,?,?,?,?,?,?,?,'',?,?)`, CurrentUser(ctx).ID, in.MaxUsers, in.MinLevel, token, cleanName(in.Name), in.Kind, strings.TrimSpace(in.URL), urlHash(in.URL), in.Content, in.ExcludePattern, now, now)
 	if e != nil {
 		var me *mysql.MySQLError
 		if errors.As(e, &me) && me.Number == 1062 {
@@ -62,6 +66,12 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 		}
 		v.MaxUsers = *p.MaxUsers
 	}
+	if p.MinLevel != nil {
+		if *p.MinLevel < 0 || *p.MinLevel > 6 {
+			return v, errors.New("最低等级须为Lv0–Lv6")
+		}
+		v.MinLevel = *p.MinLevel
+	}
 	if p.Name != nil {
 		v.Name = cleanName(*p.Name)
 	}
@@ -92,7 +102,7 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 			reparse = true
 		}
 	}
-	if _, e = tx.ExecContext(ctx, `UPDATE np_sources SET max_users=? WHERE id=?`, v.MaxUsers, id); e != nil {
+	if _, e = tx.ExecContext(ctx, `UPDATE np_sources SET max_users=?,min_level=? WHERE id=?`, v.MaxUsers, v.MinLevel, id); e != nil {
 		return v, e
 	}
 	// Evaluate cached before pending: queued/in-flight network work and due refreshes
@@ -219,7 +229,11 @@ func (s *Store) ApplySource(ctx context.Context, src Source, body string, parsed
 	if src.Kind == "url" {
 		nextAt = next
 	}
-	_, e = tx.ExecContext(ctx, `UPDATE np_sources SET content=?,node_count=?,excluded_count=?,last_refresh_at=?,next_refresh_at=?,last_error=?,status=IF(pending=1,'queued','ready'),attempts=0,lease_until=NULL WHERE id=?`, body, active, excluded, now, nextAt, warning, src.ID)
+	usage, e := json.Marshal(src.SubscriptionUsage)
+	if e != nil {
+		return e
+	}
+	_, e = tx.ExecContext(ctx, `UPDATE np_sources SET content=?,subscription_usage=?,node_count=?,excluded_count=?,last_refresh_at=?,next_refresh_at=?,last_error=?,status=IF(pending=1,'queued','ready'),attempts=0,lease_until=NULL WHERE id=?`, body, usage, active, excluded, now, nextAt, warning, src.ID)
 	if e != nil {
 		return e
 	}

@@ -6,15 +6,20 @@
 
 - 现有管理员 ID=1 和现有来源保留。管理员创建/停用用户、重置密码、修改额度。普通用户无需审核即可上传并管理自己的来源；只管理员可改全局设置、运行更新/回退/重启、批量探测。
 - 普通用户默认总额度：200 个唯一节点、3 个不同来源、1 条组合订阅。管理员可逐用户调整，额度是账号全部订阅合计；保存与输出均按最新额度校验/裁切。0 不代表无限额度，管理员可配置正整数；来源 max_users=0 表示不限领取用户。
-- 每个上传来源可设置 max_users；领取后 np_source_claims 按 (source_id,user_id) 唯一，重复选取/刷新/多个节点都只计一次，保存事务成功才占名额，失败不占。领取为历史唯一账号计数，取消关注/删除组合不抹除领取记录。已有领取人在来源人数上限降低后可继续获取，超额仅禁止新领取。
+- 来源max_users=0不限，否则按启用账号未过期的有效席位限制；同账号多节点／多组合计一人，事务成功才占。删除最后引用、踢出或到期释放容量。np_source_claims仅保留历史领取统计，不再决定容量；降低上限保留有效已有席位，过期需重新校验。
 - 全部共享节点、关注提供方的节点、指定提供方节点可查看。关注与领取独立，关注不占来源名额。
 - 来源全选按节点 ID 升序填入剩余额度，去重后截取前 N（默认200），显示截断结果；显式节点必须带来源归属，来源不能冒用，重复节点只算一次。组合订阅保存选中节点快照；来源刷新后失效/排除/屏蔽节点在输出时过滤，不替换为用户未选择节点。
 - 提供方专属分享入口 /nodes?provider_id={userID}；登录后查看/领取该提供方来源，可复制入口。订阅客户端下载使用 /sub/{token}，token 对应已登录账号创建的组合，支持重置及撤销。
 - 更新和数据库状态不在普通顶栏展示；异常保留明确错误提示。
+- 账号默认14天租期，网页签到或有效VLESS/WS保活探测续期，普通拉取／登录不续期。到期拉取仅输出签到提示；网页激活遇满额／停用／被禁／等级不足先列名单，确认后归档并排除这些来源，激活其余、保留链接。
+- 北京时间签到每日5XP／2积分，每连续7日额外20XP／8积分；并发和同日重复幂等。同日可再次续期。等级门槛0／50／200／1000／3500／10000／30000，经验与积分独立；来源min_level默认0不限。
+- 来源owner／admin查看当前／历史订阅用户及相关时间／等级／引用数，踢出会移除目标全部组合中的来源并禁领，直到解除；owner自身不可踢。
+- 每个来源有 `/link/{token}` 整源bearer直链，仅owner／admin管理可得和轮换，绕过个人席位／等级；个人 `/sub/` 限制不约束匿名直链持有人。
+- 来源事件、结束席位和删除／覆盖前显示快照默认保留30天，设置可改；无旧令牌和连接凭据，禁领不自动解除。个人订阅二维码本地生成，六平台客户端官方入口，查看／保存组合默认节点卡片。
 
 ## JSON API（同一 /api/v1 前缀）
 
-User = {id,username,display_name,role:"admin"|"user",enabled,node_limit,source_limit,subscription_limit,created_at}
+User = {id,username,display_name,role:"admin"|"user",enabled,node_limit,source_limit,subscription_limit,created_at,xp,points,level,checkin_on,checkin_streak,subscription_expires_at}；管理员PATCH可调整xp／points，个人不可改。
 - GET /auth -> {authenticated,username,user:User|null}；POST /auth/login {username?,password} -> 同形。username省略兼容admin。POST /auth/logout 保持兼容。
 - GET /me -> {user:User,usage:{nodes,sources,subscriptions},provider_path:string}
 - PATCH /me {display_name?,password?} -> User；修改密码撤销其他会话。
@@ -22,13 +27,13 @@ User = {id,username,display_name,role:"admin"|"user",enabled,node_limit,source_l
 - POST /users {username,password,display_name,node_limit,source_limit,subscription_limit} -> User 201
 - PATCH /users/{id} {display_name?,password?,enabled?,node_limit?,source_limit?,subscription_limit?} -> User
 
-Source 在已有响应上增加 {owner_id,provider_name,max_users,claimed_users,active_users}；新建/编辑支持 max_users。claimed_users 保留历史唯一领取，active_users 按仍有组合引用来源的启用账号去重，删除最后引用或覆盖来源会下降。GET /sources 为本人管理来源（admin全部）。写/删/刷新检查所有权或admin；原始URL和节点凭据永不展示。
+Source增加{owner_id,provider_name,max_users,claimed_users,active_users,occupied_users,min_level,subscription_usage,share_url?}；新建／编辑支持max_users／min_level。active_users／occupied_users按启用账号未过期有效席位去重，claimed_users仅保留期内历史统计。GET /sources为本人管理来源（admin全部），share_url不进入公共目录；写删刷新检查owner／admin，不返回上游URL或节点凭据。
 - GET /sources/catalog?q=&provider_id=&following=1&page=1&page_size=20 -> {items:Source[],total,page,page_size}（只共享可用来源）；供可搜索分页来源选择与整来源选取。
 - GET /providers?q=&following=1&page=1&page_size=20 -> {items:Provider[],total,page,page_size}
   Provider = {id,username,display_name,source_count,node_count,followers,followed,provider_path}
 - POST /providers/{id}/follow；DELETE /providers/{id}/follow -> {followed:boolean}
 
-Node.sources 的 Origin 增加 {owner_id,provider_name}。Nodes查询新增 provider_id、following=1、countries=JP,US（兼容旧country）。Options仍types/countries；可附count但前端不依赖。
+Node增加静态insights（URI可保真导出、协议传输、TLS、配置风险），Origin增加{owner_id,provider_name,min_level,subscription_usage}。Nodes查询支持provider_id、following、countries及精确min_level=0..6。来源套餐元数据不代表个人流量；SS AEAD／SS2022等不因无TLS泛化为明文。
 - GET /nodes 保持原分页协议，浏览正常有效共享节点；所有手动节点检测仅admin。所有普通API都验证账号enabled。
 
 Subscription = {id,name,node_count,source_count,created_at,updated_at,url:string,nodes:[{node_id,source_id}],node_ids:number[],source_ids:number[],rule_profile_id:number|null}
@@ -41,6 +46,8 @@ Subscription = {id,name,node_count,source_count,created_at,updated_at,url:string
 - GET /sub/{token}?format=clash|v2ray|auto（不带/api/v1）客户端公开令牌入口。显式格式优先；auto按UA决定，默认clash。clash返回有效可导入完整YAML配置，v2ray返回UTF8分享URI按行连接再base64；支持SS、VMess、VLESS、Trojan、Hysteria2、TUIC、http/socks有条件转换；不支持协议/参数不能生成丢配置假节点，应跳过并返回跳过数Header，全部不可转换则422。停用用户或来源/账号无权限立即禁止输出；Content-Type/Cache-Control/Vary/User-Agent及inline文件名合理。令牌不计入请求日志。
 
 规则组合 API：GET /rule-profiles -> {items:RuleProfile[]}，首项为所有账号可用的官方内置规则（id=0、official=true、readonly=true），其后为账号私人规则（正数ID、两个标记false）。GET /rule-profiles/default 返回完整官方模板，POST 创建私人副本，PUT/DELETE /rule-profiles/{id} 修改私人规则；官方0修改或删除403，被绑定私人规则删除409。RuleProfile = {id,name,official,readonly,routing_enabled,dns_enabled,dns_servers:string[],rules:string[],created_at,updated_at}。订阅 rule_profile_id=0 绑定官方，正数仅本人私人项，null不绑定；新建省略默认0，编辑省略保留，旧null不迁移，负数拒绝。PATCH /subscriptions/{id} 只改规则绑定，不重新校验／领取节点快照。仅Clash应用，DNS留空默认三个地址、关闭不写DNS；分流默认沿用本机订阅共享完整规则，关闭合并缓存源本地分流；v2ray不变。
+
+规则另含groups:RuleGroup[]，支持select/url-test/fallback/load-balance以及本次已选节点ID／国家／其他组引用，最多64组、必须含NodePool，拒绝悬空／循环。旧NULL保持默认七组；国家组可加入自动选择或故障转移，空匹配DIRECT。所有详细新增接口、保活端点、历史分页与运行设置见[API](api.md)。
 
 ## 界面
 

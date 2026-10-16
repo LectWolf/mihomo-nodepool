@@ -4,6 +4,7 @@ import { json, request } from './system'
 export interface User {
   id: number; username: string; display_name: string; role: 'admin' | 'user'; enabled: boolean
   node_limit: number; source_limit: number; subscription_limit: number; created_at: string
+  xp: number; points: number; level: number; checkin_on: string; checkin_streak: number; subscription_expires_at: string | null
 }
 export interface AuthResponse { authenticated: boolean; username?: string; user?: User | null }
 export interface Usage { nodes: number; sources: number; subscriptions: number }
@@ -14,8 +15,13 @@ export interface Provider {
   followers: number; followed: boolean; provider_path: string
 }
 export interface NodeSelection { node_id: number; source_id: number; name?: string; source_name?: string }
+export interface RuleGroup {
+  name: string; type: 'select' | 'url-test' | 'fallback' | 'load-balance'; include_all: boolean
+  node_ids: number[]; countries: string[]; groups: string[]; interval: number; tolerance: number
+}
 export interface RuleProfile {
   id: number; name: string; routing_enabled: boolean; dns_enabled: boolean; dns_servers: string[]; rules: string[]
+  groups?: RuleGroup[] | null
   official?: boolean; readonly?: boolean
   created_at?: string; updated_at?: string
 }

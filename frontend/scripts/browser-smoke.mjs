@@ -371,7 +371,7 @@ try {
   await click('节点总览'); await click('运行设置')
   assert.equal(await evaluate('document.querySelector(".settings-main textarea").value'), 'draft-pattern')
   await click('保存设置'); await hasText('设置已保存')
-  assert.deepEqual(Object.keys(requests.filter(item => item.method === 'PUT').at(-1).body).sort(), ['exclude_pattern', 'probe_concurrency', 'source_concurrency', 'test_url', 'timeout_ms'])
+  assert.deepEqual(Object.keys(requests.filter(item => item.method === 'PUT').at(-1).body).sort(), ['exclude_pattern', 'history_retention_days', 'probe_concurrency', 'public_url', 'source_concurrency', 'subscription_lease_days', 'test_url', 'timeout_ms'])
   check('settings validation, exact payload, and drafts retained through polling/navigation')
   await evaluate('document.querySelector(".version-text").click()'); await hasText('Release v2.0.0')
   await evaluate('document.querySelector("[role=combobox][aria-label=选择发布版本]").focus()')

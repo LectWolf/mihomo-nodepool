@@ -75,6 +75,12 @@ func (s *Store) Ensure(ctx context.Context) error {
 	if err := s.ensureMultiuser(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureCommunity(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureRuleGroups(ctx); err != nil {
+		return err
+	}
 	b, _ := json.Marshal(Defaults())
 	if _, e := s.DB.ExecContext(ctx, `INSERT IGNORE INTO np_settings(id,body) VALUES(1,?)`, b); e != nil {
 		return e
@@ -93,6 +99,12 @@ func (s *Store) Settings(ctx context.Context) (Settings, error) {
 	return v, err
 }
 func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
+	if v.SubscriptionLeaseDays == 0 {
+		v.SubscriptionLeaseDays = 14
+	}
+	if v.HistoryRetentionDays == 0 {
+		v.HistoryRetentionDays = 30
+	}
 	if err := v.Validate(); err != nil {
 		return err
 	}
@@ -123,7 +135,7 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 }
 
 const sourceBaseColumns = `id,name,kind,enabled,exclude_pattern,status,node_count,excluded_count,last_error,last_refresh_at,next_refresh_at,created_at`
-const sourceOwnerColumns = `revision,cached,owner_id,max_users,(SELECT COUNT(*) FROM np_source_claims c WHERE c.source_id=np_sources.id),(SELECT COUNT(DISTINCT sub.user_id) FROM np_subscriptions sub JOIN np_users au ON au.id=sub.user_id AND au.enabled=1 WHERE JSON_CONTAINS(sub.source_ids,CAST(np_sources.id AS CHAR))),COALESCE((SELECT display_name FROM np_users u WHERE u.id=np_sources.owner_id),'')`
+const sourceOwnerColumns = `revision,cached,owner_id,max_users,(SELECT COUNT(*) FROM np_source_claims c WHERE c.source_id=np_sources.id),(SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=np_sources.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6)),COALESCE((SELECT display_name FROM np_users u WHERE u.id=np_sources.owner_id),''),min_level,COALESCE(share_token,''),subscription_usage,(SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=np_sources.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))`
 const sourceColumns = sourceBaseColumns + `,url,content,` + sourceOwnerColumns
 const publicSourceColumns = sourceBaseColumns + `,'','',` + sourceOwnerColumns
 
@@ -131,7 +143,12 @@ type scanner interface{ Scan(...any) error }
 
 func scanSource(row scanner) (Source, error) {
 	var v Source
-	e := row.Scan(&v.ID, &v.Name, &v.Kind, &v.Enabled, &v.ExcludePattern, &v.Status, &v.NodeCount, &v.ExcludedCount, &v.LastError, &v.LastRefreshAt, &v.NextRefreshAt, &v.CreatedAt, &v.URL, &v.Content, &v.Revision, &v.Cached, &v.OwnerID, &v.MaxUsers, &v.ClaimedUsers, &v.ActiveUsers, &v.ProviderName)
+	var usage []byte
+	e := row.Scan(&v.ID, &v.Name, &v.Kind, &v.Enabled, &v.ExcludePattern, &v.Status, &v.NodeCount, &v.ExcludedCount, &v.LastError, &v.LastRefreshAt, &v.NextRefreshAt, &v.CreatedAt, &v.URL, &v.Content, &v.Revision, &v.Cached, &v.OwnerID, &v.MaxUsers, &v.ClaimedUsers, &v.ActiveUsers, &v.ProviderName, &v.MinLevel, &v.ShareToken, &usage, &v.OccupiedUsers)
+	if e == nil && len(usage) > 0 {
+		e = json.Unmarshal(usage, &v.SubscriptionUsage)
+	}
+	refreshUsageStatus(v.SubscriptionUsage)
 	return v, e
 }
 func (s *Store) Sources(ctx context.Context) ([]Source, error) {
@@ -152,6 +169,9 @@ func (s *Store) Sources(ctx context.Context) ([]Source, error) {
 		v, e := scanSource(rows)
 		if e != nil {
 			return nil, e
+		}
+		if v.ShareToken != "" {
+			v.ShareURL = "/link/" + v.ShareToken
 		}
 		out = append(out, v)
 	}

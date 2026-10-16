@@ -16,6 +16,7 @@ type businessRegistrar func(string, func(http.ResponseWriter, *http.Request) err
 
 func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manager) {
 	registerRuleProfiles(business, s)
+	registerCommunity(business, s)
 	business("GET /api/v1/me", func(w http.ResponseWriter, r *http.Request) error {
 		u := pool.CurrentUser(r.Context())
 		usage, e := s.Usage(r.Context(), u.ID)
@@ -209,6 +210,31 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store) {
 			return
 		}
 		raw, skipped, routingSkipped, e := s.ExportSavedSubscription(ctx, r.PathValue("token"), format)
+		user, infoErr := s.SubscriptionDeliveryInfo(ctx, r.PathValue("token"))
+		if infoErr != nil {
+			writeError(w, infoErr)
+			return
+		}
+		settings, settingsErr := s.Settings(ctx)
+		if settingsErr != nil {
+			writeError(w, settingsErr)
+			return
+		}
+		origin := publicOrigin(r, settings)
+		w.Header().Set("Profile-Web-Page-Url", origin+"/subscriptions")
+		if user.SubscriptionExpiresAt != nil {
+			w.Header().Set("Subscription-Userinfo", "expire="+strconv.FormatInt(user.SubscriptionExpiresAt.Unix(), 10))
+		}
+		if errors.Is(e, pool.ErrSubscriptionInactive) {
+			raw, e = inactiveSubscription(format)
+			w.Header().Set("X-Subscription-State", "expired")
+		} else if e == nil {
+			raw, e = attachKeepalive(raw, format, user, origin)
+			if e == nil {
+				e = s.TouchSubscriptionPull(ctx, r.PathValue("token"))
+			}
+			w.Header().Set("X-Subscription-State", "active")
+		}
 		w.Header().Set("X-Subscription-Routing-Skipped", strconv.Itoa(routingSkipped))
 		w.Header().Set("X-Subscription-Skipped", strconv.Itoa(skipped))
 		w.Header().Set("X-Subscription-Format", format)
