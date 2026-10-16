@@ -63,6 +63,10 @@ func Pattern(raw string) (*regexp.Regexp, error) {
 
 type Source struct {
 	ID             int64      `json:"id"`
+	OwnerID        int64      `json:"owner_id"`
+	ProviderName   string     `json:"provider_name"`
+	MaxUsers       int        `json:"max_users"`
+	ClaimedUsers   int        `json:"claimed_users"`
 	Name           string     `json:"name"`
 	Kind           string     `json:"kind"`
 	Enabled        bool       `json:"enabled"`
@@ -80,6 +84,7 @@ type Source struct {
 	Cached         bool       `json:"-"`
 }
 type SourceInput struct {
+	MaxUsers       int    `json:"max_users"`
 	Name           string `json:"name"`
 	Kind           string `json:"kind"`
 	URL            string `json:"url"`
@@ -87,15 +92,18 @@ type SourceInput struct {
 	ExcludePattern string `json:"exclude_pattern"`
 }
 type SourcePatch struct {
+	MaxUsers       *int    `json:"max_users"`
 	Name           *string `json:"name"`
 	Enabled        *bool   `json:"enabled"`
 	ExcludePattern *string `json:"exclude_pattern"`
 	URL            *string `json:"url"`
 }
 type Origin struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	NodeName string `json:"node_name"`
+	OwnerID      int64  `json:"owner_id"`
+	ProviderName string `json:"provider_name"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	NodeName     string `json:"node_name"`
 }
 type Node struct {
 	ID            int64           `json:"id"`
@@ -145,6 +153,10 @@ type NodePage struct {
 	Stats    Stats  `json:"stats"`
 }
 type Filter struct {
+	Countries                      []string
+	ProviderID                     int64
+	Following                      bool
+	UserID                         int64
 	Page, PageSize                 int
 	Q, Type, Country, Status, Sort string
 	SourceID                       int64
@@ -199,6 +211,9 @@ func RetryDelay(failures int) time.Duration {
 }
 func cleanName(s string) string { return strings.TrimSpace(s) }
 func checkSource(in SourceInput) error {
+	if in.MaxUsers < 0 {
+		return errors.New("领取人数上限不能为负数")
+	}
 	if cleanName(in.Name) == "" || len(in.Name) > 200 {
 		return errors.New("来源名称不能为空且最多 200 字节")
 	}

@@ -1,13 +1,10 @@
 <script setup lang="ts">
-import CustomSelect, { type SelectOption } from './CustomSelect.vue'
-import { setThemePreference, themePreference, type ThemePreference } from '../theme'
-const options: SelectOption<ThemePreference>[] = [
-  { value: 'system', label: '跟随系统' },
-  { value: 'light', label: '浅色模式' },
-  { value: 'dark', label: '深色模式' },
-]
+import { computed } from 'vue'
+import { effectiveTheme, setThemePreference } from '../theme'
+import AppIcon from './AppIcon.vue'
+const dark = computed(() => effectiveTheme.value === 'dark')
+function toggle() { setThemePreference(dark.value ? 'light' : 'dark') }
 </script>
-
 <template>
-  <div class="theme-control"><CustomSelect :model-value="themePreference" :options="options" label="外观模式" @update:model-value="setThemePreference" /></div>
+  <button type="button" class="theme-toggle icon-button" :aria-label="dark ? '切换到浅色模式' : '切换到深色模式'" :title="dark ? '切换到浅色模式' : '切换到深色模式'" :aria-pressed="dark" @click="toggle"><AppIcon :name="dark ? 'sun' : 'moon'" /></button>
 </template>

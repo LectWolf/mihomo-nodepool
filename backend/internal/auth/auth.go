@@ -1,9 +1,9 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,19 +15,27 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
 )
 
+type session struct {
+	Expires         time.Time
+	UserID, Version int64
+}
 type Manager struct {
 	mu           sync.Mutex
 	digest       [32]byte
-	sessions     map[[32]byte]time.Time
+	hash         string
+	sessions     map[[32]byte]session
 	failures     int
 	window       time.Time
 	PasswordFile string
+	store        *pool.Store
 }
 
 func New(dataDir, password string) (*Manager, error) {
-	m := &Manager{sessions: map[[32]byte]time.Time{}}
+	m := &Manager{sessions: map[[32]byte]session{}}
 	if password == "" {
 		if e := os.MkdirAll(dataDir, 0700); e != nil {
 			return nil, e
@@ -43,13 +51,13 @@ func New(dataDir, password string) (*Manager, error) {
 			if e != nil {
 				return nil, e
 			}
-			_, writeErr := f.WriteString(token + "\n")
-			closeErr := f.Close()
-			if writeErr != nil {
-				return nil, writeErr
+			_, we := f.WriteString(token + "\n")
+			ce := f.Close()
+			if we != nil {
+				return nil, we
 			}
-			if closeErr != nil {
-				return nil, closeErr
+			if ce != nil {
+				return nil, ce
 			}
 			password = token
 		} else if e != nil {
@@ -59,31 +67,71 @@ func New(dataDir, password string) (*Manager, error) {
 		}
 		m.PasswordFile = path
 	}
-	if len(password) < 8 || len(password) > 1024 {
-		return nil, errors.New("管理员密码须为 8–1024 字节")
+	hash, e := pool.HashPassword(password)
+	if e != nil {
+		return nil, e
 	}
+	m.hash = hash
 	m.digest = sha256.Sum256([]byte(password))
 	return m, nil
+}
+func (m *Manager) BindStore(s *pool.Store) {
+	if s != nil && s.DB != nil {
+		m.store = s
+	}
 }
 func random() (string, error) {
 	var b [32]byte
 	_, e := rand.Read(b[:])
 	return hex.EncodeToString(b[:]), e
 }
-func (m *Manager) Authenticated(r *http.Request) bool {
+func (m *Manager) user(ctx context.Context, id int64) (pool.User, error) {
+	if m.store == nil {
+		return pool.User{ID: 1, Username: "admin", DisplayName: "管理员", Role: "admin", Enabled: true, NodeLimit: 200, SourceLimit: 3, SubscriptionLimit: 1, PasswordHash: m.hash, AuthVersion: 1}, nil
+	}
+	if e := m.store.BootstrapAdmin(ctx, m.hash); e != nil {
+		return pool.User{}, e
+	}
+	return m.store.User(ctx, id)
+}
+func (m *Manager) Identity(r *http.Request) (pool.User, bool) {
 	cookie, e := r.Cookie("nodepool_session")
 	if e != nil {
-		return false
+		return pool.User{}, false
 	}
 	key := sha256.Sum256([]byte(cookie.Value))
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	expiry, ok := m.sessions[key]
-	if ok && time.Now().Before(expiry) {
-		return true
+	v, ok := m.sessions[key]
+	m.mu.Unlock()
+	if !ok {
+		return pool.User{}, false
 	}
+	if time.Now().Before(v.Expires) {
+		u, e := m.user(r.Context(), v.UserID)
+		if e == nil && u.Enabled && u.AuthVersion == v.Version {
+			return u, true
+		}
+	}
+	m.mu.Lock()
 	delete(m.sessions, key)
-	return false
+	m.mu.Unlock()
+	return pool.User{}, false
+}
+func (m *Manager) Authenticated(r *http.Request) bool { _, ok := m.Identity(r); return ok }
+
+// Keep the current browser signed in after its own password change. The database
+// version invalidates every other session, including sessions in another process.
+func (m *Manager) KeepSession(r *http.Request, u pool.User) {
+	if c, e := r.Cookie("nodepool_session"); e == nil {
+		key := sha256.Sum256([]byte(c.Value))
+		m.mu.Lock()
+		v, ok := m.sessions[key]
+		if ok && v.UserID == u.ID {
+			v.Version = u.AuthVersion
+			m.sessions[key] = v
+		}
+		m.mu.Unlock()
+	}
 }
 func reply(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -91,10 +139,17 @@ func reply(w http.ResponseWriter, code int, v any) {
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }
+func authReply(w http.ResponseWriter, u pool.User, ok bool) {
+	var user any
+	name := ""
+	if ok {
+		user = u
+		name = u.Username
+	}
+	reply(w, 200, map[string]any{"authenticated": ok, "username": name, "user": user})
+}
 func (m *Manager) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/auth", func(w http.ResponseWriter, r *http.Request) {
-		reply(w, 200, map[string]any{"authenticated": m.Authenticated(r), "username": "admin"})
-	})
+	mux.HandleFunc("GET /api/v1/auth", func(w http.ResponseWriter, r *http.Request) { u, ok := m.Identity(r); authReply(w, u, ok) })
 	mux.HandleFunc("POST /api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		if time.Since(m.window) > time.Minute {
@@ -108,19 +163,38 @@ func (m *Manager) Register(mux *http.ServeMux) {
 			return
 		}
 		var in struct {
+			Username string `json:"username"`
 			Password string `json:"password"`
 		}
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
-		if decoder.Decode(&in) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
+		if d.Decode(&in) != nil || d.Decode(&struct{}{}) != io.EOF {
 			reply(w, 400, map[string]string{"error": "请求格式无效"})
 			return
 		}
-		sum := sha256.Sum256([]byte(in.Password))
-		if subtle.ConstantTimeCompare(sum[:], m.digest[:]) != 1 {
+		if in.Username == "" {
+			in.Username = "admin"
+		}
+		u, e := m.user(r.Context(), 1)
+		if e != nil {
+			reply(w, 503, map[string]string{"error": "数据库暂不可用"})
+			return
+		}
+		if m.store != nil {
+			u, e = m.store.UserByName(r.Context(), in.Username)
+		} else if in.Username != "admin" {
+			e = pool.ErrNotFound
+		}
+		// An unknown account still pays the bcrypt cost to avoid a timing oracle.
+		hash := u.PasswordHash
+		if e != nil {
+			hash = m.hash
+		}
+		valid := pool.CheckPassword(hash, in.Password)
+		if e != nil || !u.Enabled || !valid {
 			m.mu.Lock()
 			m.failures++
 			m.mu.Unlock()
-			reply(w, 401, map[string]string{"error": "密码不正确"})
+			reply(w, 401, map[string]string{"error": "用户名或密码不正确，或账号已停用"})
 			return
 		}
 		token, e := random()
@@ -130,29 +204,31 @@ func (m *Manager) Register(mux *http.ServeMux) {
 		}
 		key := sha256.Sum256([]byte(token))
 		m.mu.Lock()
-		for key, expiry := range m.sessions {
-			if time.Now().After(expiry) {
-				delete(m.sessions, key)
+		for k, v := range m.sessions {
+			if time.Now().After(v.Expires) {
+				delete(m.sessions, k)
 			}
 		}
-		if len(m.sessions) >= 1000 {
-			m.sessions = map[[32]byte]time.Time{}
+		if len(m.sessions) >= 10000 {
+			m.mu.Unlock()
+			reply(w, 503, map[string]string{"error": "登录会话已满"})
+			return
 		}
-		m.sessions[key] = time.Now().Add(12 * time.Hour)
+		m.sessions[key] = session{time.Now().Add(12 * time.Hour), u.ID, u.AuthVersion}
 		m.failures = 0
 		m.mu.Unlock()
 		http.SetCookie(w, &http.Cookie{Name: "nodepool_session", Value: token, Path: "/", MaxAge: 43200, HttpOnly: true, Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https", SameSite: http.SameSiteStrictMode})
-		reply(w, 200, map[string]bool{"authenticated": true})
+		authReply(w, u, true)
 	})
 	mux.HandleFunc("POST /api/v1/auth/logout", func(w http.ResponseWriter, r *http.Request) {
-		if cookie, e := r.Cookie("nodepool_session"); e == nil {
-			key := sha256.Sum256([]byte(cookie.Value))
+		if c, e := r.Cookie("nodepool_session"); e == nil {
+			key := sha256.Sum256([]byte(c.Value))
 			m.mu.Lock()
 			delete(m.sessions, key)
 			m.mu.Unlock()
 		}
 		http.SetCookie(w, &http.Cookie{Name: "nodepool_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-		reply(w, 200, map[string]bool{"authenticated": false})
+		authReply(w, pool.User{}, false)
 	})
 }
 func (m *Manager) Wrap(next http.Handler) http.Handler {
@@ -169,9 +245,13 @@ func (m *Manager) Wrap(next http.Handler) http.Handler {
 				}
 			}
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/v1/auth" && r.URL.Path != "/api/v1/auth/login" && r.URL.Path != "/api/v1/auth/logout" && !m.Authenticated(r) {
-			reply(w, 401, map[string]string{"error": "请先登录"})
-			return
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/v1/auth" && r.URL.Path != "/api/v1/auth/login" && r.URL.Path != "/api/v1/auth/logout" {
+			u, ok := m.Identity(r)
+			if !ok {
+				reply(w, 401, map[string]string{"error": "请先登录"})
+				return
+			}
+			r = r.WithContext(pool.WithUser(r.Context(), u))
 		}
 		next.ServeHTTP(w, r)
 	})

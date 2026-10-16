@@ -1,9 +1,9 @@
 import { reactive, readonly, shallowRef } from 'vue'
 
-export type Section = 'nodes' | 'sources' | 'settings'
+export type Section = 'nodes' | 'sources' | 'settings' | 'providers' | 'subscriptions' | 'users' | 'account'
 interface AppRoute { section: Section; path: string; query: string }
-const paths: Record<Section, string> = { nodes: '/nodes', sources: '/sources', settings: '/settings' }
-const titles: Record<Section, string> = { nodes: '节点总览', sources: '来源管理', settings: '运行设置' }
+const paths: Record<Section, string> = { nodes: '/nodes', sources: '/sources', settings: '/settings', providers: '/providers', subscriptions: '/subscriptions', users: '/users', account: '/account' }
+const titles: Record<Section, string> = { nodes: '节点总览', sources: '我的来源', settings: '运行设置', providers: '提供方', subscriptions: '我的订阅', users: '用户管理', account: '我的账号' }
 const remembered = reactive(new Map<Section, string>())
 function readLocation(): AppRoute {
   const path = location.pathname.replace(/\/+$/, '')
@@ -32,8 +32,8 @@ function popstate() {
 window.addEventListener('popstate', popstate)
 
 export function sectionHref(section: Section) { return remembered.get(section) ?? paths[section] }
-export function navigate(section: Section) {
-  const destination = sectionHref(section)
+export function navigate(section: Section, params?: URLSearchParams) {
+  const destination = params ? paths[section] + (params.size ? `?${params}` : '') : sectionHref(section)
   if (destination === currentURL(state.value)) return
   history.pushState(history.state, '', destination)
   publish(readLocation())

@@ -10,13 +10,14 @@ export interface Source {
   id: number; name: string; kind: 'url' | 'file' | 'links'; enabled: boolean; exclude_pattern: string
   status: 'queued' | 'processing' | 'ready' | 'error'; node_count: number; excluded_count: number
   last_error: string; last_refresh_at: string | null; next_refresh_at: string | null; created_at: string
+  owner_id?: number; provider_name?: string; max_users?: number; claimed_users?: number
 }
 export interface PoolNode {
   id: number; name: string; type: string; server: string; port: number; latency_ms: number | null
   status: 'unknown' | 'healthy' | 'unhealthy'; country: string; country_code: string; exit_ip: string
   region?: string; city?: string
   last_checked_at: string | null; next_check_at: string; last_error: string
-  sources: { id: number; name: string; node_name: string }[]
+  sources: { id: number; name: string; node_name: string; owner_id?: number; provider_name?: string }[]
 }
 export interface NodePage {
   items: PoolNode[]; total: number; page: number; page_size: number
@@ -34,7 +35,7 @@ export interface Releases {
   state: 'idle' | 'checking' | 'downloading' | 'installing' | 'restarting' | 'done' | 'error'
   message: string; releases: Release[]
 }
-export interface NewSource { name: string; kind: Source['kind']; url?: string; content?: string; exclude_pattern?: string }
+export interface NewSource { name: string; kind: Source['kind']; url?: string; content?: string; exclude_pattern?: string; max_users?: number }
 export class ApiError extends Error {
   readonly status: number
   constructor(message: string, status = 0) { super(message); this.name = 'ApiError'; this.status = status }

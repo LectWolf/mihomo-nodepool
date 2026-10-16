@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const visible = `n.blocked=0 AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1)`
+const visible = `n.blocked=0 AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1 AND u.enabled=1)`
 const nodeColumns = `n.id,n.name,n.type,n.server,n.port,n.latency_ms,n.status,n.country,n.country_code,n.region,n.city,n.exit_ip,n.last_checked_at,n.last_success_at,n.exit_checked_at,n.next_check_at,n.last_error,n.config,n.created_at,n.failures,n.successes,n.blocked`
 
 func scanNode(row scanner) (Node, error) {
@@ -38,15 +38,43 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 	}
 	where := visible
 	args := []any{}
-	for _, item := range []struct{ column, value string }{{"n.type", f.Type}, {"n.country_code", f.Country}, {"n.status", f.Status}} {
+	for _, item := range []struct{ column, value string }{{"n.type", f.Type}, {"n.status", f.Status}} {
 		if item.value != "" {
 			where += " AND " + item.column + "=?"
 			args = append(args, item.value)
 		}
 	}
-	if f.SourceID > 0 {
-		where += ` AND EXISTS(SELECT 1 FROM np_source_nodes sn WHERE sn.node_id=n.id AND sn.source_id=? AND sn.excluded=0)`
-		args = append(args, f.SourceID)
+	if len(f.Countries) == 0 && f.Country != "" {
+		f.Countries = []string{f.Country}
+	}
+	if len(f.Countries) > 0 {
+		marks := []string{}
+		for _, c := range f.Countries {
+			c = strings.TrimSpace(c)
+			if c != "" {
+				marks = append(marks, "?")
+				args = append(args, c)
+			}
+		}
+		if len(marks) > 0 {
+			where += " AND n.country_code IN (" + strings.Join(marks, ",") + ")"
+		}
+	}
+	if f.SourceID > 0 || f.ProviderID > 0 || f.Following {
+		where += ` AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1 AND u.enabled=1`
+		if f.SourceID > 0 {
+			where += ` AND s.id=?`
+			args = append(args, f.SourceID)
+		}
+		if f.ProviderID > 0 {
+			where += ` AND s.owner_id=?`
+			args = append(args, f.ProviderID)
+		}
+		if f.Following {
+			where += ` AND EXISTS(SELECT 1 FROM np_follows f WHERE f.provider_id=s.owner_id AND f.user_id=?)`
+			args = append(args, f.UserID)
+		}
+		where += `)`
 	}
 	if f.MaxLatency > 0 {
 		where += " AND n.latency_ms<=?"
@@ -95,7 +123,7 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		originArgs[i] = n.ID
 		index[n.ID] = i
 	}
-	origins, e := s.DB.QueryContext(ctx, `SELECT sn.node_id,s.id,s.name,sn.node_name FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id WHERE s.enabled=1 AND sn.excluded=0 AND sn.node_id IN (`+strings.Join(marks, ",")+`) ORDER BY s.id`, originArgs...)
+	origins, e := s.DB.QueryContext(ctx, `SELECT sn.node_id,s.id,s.name,sn.node_name,s.owner_id,u.display_name FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE u.enabled=1 AND s.enabled=1 AND sn.excluded=0 AND sn.node_id IN (`+strings.Join(marks, ",")+`) ORDER BY s.id`, originArgs...)
 	if e != nil {
 		return out, e
 	}
@@ -103,7 +131,7 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 	for origins.Next() {
 		var id int64
 		var v Origin
-		if e = origins.Scan(&id, &v.ID, &v.Name, &v.NodeName); e != nil {
+		if e = origins.Scan(&id, &v.ID, &v.Name, &v.NodeName, &v.OwnerID, &v.ProviderName); e != nil {
 			return out, e
 		}
 		i := index[id]

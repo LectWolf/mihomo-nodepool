@@ -3,11 +3,13 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { errorText, formatDate, isCancelled, json, useApi, type NewSource, type Source } from '../api/system'
 import Modal from './Modal.vue'
 import AppIcon from './AppIcon.vue'
+import { navigate } from '../router'
 import { route, routeParams, setRouteQuery } from '../router'
 const props = defineProps<{ items: Source[]; loading: boolean; error: string }>()
 const emit = defineEmits<{ reload: []; updated: [source: Source]; removed: [id: number] }>()
 const api = useApi()
 const search = ref(routeParams('sources').get('q') ?? '')
+function viewSource(id: number) { navigate('nodes', new URLSearchParams({ source_id: String(id) })) }
 watch(route, value => { if (value.section === 'sources') search.value = routeParams('sources').get('q') ?? '' }, { flush: 'sync' })
 watch(search, value => {
   if (route.value.section !== 'sources') return
@@ -26,6 +28,7 @@ const importOpen = ref(false)
 const importKind = ref<Source['kind']>('url')
 const importName = ref('')
 const importPattern = ref('')
+const importMaxUsers = ref(0)
 const urlText = ref('')
 const linksText = ref('')
 const files = ref<File[]>([])
@@ -42,7 +45,7 @@ const busyIds = reactive(new Set<number>())
 const rowErrors = reactive<Record<number, string>>({})
 const rowMessages = reactive<Record<number, string>>({})
 const editing = ref<Source | null>(null)
-const editForm = reactive({ name: '', exclude_pattern: '', url: '', enabled: true })
+const editForm = reactive({ name: '', exclude_pattern: '', url: '', enabled: true, max_users: 0 })
 const editBusy = ref(false)
 const editError = ref('')
 const deleting = ref<Source | null>(null)
@@ -82,7 +85,7 @@ async function startImport() {
       const value = rows[index]
       if (!result || value === undefined) continue
       try {
-        const payload: NewSource = { name: result.name, kind, exclude_pattern: pattern }
+        const payload: NewSource = { name: result.name, kind, exclude_pattern: pattern, max_users: importMaxUsers.value }
         if (kind === 'url') {
           if (!validUrl(value)) throw new Error(`第 ${index + 1} 行不是有效的 HTTP / HTTPS 订阅地址。`)
           payload.url = value
@@ -108,7 +111,7 @@ async function startImport() {
 }
 function openEdit(source: Source) {
   editing.value = source
-  Object.assign(editForm, { name: source.name, exclude_pattern: source.exclude_pattern, url: '', enabled: source.enabled })
+  Object.assign(editForm, { name: source.name, exclude_pattern: source.exclude_pattern, url: '', enabled: source.enabled, max_users: source.max_users ?? 0 })
   editError.value = ''
 }
 async function saveEdit() {
@@ -118,7 +121,7 @@ async function saveEdit() {
   if (source.kind === 'url' && editForm.url.trim() && !validUrl(editForm.url.trim())) { editError.value = '请输入有效的 HTTP / HTTPS 订阅地址，留空则保留原地址。'; return }
   editBusy.value = true
   try {
-    const updated = await api<Source>(`/sources/${source.id}`, json('PATCH', { name: editForm.name.trim(), enabled: editForm.enabled, exclude_pattern: editForm.exclude_pattern, ...(source.kind === 'url' && editForm.url.trim() ? { url: editForm.url.trim() } : {}) }))
+    const updated = await api<Source>(`/sources/${source.id}`, json('PATCH', { name: editForm.name.trim(), enabled: editForm.enabled, exclude_pattern: editForm.exclude_pattern, max_users: editForm.max_users, ...(source.kind === 'url' && editForm.url.trim() ? { url: editForm.url.trim() } : {}) }))
     emit('updated', updated); emit('reload'); editing.value = null
   } catch (error) { if (!isCancelled(error)) editError.value = errorText(error) }
   finally { editBusy.value = false }
@@ -164,10 +167,30 @@ async function removeSource() {
       <div v-if="error" class="notice error" role="alert">{{ error }}<span v-if="items.length">当前保留上次读取结果。</span><button :disabled="loading" @click="emit('reload')">重试</button></div>
       <div v-if="loading && !items.length" class="empty-state" role="status"><span class="spinner"></span><h3>正在读取来源</h3></div>
       <div v-else-if="!visibleSources.length && !error" class="empty-state"><span class="empty-icon"><AppIcon name="sources" /></span><h3>{{ search ? '没有匹配的来源' : '从第一个来源开始' }}</h3><p>{{ search ? '尝试其他名称。' : '支持批量订阅地址、多个本地文件和节点分享链接。' }}</p><button v-if="!search" class="primary" @click="importOpen = true"><AppIcon name="plus" />添加来源</button></div>
-      <div v-else class="source-list" :aria-busy="loading"><article v-for="source in visibleSources" :key="source.id" :class="['source-card', { disabled: !source.enabled }]"><div class="source-card-head"><span class="source-icon" aria-hidden="true"><AppIcon :name="source.kind === 'url' ? 'external' : source.kind === 'file' ? 'upload' : 'link'" /></span><div class="source-title"><h3>{{ source.name }}</h3><span class="small muted">{{ kindLabels[source.kind] }} · 加入于 {{ formatDate(source.created_at) }}</span></div><span :class="['badge', source.status]">{{ source.enabled ? statusLabels[source.status] : '已停用' }}</span><button :class="['switch', { on: source.enabled }]" role="switch" :aria-checked="source.enabled" :aria-label="`${source.enabled ? '停用' : '启用'} ${source.name}`" :disabled="busyIds.has(source.id) || editBusy || deleteBusy" @click="toggle(source)"><span></span></button></div><div class="source-card-body"><div class="source-numbers"><span><strong>{{ source.node_count }}</strong> 个节点</span><span><strong>{{ source.excluded_count }}</strong> 个已排除</span></div><div class="source-schedule"><span>最近刷新 <b>{{ formatDate(source.last_refresh_at) }}</b></span><span>下次刷新 <b>{{ source.enabled ? formatDate(source.next_refresh_at) : '已暂停' }}</b></span></div><div class="source-actions"><button class="compact" :disabled="busyIds.has(source.id) || !source.enabled || source.status === 'queued' || source.status === 'processing'" @click="refresh(source)"><AppIcon name="refresh" />{{ source.kind === 'url' ? '刷新' : '重新解析' }}</button><button class="compact" :disabled="busyIds.has(source.id)" @click="openEdit(source)"><AppIcon name="edit" />编辑</button><button class="compact danger" :disabled="busyIds.has(source.id)" @click="confirmDelete(source)"><AppIcon name="trash" />删除</button></div></div><p v-if="source.exclude_pattern" class="source-pattern small"><span class="muted">排除规则</span><code>{{ source.exclude_pattern }}</code></p><p v-if="source.last_error || rowErrors[source.id]" class="notice error" role="alert">{{ rowErrors[source.id] || source.last_error }}<span v-if="source.last_error && source.last_refresh_at">上次成功的节点内容已保留。</span></p><p v-else-if="source.status === 'queued' || source.status === 'processing'" class="small muted source-progress"><span class="spinner"></span>{{ source.status === 'queued' ? '等待后台任务处理，结果将自动更新…' : '正在解析并整理节点，结果将自动更新…' }}</p><p v-else-if="rowMessages[source.id]" class="small green-text">{{ rowMessages[source.id] }}</p></article></div>
+      <div v-else class="source-list" :aria-busy="loading"><article v-for="source in visibleSources" :key="source.id" :class="['source-card', { disabled: !source.enabled }]">
+        <div class="source-card-head"><span class="source-icon" aria-hidden="true"><AppIcon :name="source.kind === 'url' ? 'external' : source.kind === 'file' ? 'upload' : 'link'" /></span><div class="source-title"><h3>{{ source.name }}</h3><span class="small muted">{{ kindLabels[source.kind] }} · 加入于 {{ formatDate(source.created_at) }}</span></div><span :class="['badge', source.status]">{{ source.enabled ? statusLabels[source.status] : '已停用' }}</span><button :class="['switch', { on: source.enabled }]" role="switch" :aria-checked="source.enabled" :aria-label="`${source.enabled ? '停用' : '启用'} ${source.name}`" :disabled="busyIds.has(source.id) || editBusy || deleteBusy" @click="toggle(source)"><span></span></button></div>
+        <div class="source-card-body"><div class="source-numbers"><span><strong>{{ source.node_count }}</strong> 个节点</span><span><strong>{{ source.excluded_count }}</strong> 个已排除</span></div><div class="source-schedule"><span>最近刷新 <b>{{ formatDate(source.last_refresh_at) }}</b></span><span>下次刷新 <b>{{ source.enabled ? formatDate(source.next_refresh_at) : '已暂停' }}</b></span></div><div class="source-actions"><button class="compact" :disabled="busyIds.has(source.id) || !source.enabled || source.status === 'queued' || source.status === 'processing'" @click="refresh(source)"><AppIcon name="refresh" />{{ source.kind === 'url' ? '刷新' : '重新解析' }}</button><button class="compact" :disabled="busyIds.has(source.id)" @click="openEdit(source)"><AppIcon name="edit" />编辑</button><button class="compact danger" :disabled="busyIds.has(source.id)" @click="confirmDelete(source)"><AppIcon name="trash" />删除</button></div></div>
+        <div class="source-ownership"><span>提供方：{{ source.provider_name || '管理员' }}</span><span>已领取 {{ source.claimed_users ?? 0 }} / {{ source.max_users || '不限' }} 人</span><button class="text-button" @click="viewSource(source.id)">查看节点<AppIcon name="right" /></button></div>
+        <p v-if="source.exclude_pattern" class="source-pattern small"><span class="muted">排除规则</span><code>{{ source.exclude_pattern }}</code></p><p v-if="source.last_error || rowErrors[source.id]" class="notice error" role="alert">{{ rowErrors[source.id] || source.last_error }}<span v-if="source.last_error && source.last_refresh_at">上次成功的节点内容已保留。</span></p><p v-else-if="source.status === 'queued' || source.status === 'processing'" class="small muted source-progress"><span class="spinner"></span>{{ source.status === 'queued' ? '等待后台任务处理，结果将自动更新…' : '正在解析并整理节点，结果将自动更新…' }}</p><p v-else-if="rowMessages[source.id]" class="small green-text">{{ rowMessages[source.id] }}</p>
+      </article></div>
     </div>
-    <Modal v-if="importOpen" title="添加来源" :busy="importBusy" wide @close="importOpen = false"><div class="tab-bar" role="tablist" aria-label="导入方式"><button v-for="kind in (['url', 'file', 'links'] as const)" :key="kind" :class="{ active: importKind === kind }" role="tab" :aria-selected="importKind === kind" :disabled="importBusy" @click="importKind = kind">{{ kindLabels[kind] }}</button></div><form @submit.prevent="startImport"><fieldset :disabled="importBusy"><div class="form-grid"><label>来源名称 <span class="muted small">可选</span><input v-model="importName" placeholder="留空使用地址或文件名称" maxlength="200" /></label><label>名称排除正则 <span class="muted small">可选</span><input v-model="importPattern" placeholder="例如：剩余|流量|到期" /><span class="field-hint">与全局规则共同生效，匹配的节点不会进入有效列表。</span></label></div><label v-if="importKind === 'url'">订阅地址 <span class="muted small">每行一个</span><textarea v-model="urlText" rows="7" placeholder="https://example.com/subscription&#10;https://example.org/subscription" required spellcheck="false"></textarea><span class="field-hint">每个地址独立创建来源，个别失败不影响其他来源。</span></label><div v-else-if="importKind === 'file'"><label class="file-drop"><span class="empty-icon">↑</span><strong>选择本地文件</strong><span class="small muted">支持一次选择多个文件，读取文本后导入</span><input type="file" multiple @change="selectFiles" /></label><ul class="file-list"><li v-for="(file, index) in files" :key="index"><span>{{ file.name }} <small class="muted">{{ (file.size / 1024).toFixed(1) }} KB</small></span><button type="button" class="text-button danger" :aria-label="`移除 ${file.name}`" @click="files.splice(index, 1)">移除</button></li></ul></div><label v-else>节点分享链接<textarea v-model="linksText" rows="7" placeholder="粘贴 ss://、vmess://、vless://、trojan:// 等节点链接，每行一个" required spellcheck="false"></textarea><span class="field-hint">本次粘贴内容作为一个来源保存。</span></label></fieldset><div v-if="results.length" class="notice" role="status">本次任务：{{ finished }} 个就绪，{{ awaiting }} 个处理中，{{ failed }} 个失败。详细结果保留在来源列表上方。</div><p v-if="importError" class="notice error" role="alert">{{ importError }}</p><div class="dialog-actions"><button type="button" :disabled="importBusy" @click="importOpen = false">{{ results.length ? '返回来源列表' : '取消' }}</button><button class="primary" type="submit" :disabled="importBusy || !canImport"><span v-if="importBusy" class="spinner"></span>{{ importBusy ? '正在提交…' : '开始导入' }}</button></div></form></Modal>
-    <Modal v-if="editing" title="编辑来源" :busy="editBusy" @close="editing = null"><form @submit.prevent="saveEdit"><fieldset :disabled="editBusy"><label>来源名称<input v-model="editForm.name" required maxlength="200" /></label><label>名称排除正则<input v-model="editForm.exclude_pattern" placeholder="留空则仅使用全局排除规则" /><span class="field-hint">修改规则后自动按已保存内容重新处理。</span></label><label v-if="editing.kind === 'url'">替换订阅地址 <span class="small muted">可选</span><input v-model="editForm.url" type="url" autocomplete="off" placeholder="留空保留原订阅地址" /><span class="field-hint">为保护订阅信息，已保存的地址不会回显。</span></label><label class="checkbox-label"><input v-model="editForm.enabled" type="checkbox" />启用此来源</label></fieldset><p v-if="editError" class="notice error" role="alert">{{ editError }}</p><div class="dialog-actions"><button type="button" :disabled="editBusy" @click="editing = null">取消</button><button type="submit" class="primary" :disabled="editBusy || !editForm.name.trim()">{{ editBusy ? '正在保存…' : '保存修改' }}</button></div></form></Modal>
+    <Modal v-if="importOpen" title="添加来源" :busy="importBusy" wide @close="importOpen = false">
+      <div class="tab-bar" role="tablist" aria-label="导入方式"><button v-for="kind in (['url', 'file', 'links'] as const)" :key="kind" :class="{ active: importKind === kind }" role="tab" :aria-selected="importKind === kind" :disabled="importBusy" @click="importKind = kind">{{ kindLabels[kind] }}</button></div>
+      <form @submit.prevent="startImport"><fieldset :disabled="importBusy">
+        <div class="form-grid"><label class="form-field"><span class="field-label">来源名称 <small class="muted">可选</small></span><input v-model="importName" placeholder="留空使用地址或文件名称" maxlength="200" /></label><label class="form-field"><span class="field-label">名称排除正则 <small class="muted">可选</small></span><input v-model="importPattern" placeholder="例如：剩余|流量|到期" /><span class="field-hint">与全局规则共同生效，匹配的节点不会进入有效列表。</span></label></div>
+        <label class="form-field"><span class="field-label">最大领取人数</span><input v-model.number="importMaxUsers" type="number" min="0" max="100000000" step="1" required /><span class="field-hint">0 表示不限。同一账号领取多个节点或重复刷新，只计一人；历史领取不因删除订阅而回收。</span></label>
+        <label v-if="importKind === 'url'" class="form-field"><span class="field-label">订阅地址 <small class="muted">每行一个</small></span><textarea v-model="urlText" rows="7" placeholder="https://example.com/subscription&#10;https://example.org/subscription" required spellcheck="false"></textarea><span class="field-hint">每个地址独立创建来源，个别失败不影响其他来源。</span></label>
+        <div v-else-if="importKind === 'file'"><label class="file-drop"><span class="empty-icon"><AppIcon name="upload" /></span><strong>选择本地文件</strong><span class="small muted">支持一次选择多个文件，读取文本后导入</span><input type="file" multiple @change="selectFiles" /></label><ul class="file-list"><li v-for="(file, index) in files" :key="index"><span>{{ file.name }} <small class="muted">{{ (file.size / 1024).toFixed(1) }} KB</small></span><button type="button" class="text-button danger" :aria-label="`移除 ${file.name}`" @click="files.splice(index, 1)">移除</button></li></ul></div>
+        <label v-else class="form-field"><span class="field-label">节点分享链接</span><textarea v-model="linksText" rows="7" placeholder="粘贴 ss://、vmess://、vless://、trojan:// 等节点链接，每行一个" required spellcheck="false"></textarea><span class="field-hint">本次粘贴内容作为一个来源保存。</span></label>
+      </fieldset><div v-if="results.length" class="notice" role="status">本次任务：{{ finished }} 个就绪，{{ awaiting }} 个处理中，{{ failed }} 个失败。详细结果保留在来源列表上方。</div><p v-if="importError" class="notice error" role="alert">{{ importError }}</p><div class="dialog-actions"><button type="button" :disabled="importBusy" @click="importOpen = false">{{ results.length ? '返回来源列表' : '取消' }}</button><button class="primary" type="submit" :disabled="importBusy || !canImport"><span v-if="importBusy" class="spinner"></span>{{ importBusy ? '正在提交…' : '开始导入' }}</button></div></form>
+    </Modal>
+    <Modal v-if="editing" title="编辑来源" :busy="editBusy" @close="editing = null"><form @submit.prevent="saveEdit"><fieldset :disabled="editBusy">
+      <label class="form-field"><span class="field-label">来源名称</span><input v-model="editForm.name" required maxlength="200" /></label>
+      <label class="form-field"><span class="field-label">名称排除正则</span><input v-model="editForm.exclude_pattern" placeholder="留空则仅使用全局排除规则" /><span class="field-hint">修改规则后自动按已保存内容重新处理。</span></label>
+      <label class="form-field"><span class="field-label">最大领取人数</span><input v-model.number="editForm.max_users" type="number" min="0" max="100000000" step="1" required /><span class="field-hint">已领取 {{ editing.claimed_users ?? 0 }} 人；0 表示不限。降低上限不影响已领取账号。</span></label>
+      <label v-if="editing.kind === 'url'" class="form-field"><span class="field-label">替换订阅地址 <small class="muted">可选</small></span><input v-model="editForm.url" type="url" autocomplete="off" placeholder="留空保留原订阅地址" /><span class="field-hint">为保护订阅信息，已保存的地址不会回显。</span></label>
+      <label class="checkbox-label"><input v-model="editForm.enabled" type="checkbox" />启用此来源</label>
+    </fieldset><p v-if="editError" class="notice error" role="alert">{{ editError }}</p><div class="dialog-actions"><button type="button" :disabled="editBusy" @click="editing = null">取消</button><button type="submit" class="primary" :disabled="editBusy || !editForm.name.trim()">{{ editBusy ? '正在保存…' : '保存修改' }}</button></div></form></Modal>
     <Modal v-if="deleting" title="删除来源" :busy="deleteBusy" @close="deleting = null"><p>确定删除「{{ deleting.name }}」吗？此操作无法撤销。</p><p class="muted">仅由此来源提供的节点将移除，其他来源仍引用的节点会保留。</p><p v-if="deleteError" class="notice error" role="alert">{{ deleteError }}</p><div class="dialog-actions"><button :disabled="deleteBusy" @click="deleting = null">取消</button><button class="danger-solid" :disabled="deleteBusy" @click="removeSource">{{ deleteBusy ? '正在删除…' : '确认删除' }}</button></div></Modal>
   </section>
 </template>

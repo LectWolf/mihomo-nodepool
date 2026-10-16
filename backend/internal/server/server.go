@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/auth"
@@ -31,6 +32,7 @@ type databaseStatus struct {
 func New(o Options) http.Handler {
 	mux := http.NewServeMux()
 	store := o.Service.Store
+	o.Auth.BindStore(store)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -44,6 +46,10 @@ func New(o Options) http.Handler {
 		writeJSON(w, code, status)
 	})
 	mux.HandleFunc("GET /api/v1/system", func(w http.ResponseWriter, r *http.Request) {
+		if pool.CurrentUser(r.Context()).Role != "admin" {
+			writeJSON(w, 200, map[string]any{"name": "Mihomo NodePool", "version": buildinfo.Version})
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 		connected := store.Ensure(ctx) == nil
@@ -131,7 +137,12 @@ func New(o Options) http.Handler {
 		if len(q.Get("q")) > 512 {
 			return errors.New("搜索内容过长")
 		}
-		v, e := store.Nodes(r.Context(), pool.Filter{Page: page, PageSize: size, Q: q.Get("q"), Type: q.Get("type"), Country: q.Get("country"), Status: q.Get("status"), SourceID: source, Sort: q.Get("sort"), MaxLatency: max})
+		provider, _ := strconv.ParseInt(q.Get("provider_id"), 10, 64)
+		var countries []string
+		if q.Get("countries") != "" {
+			countries = strings.Split(q.Get("countries"), ",")
+		}
+		v, e := store.Nodes(r.Context(), pool.Filter{Page: page, PageSize: size, Q: q.Get("q"), Type: q.Get("type"), Country: q.Get("country"), Countries: countries, ProviderID: provider, Following: q.Get("following") == "1", UserID: pool.CurrentUser(r.Context()).ID, Status: q.Get("status"), SourceID: source, Sort: q.Get("sort"), MaxLatency: max})
 		if e == nil {
 			writeJSON(w, 200, v)
 		}
@@ -140,6 +151,9 @@ func New(o Options) http.Handler {
 	business("POST /api/v1/nodes/{id}/test", func(w http.ResponseWriter, r *http.Request) error {
 		id, e := idOf(r)
 		if e != nil {
+			return e
+		}
+		if e = store.NodePermission(r.Context(), id); e != nil {
 			return e
 		}
 		if e = store.QueueNodes(r.Context(), []int64{id}); e != nil {
@@ -189,15 +203,35 @@ func New(o Options) http.Handler {
 		writeJSON(w, 200, in)
 		return nil
 	})
+	registerMultiuser(business, store, o.Auth)
+	registerSubscriptionDownload(mux, store)
 	o.Auth.Register(mux)
+	updatesMux := http.NewServeMux()
 	if o.Updates != nil {
-		o.Updates.Register(mux)
+		o.Updates.Register(updatesMux)
 	}
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "接口不存在"})
 	})
 	mux.Handle("/", web.Handler())
-	return o.Auth.Wrap(mux)
+	return o.Auth.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		adminOnly := p == "/api/v1/settings" || strings.HasPrefix(p, "/api/v1/users") || p == "/api/v1/nodes/test" || strings.HasPrefix(p, "/api/v1/releases") || strings.HasPrefix(p, "/api/v1/system/") || strings.HasPrefix(p, "/api/v1/updates")
+		if adminOnly && pool.CurrentUser(r.Context()).Role != "admin" {
+			writeError(w, pool.ErrForbidden)
+			return
+		}
+		// The registrar may add routes in future; guard its entire mux as a unit.
+		if _, pattern := updatesMux.Handler(r); pattern != "" {
+			if pool.CurrentUser(r.Context()).Role != "admin" {
+				writeError(w, pool.ErrForbidden)
+				return
+			}
+			updatesMux.ServeHTTP(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
 }
 func decode(w http.ResponseWriter, r *http.Request, out any) error {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 24<<20))
@@ -219,6 +253,12 @@ func writeError(w http.ResponseWriter, e error) {
 	message := e.Error()
 	var me *mysql.MySQLError
 	switch {
+	case errors.Is(e, pool.ErrForbidden):
+		code = 403
+	case errors.Is(e, pool.ErrQuota):
+		code = 409
+	case errors.Is(e, pool.ErrUnexportable):
+		code = 422
 	case errors.Is(e, pool.ErrNotFound), errors.Is(e, sql.ErrNoRows):
 		code = 404
 		message = "记录不存在"

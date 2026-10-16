@@ -26,7 +26,7 @@ func (s *Store) AddSource(ctx context.Context, in SourceInput) (Source, error) {
 		return Source{}, e
 	}
 	now := utcNow()
-	result, e := s.DB.ExecContext(ctx, `INSERT INTO np_sources(name,kind,url,url_hash,content,exclude_pattern,last_error,created_at,next_refresh_at) VALUES(?,?,?,?,?,?,'',?,?)`, cleanName(in.Name), in.Kind, strings.TrimSpace(in.URL), urlHash(in.URL), in.Content, in.ExcludePattern, now, now)
+	result, e := s.DB.ExecContext(ctx, `INSERT INTO np_sources(owner_id,max_users,name,kind,url,url_hash,content,exclude_pattern,last_error,created_at,next_refresh_at) VALUES(?,?,?,?,?,?,?,?,'',?,?)`, CurrentUser(ctx).ID, in.MaxUsers, cleanName(in.Name), in.Kind, strings.TrimSpace(in.URL), urlHash(in.URL), in.Content, in.ExcludePattern, now, now)
 	if e != nil {
 		var me *mysql.MySQLError
 		if errors.As(e, &me) && me.Number == 1062 {
@@ -52,6 +52,15 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 	}
 	if e != nil {
 		return v, e
+	}
+	if u := CurrentUser(ctx); u.Role != "admin" && v.OwnerID != u.ID {
+		return v, ErrForbidden
+	}
+	if p.MaxUsers != nil {
+		if *p.MaxUsers < 0 {
+			return v, errors.New("领取人数上限不能为负数")
+		}
+		v.MaxUsers = *p.MaxUsers
 	}
 	if p.Name != nil {
 		v.Name = cleanName(*p.Name)
@@ -83,6 +92,9 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 			reparse = true
 		}
 	}
+	if _, e = tx.ExecContext(ctx, `UPDATE np_sources SET max_users=? WHERE id=?`, v.MaxUsers, id); e != nil {
+		return v, e
+	}
 	// Evaluate cached before pending: queued/in-flight network work and due refreshes
 	// take priority over reparsing old content. MySQL SET assignments run left to right.
 	_, e = tx.ExecContext(ctx, `UPDATE np_sources SET name=?,enabled=?,exclude_pattern=?,url=?,url_hash=?,revision=revision+1,cached=IF(?,0,IF(?,IF(kind='url' AND ((cached=0 AND (pending=1 OR lease_until IS NOT NULL)) OR next_refresh_at<=UTC_TIMESTAMP(6)),0,1),cached)),pending=IF(? OR ?,1,pending),status=IF(? OR ?,'queued',status) WHERE id=?`, v.Name, v.Enabled, v.ExcludePattern, v.URL, urlHash(v.URL), fetch, reparse, reparse, fetch, reparse, fetch, id)
@@ -95,6 +107,9 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 	return s.Source(ctx, id)
 }
 func (s *Store) DeleteSource(ctx context.Context, id int64) error {
+	if e := s.SourcePermission(ctx, id); e != nil {
+		return e
+	}
 	r, e := s.DB.ExecContext(ctx, `DELETE FROM np_sources WHERE id=?`, id)
 	if e != nil {
 		return e
@@ -106,6 +121,9 @@ func (s *Store) DeleteSource(ctx context.Context, id int64) error {
 	return nil
 }
 func (s *Store) QueueSource(ctx context.Context, id int64) error {
+	if e := s.SourcePermission(ctx, id); e != nil {
+		return e
+	}
 	r, e := s.DB.ExecContext(ctx, `UPDATE np_sources SET pending=1,cached=0,status='queued' WHERE id=? AND enabled=1`, id)
 	if e != nil {
 		return e

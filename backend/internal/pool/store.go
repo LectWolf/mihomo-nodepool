@@ -72,6 +72,9 @@ func (s *Store) Ensure(ctx context.Context) error {
 	if err := s.ensureNodeProbeColumns(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureMultiuser(ctx); err != nil {
+		return err
+	}
 	b, _ := json.Marshal(Defaults())
 	if _, e := s.DB.ExecContext(ctx, `INSERT IGNORE INTO np_settings(id,body) VALUES(1,?)`, b); e != nil {
 		return e
@@ -119,17 +122,27 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 	return tx.Commit()
 }
 
-const sourceColumns = `id,name,kind,enabled,exclude_pattern,status,node_count,excluded_count,last_error,last_refresh_at,next_refresh_at,created_at,url,content,revision,cached`
+const sourceBaseColumns = `id,name,kind,enabled,exclude_pattern,status,node_count,excluded_count,last_error,last_refresh_at,next_refresh_at,created_at`
+const sourceOwnerColumns = `revision,cached,owner_id,max_users,(SELECT COUNT(*) FROM np_source_claims c WHERE c.source_id=np_sources.id),COALESCE((SELECT display_name FROM np_users u WHERE u.id=np_sources.owner_id),'')`
+const sourceColumns = sourceBaseColumns + `,url,content,` + sourceOwnerColumns
+const publicSourceColumns = sourceBaseColumns + `,'','',` + sourceOwnerColumns
 
 type scanner interface{ Scan(...any) error }
 
 func scanSource(row scanner) (Source, error) {
 	var v Source
-	e := row.Scan(&v.ID, &v.Name, &v.Kind, &v.Enabled, &v.ExcludePattern, &v.Status, &v.NodeCount, &v.ExcludedCount, &v.LastError, &v.LastRefreshAt, &v.NextRefreshAt, &v.CreatedAt, &v.URL, &v.Content, &v.Revision, &v.Cached)
+	e := row.Scan(&v.ID, &v.Name, &v.Kind, &v.Enabled, &v.ExcludePattern, &v.Status, &v.NodeCount, &v.ExcludedCount, &v.LastError, &v.LastRefreshAt, &v.NextRefreshAt, &v.CreatedAt, &v.URL, &v.Content, &v.Revision, &v.Cached, &v.OwnerID, &v.MaxUsers, &v.ClaimedUsers, &v.ProviderName)
 	return v, e
 }
 func (s *Store) Sources(ctx context.Context) ([]Source, error) {
-	rows, e := s.DB.QueryContext(ctx, `SELECT id,name,kind,enabled,exclude_pattern,status,node_count,excluded_count,last_error,last_refresh_at,next_refresh_at,created_at,'','',revision,cached FROM np_sources ORDER BY id DESC`)
+	u := CurrentUser(ctx)
+	where := ""
+	args := []any{}
+	if u.Role != "admin" {
+		where = " WHERE owner_id=?"
+		args = append(args, u.ID)
+	}
+	rows, e := s.DB.QueryContext(ctx, `SELECT `+publicSourceColumns+` FROM np_sources`+where+` ORDER BY id DESC`, args...)
 	if e != nil {
 		return nil, e
 	}

@@ -1,4 +1,4 @@
-param([switch]$Build)
+﻿param([switch]$Build)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot

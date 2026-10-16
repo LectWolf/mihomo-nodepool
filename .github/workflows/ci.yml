@@ -68,7 +68,8 @@ jobs:
       - name: Build and smoke test container
         run: |
           docker build --build-arg VERSION=ci --tag nodepool:ci .
-          docker run --detach --name nodepool-ci --env ADMIN_PASSWORD=nodepool-ci-test-password --publish 127.0.0.1:18080:8080 nodepool:ci
+          docker exec ${{ job.services.mysql.id }} mysql -uroot -pnodepool-test-only -e 'CREATE DATABASE nodepool_container_test CHARACTER SET utf8mb4;'
+          docker run --detach --name nodepool-ci --network host --env HTTP_ADDR=127.0.0.1:18080 --env ADMIN_PASSWORD=nodepool-ci-test-password --env MYSQL_HOST=127.0.0.1 --env MYSQL_PORT=3306 --env MYSQL_USER=root --env MYSQL_PASSWORD=nodepool-test-only --env MYSQL_DATABASE=nodepool_container_test nodepool:ci
           trap 'docker logs nodepool-ci; docker rm --force nodepool-ci' EXIT
           for attempt in $(seq 1 15); do
             if curl --fail --silent http://127.0.0.1:18080/healthz; then

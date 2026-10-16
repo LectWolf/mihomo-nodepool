@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -51,6 +52,32 @@ func Parse(content string, validate func(map[string]any) error) (ParseResult, er
 					continue
 				}
 				maps = append(maps, converted...)
+				// The upstream converter retains escaped HY2 userinfo verbatim.
+				// URI auth is the entire decoded userinfo, including a literal colon.
+				if u, err := url.Parse(line); err == nil && (u.Scheme == "hysteria2" || u.Scheme == "hy2") && u.User != nil {
+					if password, err := url.PathUnescape(u.User.String()); err == nil {
+						for _, m := range converted {
+							m["password"] = password
+						}
+					}
+				}
+				// fp is part of the VMess v2 share JSON but is omitted by the
+				// upstream converter. Retain it before validation/fingerprinting.
+				if strings.HasPrefix(line, "vmess://") {
+					for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+						if raw, err := enc.DecodeString(strings.TrimPrefix(line, "vmess://")); err == nil {
+							var share struct {
+								FP string `json:"fp"`
+							}
+							if json.Unmarshal(raw, &share) == nil && share.FP != "" {
+								for _, m := range converted {
+									m["client-fingerprint"] = share.FP
+								}
+							}
+							break
+						}
+					}
+				}
 			}
 		}
 	}
