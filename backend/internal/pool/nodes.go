@@ -84,7 +84,7 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		originArgs[i] = n.ID
 		index[n.ID] = i
 	}
-	origins, e := s.DB.QueryContext(ctx, `SELECT sn.node_id,s.id,s.name,sn.node_name,s.owner_id,u.display_name,s.min_level,s.subscription_usage,u.username,u.avatar_version,u.title,s.max_users,(SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=s.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6)),COALESCE((SELECT IF(me.state='kicked','kicked',IF(me.state='active' AND me.expires_at>UTC_TIMESTAMP(6),'active','')) FROM np_source_seats me WHERE me.source_id=s.id AND me.user_id=?),'') FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE u.enabled=1 AND s.enabled=1 AND sn.excluded=0 AND sn.node_id IN (`+strings.Join(marks, ",")+`) ORDER BY s.id`, append([]any{viewer.ID}, originArgs...)...)
+	origins, e := s.DB.QueryContext(ctx, `SELECT sn.node_id,s.id,s.name,sn.node_name,s.owner_id,u.display_name,s.min_level,s.private,s.subscription_usage,u.username,u.avatar_version,u.title,s.max_users,(SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=s.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6)),COALESCE((SELECT IF(me.state='kicked','kicked',IF(me.state='active' AND me.expires_at>UTC_TIMESTAMP(6),'active','')) FROM np_source_seats me WHERE me.source_id=s.id AND me.user_id=?),'') FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE u.enabled=1 AND s.enabled=1 AND sn.excluded=0 AND `+accessSQL("s")+` AND sn.node_id IN (`+strings.Join(marks, ",")+`) ORDER BY s.id`, append([]any{viewer.ID, viewer.ID, viewer.ID}, originArgs...)...)
 	if e != nil {
 		return out, e
 	}
@@ -94,7 +94,7 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		var v Origin
 		var usage []byte
 		var seat string
-		if e = origins.Scan(&id, &v.ID, &v.Name, &v.NodeName, &v.OwnerID, &v.ProviderName, &v.MinLevel, &usage, &v.ProviderUsername, &v.ProviderAvatar, &v.ProviderTitle, &v.MaxUsers, &v.ActiveUsers, &seat); e != nil {
+		if e = origins.Scan(&id, &v.ID, &v.Name, &v.NodeName, &v.OwnerID, &v.ProviderName, &v.MinLevel, &v.Private, &usage, &v.ProviderUsername, &v.ProviderAvatar, &v.ProviderTitle, &v.MaxUsers, &v.ActiveUsers, &seat); e != nil {
 			return out, e
 		}
 		v.Seated = seat == "active"
@@ -132,14 +132,14 @@ const FreshWindow = 72 * time.Hour
 
 // usableSQL 判断当前用户能否通过任一来源选用节点，规则与 claimSeat 一致
 func usableSQL(u User) (string, []any) {
-	return `EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1 AND u.enabled=1 AND (s.owner_id=? OR ?='admin' OR s.min_level<=?) AND NOT EXISTS(SELECT 1 FROM np_source_seats k WHERE k.source_id=s.id AND k.user_id=? AND k.state='kicked') AND (s.max_users=0 OR EXISTS(SELECT 1 FROM np_source_seats me WHERE me.source_id=s.id AND me.user_id=? AND me.state='active' AND me.expires_at>UTC_TIMESTAMP(6)) OR (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=s.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))<s.max_users))`, []any{u.ID, u.Role, u.Level, u.ID, u.ID}
+	return `EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1 AND u.enabled=1 AND (s.private=1 OR s.owner_id=? OR ?='admin' OR s.min_level<=?) AND ` + accessSQL("s") + ` AND NOT EXISTS(SELECT 1 FROM np_source_seats k WHERE k.source_id=s.id AND k.user_id=? AND k.state='kicked') AND (s.max_users=0 OR EXISTS(SELECT 1 FROM np_source_seats me WHERE me.source_id=s.id AND me.user_id=? AND me.state='active' AND me.expires_at>UTC_TIMESTAMP(6)) OR (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=s.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))<s.max_users))`, []any{u.ID, u.Role, u.Level, u.ID, u.ID, u.ID, u.ID}
 }
 
 func originBlock(u User, o Origin, seat string) string {
 	switch {
 	case seat == "kicked":
 		return "kicked"
-	case o.OwnerID != u.ID && u.Role != "admin" && u.Level < o.MinLevel:
+	case !o.Private && o.OwnerID != u.ID && u.Role != "admin" && u.Level < o.MinLevel:
 		return "level"
 	case o.MaxUsers > 0 && seat != "active" && o.ActiveUsers >= o.MaxUsers:
 		return "full"

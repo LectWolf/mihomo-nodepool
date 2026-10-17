@@ -79,7 +79,7 @@ try {
     return result.json()
   }
   // This database is exclusively owned by the test. Keep repeated runs isolated.
-  for (const source of (await api('/sources')).items) await api(`/sources/${source.id}`, { method: 'DELETE' })
+  for (const source of (await api('/sources?scope=all')).items) await api(`/sources/${source.id}`, { method: 'DELETE' })
   await page.getByRole('link', { name: /运行设置/ }).click()
   await page.getByLabel('测试 URL', { exact: true }).fill(`http://127.0.0.1:${targetPort}/delay`)
   assert.equal(new URL(page.url()).pathname, '/settings')
@@ -418,7 +418,7 @@ try {
   await login('admin', 'browser-test-password')
   await page.getByRole('link', { name: /节点总览/ }).click()
   assert.equal(await page.locator('.selection-bar').count(), 0, 'account switching clears draft')
-  const claimed = (await api('/sources')).items.find(s => s.id === subscription.source_ids[0])
+  const claimed = (await api('/sources?scope=all')).items.find(s => s.id === subscription.source_ids[0])
   assert.equal(claimed.claimed_users, 1, 'client refresh and edit count one account')
   const receiver = await api('/users', { method: 'POST', data: { username: `receiver_${Date.now()}`, password: 'receiver-password', display_name: '订阅管理测试用户' } })
   const receiverContext = await browser.newContext()

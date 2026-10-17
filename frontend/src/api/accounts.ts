@@ -78,6 +78,8 @@ export const editingSubscription = ref<number | null>(null)
 export const draftName = ref('我的订阅')
 export const draftRuleProfile = ref<number | null>(0)
 export const selectingNodes = ref(false)
+// 经典版首页点“保存组合”后，节点总览打开保存窗口
+export const reviewRequested = ref(false)
 export const selectionError = ref('')
 export const selectedSources = computed(() => new Set([...draftNodes.value.map(n => n.source_id), ...draftSources.value.map(s => s.id)]))
 // 只有设置了使用人数上限的来源才计入来源额度

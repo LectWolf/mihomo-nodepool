@@ -36,7 +36,7 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', outside); do
       <div v-if="open" class="user-menu-panel" role="menu">
         <div class="user-menu-card">
           <UserAvatar :id="currentUser?.id" :name="name" :version="currentUser?.avatar_version" :size="52" />
-          <div><strong>{{ name }}</strong><span class="small muted">@{{ currentUser?.username }} · {{ roleNames[currentUser?.role ?? 'user'] }}</span><TitleChip :name="currentUser?.title" /></div>
+          <div><strong>{{ name }}</strong><span class="small muted">@{{ currentUser?.username }} · ID #{{ currentUser?.id }} · {{ roleNames[currentUser?.role ?? 'user'] }}</span><TitleChip :name="currentUser?.title" /></div>
         </div>
         <div class="user-menu-level">
           <div><span class="level-badge">Lv{{ communityUser.level }}</span><strong>{{ levelLabel(communityUser.level).split(' ')[1] }}</strong><span class="small muted">{{ progress.next == null ? '已满级' : `${communityUser.xp.toLocaleString()} / ${progress.next.toLocaleString()} XP` }}</span></div>

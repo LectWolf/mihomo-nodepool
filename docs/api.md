@@ -53,8 +53,8 @@ GET `/statistics`（仅管理员）→ `{sampled_at,overview,tasks,source_tasks,
 
 `Source = {id,owner_id,provider_name,max_users,claimed_users,active_users,occupied_users,min_level,share_url?,subscription_usage?,name,kind,enabled,exclude_pattern,status:"queued"|"processing"|"ready"|"error",node_count,excluded_count,last_error,last_refresh_at,next_refresh_at,created_at}`。`share_url`仅管理列表返回，公共目录不披露。
 
-- GET `/sources` → `{items:Source[]}`；普通用户仅本人，管理员全部。
-- POST `/sources` `{name,kind:"url"|"file"|"links",url?,content?,exclude_pattern?,max_users?,min_level?}` → Source，202。URL来源传url，其余传content。
+- GET `/sources?scope=all` → `{items:Source[]}`；默认只返回本人来源，管理员传 `scope=all` 时返回全部（含私有来源）。
+- POST `/sources` `{name,kind:"url"|"file"|"links",url?,content?,exclude_pattern?,max_users?,min_level?,private?}` → Source，202。URL来源传url，其余传content。
 - PATCH `/sources/{id}` `{name?,enabled?,exclude_pattern?,url?,max_users?,min_level?}` → Source；空url保留已有地址，排除变化重新处理缓存。最低等级0–6，默认0不限。
 - POST `/sources/{id}/refresh` → `{queued:true}`；URL 来源重新抓取，文件和链接重新解析已保存内容。
 - DELETE `/sources/{id}` → `{deleted:true}`。
@@ -225,7 +225,7 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 - POST `/settings/smtp-test` `{to}` → `{ok}`，仅管理员，使用已保存的 SMTP 配置。
 - 头像接受 PNG／JPEG／GIF，GIF 与 APNG 只保留首帧并重新编码为静态 PNG（超过 200KB 时转 JPEG）；前端上传前也会裁剪并转成静态 JPEG。
 - GET `/nodes` 新增 `available=1`（只看当前用户可选）和 `sort=recommend`（默认：可选优先，72 小时内新入池的健康节点优先，再按延迟）。所有角色（含管理员）的所有排序都按“可选 → 席位已满／等级不足／已被移出 → 检测不可用”分组，管理员领取同样受席位上限限制，只跳过等级限制；`available=1` 对管理员同样生效。来源目录 `/catalog` 的所有排序同理；节点与 `sources[]` 返回 `unavailable:"full"|"level"|"kicked"`（席位已满／等级不足／已被移出），节点另有 `fresh`。
-- GET `/sources/catalog` 新增 `sort=recommend|new`、`available=1`，条目附带 `healthy_count`、`avg_latency`、`countries`（最多 8 个）、`unavailable`、`seated`、`fresh`（7 天内创建）。
+- GET `/sources/catalog` 新增 `sort=recommend|new|latency|idle`（latency：健康节点平均延迟升序；idle：席位占用比例低的优先，不限人数按使用人数）、`available=1`、`countries=HK,JP`（含任一地区未排除节点的来源，最多 20 个），条目附带 `healthy_count`、`avg_latency`、`countries`（最多 8 个）、`unavailable`、`seated`、`fresh`（7 天内创建）。
 - 来源 `max_users=0`（不限人数）时不占用户的来源额度：保存组合、客户端输出与 `/me` 的 `usage.sources` 都只统计设置了人数上限的来源。
 - 同一节点由多个来源提供时，保存组合按以下顺序决定实际占用的来源（返回的 `nodes[].source_id` 即实际来源）：不限人数的来源 → 你已占有席位或本次已选用的有限来源 → 仍有空位的有限来源。来源被下架、停用、删除、提高等级要求或提供方被停用后，受影响用户的订阅立即切换到其他可用来源（同样优先不限人数）；拉取订阅时发现失效节点也会自动尝试切换（每用户 5 分钟一次，来源恢复或改为不限人数时重置）。没有其他可用来源时节点保留，来源恢复后继续输出。跟随整个来源不参与切换。
 - 来源直链 `/link/{token}` 不计入个人订阅的拉取风控（每小时次数、每日 IP、节点曝光窗口），也不占用席位。
@@ -248,3 +248,13 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 ## 每账号来源上限
 
 非管理员每个账号最多提供 100 个来源（含停用和下架的），超出时 POST `/sources` 返回 400。与订阅侧的“来源额度”（组合订阅可占用的来源数）无关。
+
+## 私有来源与专属
+
+- Source 增加 `private`；本人或管理员读取时附带 `share_count`，目录中被分享的来源带 `shared_with_me:true`。POST／PATCH `/sources` 可传 `private`。
+- 私有来源只对提供者本人和分享名单内的用户可见（节点、目录、选用、导出均按此过滤，管理员浏览也不例外，只在 `GET /sources?scope=all` 里可管理）；不受 `min_level` 限制，不占使用者来源额度，不进入提供方列表统计，不计每日分享奖励。
+- 公开来源改为私有时，不在名单里的使用者立即释放席位、停止输出；取消分享同样立即释放。
+- GET `/sources/{id}/shares` → `{items:[{user_id,username,display_name,avatar_version,enabled,seated,created_at}],limit:200}`，仅 owner／admin。
+- POST `/sources/{id}/shares` `{user:"12"|"#12"|"username"}` → 201 同形条目；不能分享给本人、已停用账号或重复添加，每个来源最多 200 人。
+- DELETE `/sources/{id}/shares/{userID}` → 204。
+- GET `/nodes` 与 `/sources/catalog` 支持 `exclusive=1`：只看本人的来源和分享给自己的私有来源（“专属”标签）。

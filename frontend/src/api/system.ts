@@ -32,6 +32,8 @@ export interface Source {
   last_error: string; last_refresh_at: string | null; next_refresh_at: string | null; created_at: string
   owner_id?: number; provider_name?: string; max_users?: number; claimed_users?: number; active_users?: number
   occupied_users?: number; min_level?: number; share_url?: string; subscription_usage?: SubscriptionUsage | null
+  // 私有来源：只对提供者和被分享的用户可见
+  private?: boolean; share_count?: number; shared_with_me?: boolean
   provider_username?: string; provider_avatar?: number; provider_title?: string; feedback?: FeedbackSummary | null
   // 来源目录补充：健康概况与当前用户可用性
   healthy_count?: number; avg_latency?: number | null; countries?: string[]; unavailable?: Unavailable; seated?: boolean; fresh?: boolean
@@ -52,7 +54,7 @@ export interface PoolNode {
   unavailable?: Unavailable; fresh?: boolean; created_at?: string
   field_test?: FieldTest | null
   sources: {
-    id: number; name: string; node_name: string; owner_id?: number; provider_name?: string; min_level?: number; subscription_usage?: SubscriptionUsage | null
+    id: number; name: string; node_name: string; owner_id?: number; provider_name?: string; min_level?: number; private?: boolean; subscription_usage?: SubscriptionUsage | null
     provider_username?: string; provider_avatar?: number; provider_title?: string; max_users?: number; active_users?: number; feedback?: FeedbackSummary | null
     unavailable?: Unavailable; seated?: boolean
   }[]
@@ -97,7 +99,7 @@ export interface Releases {
   state: 'idle' | 'checking' | 'downloading' | 'installing' | 'restarting' | 'done' | 'error'
   message: string; releases: Release[]
 }
-export interface NewSource { name: string; kind: Source['kind']; url?: string; content?: string; exclude_pattern?: string; max_users?: number; min_level?: number }
+export interface NewSource { name: string; kind: Source['kind']; url?: string; content?: string; exclude_pattern?: string; max_users?: number; min_level?: number; private?: boolean }
 export class ApiError extends Error {
   readonly status: number
   readonly body: unknown

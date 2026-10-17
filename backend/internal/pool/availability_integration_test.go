@@ -113,6 +113,20 @@ func TestMySQLNodeAvailabilityAndCatalogStats(t *testing.T) {
 	if items[len(items)-1].Unavailable == "" {
 		t.Fatal("unavailable sources should sort last")
 	}
+	// 按地区筛选来源
+	if none, e := s.Catalog(lc, pool.CatalogFilter{Countries: []string{"ZZ"}, PageSize: 50}); e != nil || none["total"].(int) != 0 {
+		t.Fatalf("catalog country filter: %v %v", none["total"], e)
+	}
+	if cs := byID[open.ID].Countries; len(cs) > 0 {
+		hit, e := s.Catalog(lc, pool.CatalogFilter{Countries: cs[:1], PageSize: 50})
+		found := false
+		for _, v := range hit["items"].([]pool.Source) {
+			found = found || v.ID == open.ID
+		}
+		if e != nil || !found {
+			t.Fatalf("catalog country filter misses source: %v", e)
+		}
+	}
 	avail, e := s.Catalog(lc, pool.CatalogFilter{Available: true, PageSize: 50})
 	if e != nil || avail["total"].(int) != 1 {
 		t.Fatalf("catalog available filter: %v %v", avail["total"], e)
@@ -146,7 +160,7 @@ func TestMySQLNodeAvailabilityAndCatalogStats(t *testing.T) {
 	if only := reasons(ac, pool.Filter{Available: true}); len(only) != 2 || only[open.ID] != "" || only[high.ID] != "" {
 		t.Fatalf("admin available filter: %v", only)
 	}
-	for _, sort := range []string{"", "recommend", "new"} {
+	for _, sort := range []string{"", "recommend", "new", "latency", "idle"} {
 		catalog, e = s.Catalog(ac, pool.CatalogFilter{Sort: sort, PageSize: 50})
 		if e != nil {
 			t.Fatal(e)

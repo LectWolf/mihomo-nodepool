@@ -32,13 +32,13 @@ func nodeHomes(ctx context.Context, q queryer, u User, nodeIDs []int64) (map[int
 		for _, id := range chunk {
 			args = append(args, id)
 		}
-		args = append(args, u.Level, u.ID, u.Role)
+		args = append(args, u.Level, u.ID, u.Role, u.ID, u.ID)
 		rows, err := q.QueryContext(ctx, `SELECT sn.node_id,s.id,s.max_users,
  COALESCE(st.state='active' AND st.expires_at>UTC_TIMESTAMP(6),0),
  (SELECT COUNT(*) FROM np_source_seats o JOIN np_users ou ON ou.id=o.user_id AND ou.enabled=1 WHERE o.source_id=s.id AND o.state='active' AND o.expires_at>UTC_TIMESTAMP(6) AND o.user_id<>?)
  FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id JOIN np_sources s ON s.id=sn.source_id JOIN np_users p ON p.id=s.owner_id
  LEFT JOIN np_source_seats st ON st.source_id=s.id AND st.user_id=?
- WHERE sn.node_id IN (`+marks+`) AND sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND p.enabled=1 AND (s.min_level<=? OR s.owner_id=? OR ?='admin') AND (st.state IS NULL OR st.state<>'kicked')
+ WHERE sn.node_id IN (`+marks+`) AND sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND p.enabled=1 AND (s.private=1 OR s.min_level<=? OR s.owner_id=? OR ?='admin') AND `+accessSQL("s")+` AND (st.state IS NULL OR st.state<>'kicked')
  ORDER BY sn.node_id, s.max_users<>0, s.id`, args...)
 		if err != nil {
 			return nil, err

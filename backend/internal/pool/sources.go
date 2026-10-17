@@ -58,7 +58,7 @@ func (s *Store) AddSource(ctx context.Context, in SourceInput) (Source, error) {
 			return Source{}, fmt.Errorf("每个账号最多提供 %d 个来源", MaxOwnedSources)
 		}
 	}
-	result, e := tx.ExecContext(ctx, `INSERT INTO np_sources(owner_id,max_users,min_level,share_token,name,kind,url,url_hash,content,exclude_pattern,last_error,created_at,next_refresh_at) VALUES(?,?,?,?,?,?,?,?,?,?,'',?,?)`, u.ID, in.MaxUsers, in.MinLevel, token, cleanName(in.Name), in.Kind, sealedURL, urlHash(in.URL), sealedContent, in.ExcludePattern, now, now)
+	result, e := tx.ExecContext(ctx, `INSERT INTO np_sources(owner_id,max_users,min_level,private,share_token,name,kind,url,url_hash,content,exclude_pattern,last_error,created_at,next_refresh_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'',?,?)`, u.ID, in.MaxUsers, in.MinLevel, in.Private, token, cleanName(in.Name), in.Kind, sealedURL, urlHash(in.URL), sealedContent, in.ExcludePattern, now, now)
 	if e != nil {
 		var me *mysql.MySQLError
 		if errors.As(e, &me) && me.Number == 1062 {
@@ -107,6 +107,10 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 			return v, errors.New("最低等级须为Lv0–Lv6")
 		}
 		v.MinLevel = *p.MinLevel
+	}
+	madePrivate := p.Private != nil && *p.Private && !v.Private
+	if p.Private != nil {
+		v.Private = *p.Private
 	}
 	if p.Name != nil {
 		v.Name = cleanName(*p.Name)
@@ -163,7 +167,7 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 	if e != nil {
 		return v, e
 	}
-	if _, e = tx.ExecContext(ctx, `UPDATE np_sources SET max_users=?,min_level=? WHERE id=?`, v.MaxUsers, v.MinLevel, id); e != nil {
+	if _, e = tx.ExecContext(ctx, `UPDATE np_sources SET max_users=?,min_level=?,private=? WHERE id=?`, v.MaxUsers, v.MinLevel, v.Private, id); e != nil {
 		return v, e
 	}
 	// Evaluate cached before pending: queued/in-flight network work and due refreshes
@@ -176,10 +180,14 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 		return v, e
 	}
 	// 停用或调整等级要求后，受影响的订阅切换到其他来源
-	if !v.Enabled || p.MinLevel != nil {
+	if madePrivate {
+		if e = s.releaseUnsharedSeats(ctx, id); e != nil {
+			return v, e
+		}
+	} else if !v.Enabled || p.MinLevel != nil {
 		s.rehomeSources(ctx, id)
 	}
-	if (p.Enabled != nil && *p.Enabled) || (p.MaxUsers != nil && *p.MaxUsers == 0) {
+	if (p.Enabled != nil && *p.Enabled) || (p.MaxUsers != nil && *p.MaxUsers == 0) || (p.Private != nil && !*p.Private) {
 		resetRehome()
 	}
 	return s.Source(ctx, id)

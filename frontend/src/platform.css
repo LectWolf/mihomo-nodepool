@@ -94,6 +94,16 @@
 .node-card > .feedback-badge { justify-self: start; align-self: flex-start; }
 .node-card-signals { display: flex; flex-wrap: wrap; gap: 6px; justify-self: start; align-self: flex-start; }
 .node-card-signals:empty { display: none; }
+/* 卡片内容按行排开，底部来源与状态始终贴底 */
+button.node-card { flex-direction: column; }
+button.node-card > .node-insights { margin-top: 10px; gap: 6px; }
+button.node-card > .node-insights:empty { display: none; }
+button.node-card > .node-card-signals { margin-top: 8px; gap: 6px; align-items: center; }
+button.node-card > .node-card-spacer { flex: 1 0 10px; }
+button.node-card > .node-card-footer { margin-top: 0; }
+button.node-card .node-insights > .insight-tag, button.node-card .node-insights > .usage-hint { display: inline-flex; align-items: center; height: 24px; border-radius: 6px; }
+button.node-card .node-insights > .insight-tag:not(.insight-icon), button.node-card .node-insights > .usage-hint { padding: 0 8px; font-size: 11px; }
+button.node-card .node-card-signals :is(.field-test-badge, .feedback-badge) { height: 24px; padding: 0 9px; gap: 5px; }
 .field-test-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 550; white-space: nowrap; border: 1px solid currentColor; color: var(--tone-green); background: transparent; }
 .field-test-badge .app-icon { width: 12px; height: 12px; }
 .field-test-badge.warn { color: var(--tone-amber); }
@@ -396,13 +406,19 @@ input[type="checkbox"].switch:focus-visible { box-shadow: var(--ring); outline: 
 .user-k small { font-size: 10px; opacity: .8; }
 .user-level strong, .user-quota strong { font-size: 13px; }
 .user-quota .cell-sub { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
-.user-actions { display: flex; justify-content: flex-end; }
+.user-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .role-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--surface-subtle); color: var(--text-secondary); box-shadow: inset 0 0 0 1px var(--line); }
 .role-badge .app-icon { width: 12px; height: 12px; }
 .role-badge.admin { background: var(--tone-violet-soft); color: var(--tone-violet); box-shadow: none; }
 .role-badge.manager { background: var(--tone-blue-soft); color: var(--tone-blue); box-shadow: none; }
 .form-section { margin: 18px 0 8px; font-size: 12px; font-weight: 650; color: var(--muted); letter-spacing: .4px; }
 .user-form .tip-head { margin-bottom: 4px; }
+/* 编辑表单分组之间留出明显间隔 */
+.user-form .form-section { margin: 24px 0 12px; padding-top: 18px; border-top: 1px solid var(--line); }
+.user-form .tip-head + .form-section { margin-top: 20px; padding-top: 0; border-top: 0; }
+.user-form fieldset > .form-section:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.user-form .form-grid + .form-section, .user-form .field-hint + .form-section { margin-top: 20px; }
+.user-form .role-options + .field-hint { margin-top: 8px; }
 .role-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .role-option { position: relative; display: grid; gap: 2px; padding: 10px 12px; border-radius: 11px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
 .role-option input { position: absolute; opacity: 0; pointer-events: none; }

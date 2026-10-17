@@ -583,9 +583,9 @@ func (s *Store) AwardDaily(ctx context.Context) (err error) {
  (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=s.id AND st.state='active' AND st.expires_at>? AND st.user_id<>s.owner_id),
  (SELECT COUNT(*) FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id WHERE sn.source_id=s.id AND sn.excluded=0 AND n.blocked=0),
  (SELECT COUNT(*) FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id WHERE sn.source_id=s.id AND sn.excluded=0 AND n.blocked=0 AND n.last_success_at>=?),
- (SELECT COUNT(*) FROM np_source_nodes sn WHERE sn.source_id=s.id AND sn.excluded=0 AND NOT EXISTS(SELECT 1 FROM np_source_nodes o JOIN np_sources os ON os.id=o.source_id WHERE o.node_id=sn.node_id AND o.excluded=0 AND os.enabled=1 AND os.owner_id<>s.owner_id)),
+ (SELECT COUNT(*) FROM np_source_nodes sn WHERE sn.source_id=s.id AND sn.excluded=0 AND NOT EXISTS(SELECT 1 FROM np_source_nodes o JOIN np_sources os ON os.id=o.source_id WHERE o.node_id=sn.node_id AND o.excluded=0 AND os.enabled=1 AND os.private=0 AND os.owner_id<>s.owner_id)),
  s.healthy_since
- FROM np_sources s JOIN np_users u ON u.id=s.owner_id WHERE s.enabled=1 AND u.enabled=1 ORDER BY s.id`, now, now.Add(-24*time.Hour))
+ FROM np_sources s JOIN np_users u ON u.id=s.owner_id WHERE s.enabled=1 AND s.private=0 AND u.enabled=1 ORDER BY s.id`, now, now.Add(-24*time.Hour))
 	if err != nil {
 		return err
 	}

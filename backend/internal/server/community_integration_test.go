@@ -118,7 +118,7 @@ func TestMySQLCommunityDeliveryAndRealMihomoKeepalive(t *testing.T) {
 	if err != nil || !strings.Contains(string(decoded), "vless://") {
 		t.Fatal("v2ray keepalive missing", err)
 	}
-	sources, _ := s.Sources(uc)
+	sources, _ := s.Sources(uc, false)
 	link := sources[0].ShareURL
 	raw, _ = get(link+"?format=clash", 200)
 	if strings.Contains(string(raw), "/ws/lease/") {
