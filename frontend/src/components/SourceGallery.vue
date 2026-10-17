@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { errorText, isCancelled, useApi, type Source } from '../api/system'
-import { draftNodes, draftSources, isAdmin, isGuest, requireLogin, selectingNodes, toggleSource, type Page } from '../api/accounts'
+import { draftNodes, draftSources, isGuest, requireLogin, selectingNodes, toggleSource, type Page } from '../api/accounts'
 import { blockHint, blockLabel, useAccountScope } from '../community'
 import { usePolling } from '../polling'
 import AppIcon from './AppIcon.vue'
@@ -77,7 +77,7 @@ data.value ??= cached<Page<Source>>(requestPath()) ?? null
     <div v-else class="gallery-toolbar">
       <label class="search-field"><span class="sr-only">搜索来源</span><AppIcon name="search" /><input v-model="search" type="search" placeholder="搜索来源名称" /></label>
       <CustomSelect v-model="sort" label="来源排序" :options="sortOptions" />
-      <label v-if="!isAdmin" class="switch-chip"><input v-model="onlyAvailable" type="checkbox" class="switch" />只看可加入</label>
+      <label class="switch-chip"><input v-model="onlyAvailable" type="checkbox" class="switch" />只看可加入</label>
       <span class="small muted">共 {{ data?.total ?? 0 }} 个来源</span>
     </div>
     <p v-if="error" class="notice error" role="alert">{{ error }}<button @click="load">重试</button></p>
