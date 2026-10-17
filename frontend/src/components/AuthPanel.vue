@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { errorText, isCancelled, json, useApi } from '../api/system'
-import { authOptions, type AuthResponse } from '../api/accounts'
+import { ApiError, errorText, isCancelled, json, useApi } from '../api/system'
+import { authOptions, markPasswordSetup, type AuthResponse } from '../api/accounts'
 import { emailSuffixAllowed, identityApi, oauthHref, useCountdown, type CodePurpose } from '../api/identity'
 import { toast } from '../toast'
 import AppIcon from './AppIcon.vue'
@@ -13,7 +13,7 @@ const emit = defineEmits<{ authenticated: [auth: AuthResponse]; mode: [value: 'l
 const api = useApi()
 const mode = ref<Mode>(props.mode === 'register' && props.registration ? 'register' : 'login')
 watch(() => props.mode, value => { if (value) mode.value = value === 'register' && props.registration ? 'register' : 'login' })
-watch(mode, value => { error.value = ''; if (value !== 'reset') emit('mode', value) })
+watch(mode, value => { error.value = ''; if (value === 'register') unset.value = null; if (value !== 'reset') emit('mode', value) })
 const options = computed(() => authOptions.login)
 const loginWith = ref<'password' | 'code'>('password')
 const username = ref('')
@@ -28,6 +28,10 @@ const error = ref('')
 const pending = ref<AuthResponse | null>(null)
 const forget = ref(false)
 const countdown = useCountdown()
+// 账号没有密码时（旧站迁移或第三方注册）给出可用的身份验证方式
+const unset = ref<{ hint: string; providers: string[] } | null>(null)
+const unsetProviders = computed(() => unset.value ? thirdParty.value.filter(p => unset.value?.providers.includes(p.id)) : [])
+watch(username, () => { if (mode.value === 'login') unset.value = null })
 const kmsiKey = 'nodepool-keep-signed-in'
 const kmsiChoice = () => { try { return localStorage.getItem(kmsiKey) } catch { return null } }
 const usernameValid = computed(() => /^[A-Za-z][A-Za-z0-9_-]{2,19}$/.test(username.value.trim()))
@@ -37,9 +41,13 @@ const needEmail = computed(() => options.value.email)
 const registerReady = computed(() => usernameValid.value && password.value.length >= 8 && password.value === confirm.value && (!needEmail.value || (emailValid.value && suffixOk.value && code.value.trim().length === 6)))
 const thirdParty = computed(() => [options.value.github && { id: 'github', label: 'GitHub', icon: 'github' }, options.value.linuxdo && { id: 'linuxdo', label: 'LINUX DO', icon: 'linuxdo' }].filter(Boolean) as { id: string; label: string; icon: string }[])
 const shownError = computed(() => error.value || props.notice || '')
-const heading = computed(() => mode.value === 'login' ? '欢迎回来' : mode.value === 'register' ? '创建账号' : '找回密码')
-const lead = computed(() => props.reason || (mode.value === 'login' ? '登录账号，管理来源与个人订阅。' : mode.value === 'register' ? '注册后即可挑选节点、组合自己的订阅。' : '通过已绑定的邮箱接收验证码，设置新密码。'))
+const heading = computed(() => mode.value === 'login' ? '欢迎回来' : mode.value === 'register' ? '创建账号' : unset.value ? '设置登录密码' : '找回密码')
+const lead = computed(() => props.reason || (mode.value === 'login' ? '登录账号，管理来源与个人订阅。' : mode.value === 'register' ? '注册后即可挑选节点、组合自己的订阅。' : unset.value ? '输入完整的绑定邮箱获取验证码，设置登录密码后会自动登录。' : '通过已绑定的邮箱接收验证码，设置新密码。'))
 function oauth(id: string) { return oauthHref(id, 'login', kmsiChoice() === 'yes') }
+function verifyByEmail() {
+  email.value = username.value.includes('@') ? username.value.trim() : ''
+  password.value = ''; code.value = ''; mode.value = 'reset'
+}
 async function finish(auth: AuthResponse) {
   const choice = kmsiChoice()
   password.value = ''; confirm.value = ''; code.value = ''
@@ -59,13 +67,17 @@ async function login() {
   if (busy.value) return
   const byCode = loginWith.value === 'code'
   if (byCode ? !emailValid.value || code.value.trim().length !== 6 : !username.value.trim() || !password.value) return
-  busy.value = true; error.value = ''
+  busy.value = true; error.value = ''; if (!byCode) unset.value = null
   try {
     const remember = kmsiChoice() === 'yes'
     await finish(byCode
       ? await api<AuthResponse>('/auth/login/code', json('POST', { email: email.value.trim(), code: code.value.trim(), remember }))
       : await api<AuthResponse>('/auth/login', json('POST', { username: username.value.trim(), password: password.value, remember })))
-  } catch (cause) { if (!isCancelled(cause)) error.value = errorText(cause) }
+  } catch (cause) {
+    const body = cause instanceof ApiError && cause.status === 409 ? cause.body as { password_unset?: boolean; email_hint?: string; providers?: string[] } | null : null
+    if (body?.password_unset) { unset.value = { hint: body.email_hint || '', providers: body.providers || [] }; password.value = '' }
+    else if (!isCancelled(cause)) error.value = errorText(cause)
+  }
   finally { busy.value = false }
 }
 async function register() {
@@ -87,8 +99,12 @@ async function reset() {
   busy.value = true; error.value = ''
   try {
     await api('/auth/password/reset', json('POST', { email: email.value.trim(), code: code.value.trim(), password: password.value }))
-    toast('密码已重置，请使用新密码登录')
-    password.value = ''; confirm.value = ''; code.value = ''; username.value = email.value.trim(); loginWith.value = 'password'; mode.value = 'login'
+    const fresh = password.value
+    password.value = ''; confirm.value = ''; code.value = ''; username.value = email.value.trim(); loginWith.value = 'password'; unset.value = null; mode.value = 'login'
+    try {
+      await finish(await api<AuthResponse>('/auth/login', json('POST', { username: username.value, password: fresh, remember: kmsiChoice() === 'yes' })))
+      toast('密码已设置，已为你登录')
+    } catch { toast('密码已重置，请使用新密码登录') }
   } catch (cause) { if (!isCancelled(cause)) error.value = errorText(cause) }
   finally { busy.value = false }
 }
@@ -129,7 +145,15 @@ async function keep(remember: boolean) {
         <label class="form-field"><span class="field-label">邮箱</span><EmailInput v-model="email" :disabled="busy" placeholder="已绑定的邮箱" /></label>
         <div class="form-field"><span class="field-label">验证码</span><div class="code-row"><input v-model="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" :disabled="busy" placeholder="6 位数字" aria-label="验证码" /><button type="button" :disabled="sending || countdown.left.value > 0 || !emailValid" @click="sendCode('login')"><span v-if="sending" class="spinner"></span>{{ countdown.left.value ? `${countdown.left.value} 秒后重发` : '获取验证码' }}</button></div></div>
       </template>
-      <p v-if="shownError" class="notice error" role="alert">{{ shownError }}</p>
+      <div v-if="unset && loginWith === 'password'" class="notice warning password-unset" role="alert">
+        <strong>该账号还没有设置登录密码</strong>
+        <span>{{ unset.hint || unsetProviders.length ? '请先验证身份，验证通过后设置新密码。' : '该账号没有可用的验证方式，请联系管理员设置密码。' }}</span>
+        <div v-if="unset.hint || unsetProviders.length" class="unset-actions">
+          <button v-if="unset.hint" type="button" @click="verifyByEmail"><AppIcon name="mail" />用邮箱 {{ unset.hint }} 验证</button>
+          <a v-for="p in unsetProviders" :key="p.id" :class="['oauth-button', p.id]" :href="oauth(p.id)" @click="markPasswordSetup()"><AppIcon :name="p.icon" />用 {{ p.label }} 验证</a>
+        </div>
+      </div>
+      <p v-else-if="shownError" class="notice error" role="alert">{{ shownError }}</p>
       <button class="primary full" :disabled="busy || (loginWith === 'code' && options.email ? !emailValid || code.trim().length !== 6 : !username.trim() || !password)" type="submit"><span v-if="busy" class="spinner"></span>{{ busy ? '正在登录' : '登录' }}<AppIcon v-if="!busy" name="right" /></button>
       <template v-if="thirdParty.length"><div class="auth-divider"><span>或使用第三方账号</span></div><div class="oauth-row"><a v-for="p in thirdParty" :key="p.id" :class="['oauth-button', p.id]" :href="oauth(p.id)"><AppIcon :name="p.icon" />{{ p.label }}</a></div></template>
       <p class="small muted auth-switch">{{ registration ? '还没有账号？' : '账号由管理员创建' }}<button v-if="registration" type="button" class="text-button" @click="mode = 'register'">立即注册</button></p>
@@ -155,7 +179,7 @@ async function keep(remember: boolean) {
     </form>
 
     <form v-else class="auth-form" @submit.prevent="reset">
-      <label class="form-field"><span class="field-label">已绑定的邮箱</span><EmailInput v-model="email" autofocus :disabled="busy" placeholder="name@qq.com" /></label>
+      <label class="form-field"><span class="field-label">已绑定的邮箱</span><EmailInput v-model="email" autofocus :disabled="busy" :placeholder="unset?.hint || 'name@qq.com'" /><span v-if="unset?.hint" class="field-hint">请输入完整邮箱：{{ unset.hint }}</span></label>
       <div class="form-field"><span class="field-label">验证码</span><div class="code-row"><input v-model="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" :disabled="busy" placeholder="6 位数字" aria-label="验证码" /><button type="button" :disabled="sending || countdown.left.value > 0 || !emailValid" @click="sendCode('reset')"><span v-if="sending" class="spinner"></span>{{ countdown.left.value ? `${countdown.left.value} 秒后重发` : '获取验证码' }}</button></div></div>
       <div class="auth-grid">
         <label class="form-field"><span class="field-label">新密码</span><input v-model="password" type="password" autocomplete="new-password" required :disabled="busy" placeholder="至少 8 位" /></label>

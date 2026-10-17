@@ -15,6 +15,7 @@ import (
 
 var ErrRiskLimit = errors.New("节点更换过于频繁")
 var ErrRateLimited = errors.New("订阅拉取过于频繁，请稍后再试")
+var ErrTooManyAttempts = errors.New("当前密码错误次数过多，请 15 分钟后再试")
 
 // maskServers 只有管理员和来源提供方可以看到服务器地址
 func maskServers(u User, items []Node) {

@@ -257,3 +257,8 @@
 .user-names-button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 6px; }
 @media (max-width: 760px) { .detail-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .detail-columns { grid-template-columns: 1fr; } .user-detail-head { flex-wrap: wrap; } }
 :is(.moderation-actions, .detail-sources, .source-actions, .link-list) button.danger { color: var(--danger) !important; }
+.notice.password-unset { display: grid; gap: 6px; align-items: start; }
+.password-unset strong { font-size: 13px; }
+.unset-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-top: 4px; }
+.notice.password-unset .unset-actions button, .notice.password-unset .unset-actions .oauth-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; margin: 0; padding: 6px 12px; border-radius: 9px; border: 1px solid var(--control-line); background: var(--surface); color: var(--text); font-size: 12.5px; font-weight: 600; text-decoration: none; }
+.unset-actions .app-icon { width: 15px; height: 15px; flex: none; }

@@ -192,6 +192,42 @@ func (m *Manager) KeepSession(r *http.Request, u pool.User) {
 		}
 	}
 }
+
+// passwordUnset 返回可用于验证身份的方式，邮箱只给出打码提示
+func (m *Manager) passwordUnset(ctx context.Context, u pool.User) map[string]any {
+	l := m.store.LoginNow(ctx)
+	hint := ""
+	if u.Email != "" && u.EmailVerified && l.SMTP.Ready() {
+		hint = MaskEmail(u.Email)
+	}
+	providers := []string{}
+	if ids, e := m.store.Identities(ctx, u.ID); e == nil {
+		for _, id := range ids {
+			if (id.Provider == "github" && l.GitHub.Ready()) || (id.Provider == "linuxdo" && l.LinuxDo.Ready()) {
+				providers = append(providers, id.Provider)
+			}
+		}
+	}
+	return map[string]any{"error": "该账号还没有设置登录密码，请先通过邮箱验证码或已绑定的第三方账号验证身份，再设置密码", "password_unset": true, "email_hint": hint, "providers": providers}
+}
+
+// MaskEmail 只保留邮箱名的首尾字符，例如 22****85@qq.com
+func MaskEmail(email string) string {
+	at := strings.LastIndexByte(email, '@')
+	if at <= 0 {
+		return ""
+	}
+	name := []rune(email[:at])
+	keep := 2
+	if len(name) <= 4 {
+		keep = 1
+	}
+	if len(name) <= 2 {
+		return string(name[:1]) + "*" + email[at:]
+	}
+	return string(name[:keep]) + "****" + string(name[len(name)-keep:]) + email[at:]
+}
+
 func reply(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -288,6 +324,14 @@ func (m *Manager) Register(mux *http.ServeMux) {
 			hash = m.hash
 		}
 		valid := pool.CheckPassword(hash, in.Password)
+		if e == nil && u.Enabled && u.PasswordHash == "" && m.store != nil {
+			// 旧站迁移等没有密码的账号：引导改用邮箱验证码或已绑定的第三方账号
+			m.mu.Lock()
+			m.failures++
+			m.mu.Unlock()
+			reply(w, 409, m.passwordUnset(r.Context(), u))
+			return
+		}
 		if e != nil || !u.Enabled || !valid {
 			m.mu.Lock()
 			m.failures++

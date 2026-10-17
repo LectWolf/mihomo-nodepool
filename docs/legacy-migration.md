@@ -48,7 +48,7 @@ Docker 部署可以用同一镜像运行：`docker compose run --rm -e LEGACY_SU
 | `-admin-email` 对应的账号 | id=1，管理员；密码由 `ADMIN_PASSWORD` 设置 |
 | 其他 `is_admin=1` 账号 | 用户管理员（`manager`），保留原 ID |
 | 普通账号 | 普通用户，保留原 ID；没有用户名的用 `user<ID>` |
-| 密码（argon2id／bcrypt） | **不迁移**。有邮箱的用邮箱验证码登录或找回密码，有第三方绑定的直接用 GitHub／LINUX DO 登录 |
+| 密码（argon2id／bcrypt） | **不迁移**。用户用旧密码登录时会提示：有邮箱的用邮箱验证码设置新密码并自动登录；有第三方绑定的用 GitHub／LINUX DO 登录后强制设置密码 |
 | 邮箱 | 标记为已验证 |
 | `disabled_at`、`profiles.banned` | 账号停用 |
 | 经验、积分、签到日期与连签 | 原样保留；流水全部导入（`checkin` 签到，`legacy_linuxdo`、`legacy_provide`、`legacy_debit` 为旧站类型） |

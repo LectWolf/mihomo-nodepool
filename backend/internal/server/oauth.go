@@ -282,10 +282,6 @@ func createOAuthUser(ctx context.Context, store *pool.Store, p oauthProvider, na
 	if err != nil {
 		return pool.User{}, err
 	}
-	var b [24]byte
-	if _, err = rand.Read(b[:]); err != nil {
-		return pool.User{}, err
-	}
 	display := profile.Name
 	if display == "" {
 		display = profile.Login
@@ -293,7 +289,7 @@ func createOAuthUser(ctx context.Context, store *pool.Store, p oauthProvider, na
 	if r := []rune(display); len(r) > 60 {
 		display = string(r[:60])
 	}
-	u, err := store.CreateUser(pool.WithUser(ctx, pool.GuestUser), pool.UserInput{Username: username, DisplayName: display, Password: hex.EncodeToString(b[:])})
+	u, err := store.CreateUser(pool.WithUser(ctx, pool.GuestUser), pool.UserInput{Username: username, DisplayName: display, NoPassword: true})
 	if err != nil {
 		return u, err
 	}

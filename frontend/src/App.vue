@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { abortRequests, apiEvents, errorText, isCancelled, json, useApi, type Source, type SystemInfo } from './api/system'
-import { authOptions, authPrompt, canManageUsers, accountTab, clearAccount, currentUser, emailRequired, isAdmin, isGuest, loadProfile, type AuthResponse } from './api/accounts'
+import { authOptions, authPrompt, canManageUsers, accountTab, clearAccount, clearPasswordSetup, currentUser, emailRequired, isAdmin, isGuest, loadProfile, passwordSetupPending, type AuthResponse } from './api/accounts'
 import { providerNames } from './api/identity'
 import { usePolling } from './polling'
 import NodesView from './components/NodesView.vue'
@@ -21,8 +21,10 @@ import ToastHost from './components/ToastHost.vue'
 import UserMenu from './components/UserMenu.vue'
 import AuthPanel from './components/AuthPanel.vue'
 import EmailBindForm from './components/EmailBindForm.vue'
+import PasswordSetupForm from './components/PasswordSetupForm.vue'
 import OnboardingTour, { type TourStep } from './components/OnboardingTour.vue'
 import { toast } from './toast'
+import { cached, clearCache, remember } from './view-cache'
 import { loadTitles } from './titles'
 import { navigate, route, sectionHref, type Section } from './router'
 const api = useApi()
@@ -70,6 +72,7 @@ const sources = ref<Source[]>([])
 const sourcesLoading = ref(false)
 const sourcesError = ref('')
 const databaseUnavailable = ref(false)
+const passwordSetup = ref(false)
 const versionsOpen = ref(false)
 const versionKey = ref(0)
 const reconnecting = ref(false)
@@ -82,9 +85,9 @@ let sessionRevision = 0
 function updateSource(source: Source) { sourcesRevision++; sources.value = sources.value.map(item => item.id === source.id ? source : item) }
 function removeSource(id: number) { sourcesRevision++; sources.value = sources.value.filter(item => item.id !== id) }
 function clearSession() {
-  sessionRevision++; abortRequests(); authenticated.value = false; clearAccount()
+  clearCache(); sessionRevision++; abortRequests(); authenticated.value = false; clearAccount()
   system.value = null; sources.value = []; sourcesError.value = ''; systemError.value = ''
-  versionsOpen.value = false; reconnecting.value = false; reconnectError.value = ''; isGuest.value = false; tourOpen.value = false; emailRequired.value = false
+  versionsOpen.value = false; reconnecting.value = false; reconnectError.value = ''; isGuest.value = false; tourOpen.value = false; emailRequired.value = false; passwordSetup.value = false
   databaseUnavailable.value = false; sourcesRevision++; visited.clear(); visited.add(section.value); viewKey.value++
 }
 function unauthorized() {
@@ -108,6 +111,7 @@ function readOAuthResult() {
   for (const key of ['oauth_error', 'bound', 'oauth', 'welcome']) q.delete(key)
   history.replaceState(history.state, '', `${location.pathname}${q.size ? `?${q}` : ''}${location.hash}`)
 }
+function passwordDone() { passwordSetup.value = false; clearPasswordSetup() }
 async function emailBound() { emailRequired.value = false; await loadProfile().catch(() => undefined) }
 function maintenance() { void loadSystem() }
 function settingsSaved() { void loadSystem(); void loadTitles(true) }
@@ -119,7 +123,7 @@ async function loadSystem() {
   try {
     const value = await api<SystemInfo>('/system')
     if ((!authenticated.value && !isGuest.value) || revision !== sessionRevision) return
-    system.value = value
+    system.value = value; remember('/system', value)
     if (value.database) databaseUnavailable.value = !value.database.connected
     systemError.value = ''
   } catch (error) { if (!isCancelled(error) && (authenticated.value || isGuest.value) && revision === sessionRevision) systemError.value = errorText(error) }
@@ -131,7 +135,7 @@ async function loadSources() {
   const revision = sourcesRevision
   try {
     const value = await api<{ items: Source[] }>('/sources')
-    if (authenticated.value && revision === sourcesRevision) { sources.value = value.items ?? []; sourcesError.value = ''; databaseUnavailable.value = false }
+    if (authenticated.value && revision === sourcesRevision) { sources.value = value.items ?? []; sourcesError.value = ''; databaseUnavailable.value = false; remember('/sources', sources.value) }
   } catch (error) { if (!isCancelled(error) && authenticated.value && revision === sourcesRevision) sourcesError.value = errorText(error) }
   finally {
     sourcesLoading.value = false
@@ -151,6 +155,10 @@ async function establishSession(auth: AuthResponse) {
   if (wasGuest) { sessionRevision++; abortRequests(); visited.clear(); visited.add(section.value); viewKey.value++ }
   isGuest.value = false; authPrompt.value = null; loginError.value = ''
   currentUser.value = auth.user; authenticated.value = true
+  // 通过第三方验证身份的无密码账号，登录后要求补设密码
+  if (!sources.value.length) sources.value = cached<Source[]>('/sources') ?? []
+  system.value ??= cached<SystemInfo>('/system') ?? null
+  if (passwordSetupPending()) { passwordSetup.value = auth.user.has_password === false; if (!passwordSetup.value) clearPasswordSetup() }
   await Promise.all([refreshOverview(), loadProfile().catch(error => { if (!isCancelled(error) && authenticated.value) systemError.value = errorText(error) })])
   maybeStartTour()
 }
@@ -194,7 +202,7 @@ const tourSteps = computed<TourStep[]>(() => {
 async function logout() {
   if (logoutBusy.value) return
   logoutBusy.value = true
-  try { await api('/auth/logout', json('POST')); clearSession(); toast('已退出登录', 'info'); await loadAuth() }
+  try { await api('/auth/logout', json('POST')); clearPasswordSetup(); clearSession(); toast('已退出登录', 'info'); await loadAuth() }
   catch (error) { if (!isCancelled(error)) systemError.value = errorText(error) }
   finally { logoutBusy.value = false }
 }
@@ -276,7 +284,8 @@ watch(authenticated, on => { if (on) void loadTitles(true) })
     <Modal v-if="authPrompt && isGuest" :title="authPrompt.mode === 'register' ? '注册账号' : '登录'" @close="authPrompt = null"><AuthPanel embedded :mode="authPrompt.mode" :reason="authPrompt.reason" :registration="authOptions.registration" :notice="loginError" @mode="authMode" @authenticated="authenticatedFromPanel" /></Modal>
     <Modal v-if="mobileMore" title="全部页面" @close="mobileMore = false"><div class="more-grid"><a v-for="item in sections" :key="item.id" :href="sectionHref(item.id)" :class="{ active: section === item.id }" @click="mobileGo($event, item.id)"><span class="more-icon"><AppIcon :name="item.icon" /></span><span>{{ item.label }}</span></a></div><button type="button" class="version-chip more-version" @click="mobileMore = false; versionsOpen = true"><span class="version-dot"></span><span class="version-label">版本</span><b>{{ system?.version || '读取中' }}</b><AppIcon name="right" /></button></Modal>
     <Modal v-if="emailRequired && authenticated" title="绑定邮箱" locked><div class="email-required"><span class="email-required-icon"><AppIcon name="mail" /></span><p><strong>继续使用前，请先绑定并验证邮箱</strong></p><p class="small muted">邮箱用于登录、找回密码和接收重要通知。旧平台迁移或第三方注册的账号需要补齐一次，之后即可正常使用。</p></div><EmailBindForm submit-label="验证并继续" @bound="emailBound"><template #extra><button type="button" class="ghost" :disabled="logoutBusy" @click="logout">退出登录</button></template></EmailBindForm></Modal>
-    <OnboardingTour v-if="tourOpen && authenticated && !emailRequired" :steps="tourSteps" @close="closeTour" />
+    <Modal v-if="passwordSetup && authenticated && !emailRequired" title="设置登录密码" locked><div class="email-required"><span class="email-required-icon"><AppIcon name="lock" /></span><p><strong>身份已验证，请设置登录密码</strong></p><p class="small muted">旧平台的密码没有迁移。设置后可以用用户名或邮箱加密码登录，也可以继续使用第三方账号登录。</p></div><PasswordSetupForm @done="passwordDone"><template #extra><button type="button" class="ghost" :disabled="logoutBusy" @click="logout">退出登录</button></template></PasswordSetupForm></Modal>
+    <OnboardingTour v-if="tourOpen && authenticated && !emailRequired && !passwordSetup" :steps="tourSteps" @close="closeTour" />
     <div v-if="reconnecting" class="reconnect-overlay" role="status" aria-live="polite"><span class="spinner"></span><h2>正在重新连接服务</h2><p>服务重启后将自动恢复控制台。</p><p class="small muted">{{ reconnectError || '请稍候…' }}</p></div>
   </div>
 </template>
