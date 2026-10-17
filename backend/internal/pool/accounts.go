@@ -191,6 +191,7 @@ func (s *Store) CreateUser(ctx context.Context, in UserInput) (User, error) {
 	return s.User(ctx, id)
 }
 func (s *Store) PatchUser(ctx context.Context, id int64, p UserPatch) (User, error) {
+	defer s.InvalidateIndex()
 	var hash string
 	var e error
 	if p.Password != nil {

@@ -284,6 +284,9 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 			return
 		}
 		raw, skipped, routingSkipped, nodes, e := s.ExportSavedSubscriptionNodes(ctx, r.PathValue("token"), format)
+		if format == "v2ray" && errors.Is(e, pool.ErrUnexportable) {
+			raw, e = v2rayNotice(v2rayEmpty), nil
+		}
 		user, infoErr := s.SubscriptionDeliveryInfo(ctx, r.PathValue("token"))
 		if infoErr != nil {
 			writeError(w, infoErr)

@@ -94,6 +94,7 @@ func TestMySQLMultiuserSourceOwnershipAndDiscovery(t *testing.T) {
 	}
 	_, _ = s.DB.Exec(`UPDATE np_nodes SET country_code='JP' WHERE id=?`, page.Items[0].ID)
 	_, _ = s.DB.Exec(`UPDATE np_nodes SET country_code='US' WHERE id=?`, page.Items[1].ID)
+	s.InvalidateIndex()
 	page, e = s.Nodes(bc, pool.Filter{Countries: []string{"JP", "US"}, Country: "DE"})
 	if e != nil || page.Total != 2 {
 		t.Fatalf("multicountry precedence: %v %+v", e, page)

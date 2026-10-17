@@ -73,6 +73,7 @@ func TestMySQLNodeAvailabilityAndCatalogStats(t *testing.T) {
 	if _, e = s.DB.Exec(`UPDATE np_nodes SET status='unhealthy' WHERE id=?`, down); e != nil {
 		t.Fatal(e)
 	}
+	s.InvalidateIndex()
 	for _, sort := range []string{"", "recommend", "name"} {
 		ordered, e := s.Nodes(lc, pool.Filter{Sort: sort, PageSize: 100})
 		if e != nil {

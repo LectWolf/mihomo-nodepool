@@ -37,7 +37,7 @@ watch(() => props.paused, paused => {
   else void load()
 }, { immediate: true })
 // 普通用户与访客读取的是服务端 5 秒缓存，降低轮询频率
-usePolling(async () => { if (!props.paused) await load() }, isAdmin.value ? 4000 : 15000, false)
+usePolling(async () => { if (!props.paused) await load() }, isAdmin.value ? 8000 : 15000, false)
 onBeforeUnmount(() => { ++sequence; controller?.abort() })
 const usageLabels: Record<string, string> = { unknown: '未知', normal: '正常', low: '余量偏低', exhausted: '流量耗尽', expired: '已到期', invalid: '信息异常' }
 function bytes(value: number | null | undefined) { return value == null ? '未知' : formatBytes(value) }

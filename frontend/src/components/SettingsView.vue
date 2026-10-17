@@ -14,10 +14,10 @@ const emit = defineEmits<{ saved: [] }>()
 const api = useApi()
 const paused = computed(() => !!props.paused || route.value.section !== 'settings' || props.system?.database.connected === false)
 const scope = useAccountScope(() => paused.value)
-type SettingsForm = Settings & { subscription_lease_days: number; history_retention_days: number; public_url: string; community?: CommunitySettings; login?: LoginSettings; maintenance: { enabled: boolean; message: string; since?: string | null } }
+type SettingsForm = Settings & { subscription_lease_days: number; history_retention_days: number; field_test_days: number; idle_check_days: number; public_url: string; community?: CommunitySettings; login?: LoginSettings; maintenance: { enabled: boolean; message: string; since?: string | null } }
 function formValue(value: Settings): SettingsForm {
   // 社区设置含数组，深拷贝避免与原值共享引用
-  return { ...value, subscription_lease_days: value.subscription_lease_days ?? 14, history_retention_days: value.history_retention_days ?? 30, public_url: value.public_url ?? '', maintenance: { enabled: !!value.maintenance?.enabled, message: value.maintenance?.message ?? '', since: value.maintenance?.since ?? null }, community: value.community ? JSON.parse(JSON.stringify(value.community)) as CommunitySettings : undefined, login: value.login ? loginForm(value.login) : undefined }
+  return { ...value, subscription_lease_days: value.subscription_lease_days ?? 14, history_retention_days: value.history_retention_days ?? 30, field_test_days: value.field_test_days ?? 3, idle_check_days: value.idle_check_days ?? 3, public_url: value.public_url ?? '', maintenance: { enabled: !!value.maintenance?.enabled, message: value.maintenance?.message ?? '', since: value.maintenance?.since ?? null }, community: value.community ? JSON.parse(JSON.stringify(value.community)) as CommunitySettings : undefined, login: value.login ? loginForm(value.login) : undefined }
 }
 // 密钥只写不读：表单里留空表示沿用已保存的值
 function loginForm(v: LoginSettings): LoginSettings {
@@ -156,6 +156,8 @@ async function save() {
   catch { error.value = '测试地址需要是有效的 HTTP / HTTPS URL。'; return }
   if (!Number.isInteger(value.subscription_lease_days) || value.subscription_lease_days < 1 || value.subscription_lease_days > 365) { error.value = '订阅租期需要是 1–365 天的整数。'; return }
   if (!Number.isInteger(value.history_retention_days) || value.history_retention_days < 1 || value.history_retention_days > 3650) { error.value = '历史保留需要是 1–3650 天的整数。'; return }
+  if (!Number.isInteger(value.field_test_days) || value.field_test_days < 1 || value.field_test_days > 7) { error.value = '实测结果有效天数需要是 1–7 天的整数。'; return }
+  if (!Number.isInteger(value.idle_check_days) || value.idle_check_days < 0 || value.idle_check_days > 30) { error.value = '闲置节点检测间隔需要是 0–30 天的整数。'; return }
   if (value.community) { const message = communityError(value.community); if (message) { error.value = message; return } }
   const publicURL = value.public_url.trim()
   if (publicURL) {
@@ -167,7 +169,7 @@ async function save() {
     const result = await api<Settings>('/settings', json('PUT', {
       exclude_pattern: value.exclude_pattern, test_url: value.test_url.trim(), timeout_ms: value.timeout_ms,
       probe_concurrency: value.probe_concurrency, source_concurrency: value.source_concurrency,
-      subscription_lease_days: value.subscription_lease_days, history_retention_days: value.history_retention_days, public_url: publicURL,
+      subscription_lease_days: value.subscription_lease_days, history_retention_days: value.history_retention_days, field_test_days: value.field_test_days, idle_check_days: value.idle_check_days, public_url: publicURL,
       maintenance: { enabled: value.maintenance.enabled, message: value.maintenance.message.trim() },
       ...(value.community ? { community: value.community } : {}),
       ...(value.login ? { login: { ...value.login, email_suffixes: value.login.email_suffixes.map(v => v.trim()).filter(Boolean), smtp: { ...value.login.smtp, port: Number(value.login.smtp.port) || 0 } } } : {}),
@@ -244,6 +246,7 @@ watch(paused, value => {
           <fieldset :disabled="saving || paused">
             <label class="form-field"><span class="field-label">测试 URL</span><input v-model="draft.test_url" type="url" required placeholder="https://www.gstatic.com/generate_204" /></label>
             <div class="form-grid"><label class="form-field"><span class="field-label">测试超时 <small class="muted">毫秒</small></span><input v-model.number="draft.timeout_ms" type="number" min="1" step="1" required /></label><label class="form-field"><span class="field-label">节点检测并发</span><input v-model.number="draft.probe_concurrency" type="number" min="1" step="1" required /><span class="field-hint">同时检测的节点数。每个节点完成后立即领取下一个，不再整批等待；首次检测失败的节点直接标记为不可用。</span></label></div>
+            <div class="form-grid"><label class="form-field"><span class="field-label">闲置节点检测间隔 <small class="muted">天</small></span><input v-model.number="draft.idle_check_days" type="number" min="0" max="30" step="1" required /><span class="field-hint">默认 3 天，0 表示不定期检测。闲置指没有激活订阅选中、没有人跟随、来源也没人占席位。新入池的节点仍会测一次；有人开始使用后自动恢复为 8 小时（来源有人占席位为 16 小时），订阅来源照常刷新。</span></label></div>
           </fieldset>
         </section>
         <section id="settings-source" class="panel settings-section">
@@ -252,10 +255,11 @@ watch(paused, value => {
             <label v-if="draft.community" class="switch-row"><input v-model="draft.community.usage_poll_enabled" type="checkbox" class="switch" /><span><strong>整点读取套餐用量</strong><small>每小时只读取一次来源的 Subscription-Userinfo 响应头（不下载正文），用于运行统计的小时/天流量图和提供方趋势。</small></span></label></fieldset>
         </section>
         <section id="settings-lease" class="panel settings-section">
-          <div class="panel-heading"><div><h2>订阅租期与历史</h2><p class="small muted">管理有效席位租期和来源订阅事件保留时间。</p></div></div>
+          <div class="panel-heading"><div><h2>订阅租期与历史</h2><p class="small muted">管理有效席位租期、来源订阅事件保留时间和国内实测统计窗口。</p></div></div>
           <fieldset :disabled="saving || paused"><div class="form-grid">
             <label class="form-field"><span class="field-label">订阅租期 <small class="muted">天</small></span><input v-model.number="draft.subscription_lease_days" type="number" min="1" max="365" step="1" required /><span class="field-hint">默认 14 天，支持 1–365 天。网页签到、有效探测和请假可续期；普通下载不会续期。</span></label>
             <label class="form-field"><span class="field-label">历史保留 <small class="muted">天</small></span><input v-model.number="draft.history_retention_days" type="number" min="1" max="3650" step="1" required /><span class="field-hint">默认 30 天，支持 1–3650 天。历史不占用有效席位。</span></label>
+            <label class="form-field"><span class="field-label">实测结果有效天数 <small class="muted">天</small></span><input v-model.number="draft.field_test_days" type="number" min="1" max="7" step="1" required /><span class="field-hint">默认 3 天。国内用户客户端的实测在这段时间内参与排序和展示，更早的不再计入。</span></label>
           </div></fieldset>
         </section>
         <section id="settings-public" class="panel settings-section">

@@ -17,25 +17,29 @@ const DefaultExclude = `(?i)(剩余|到期|过期|流量|官网|套餐|重置|ex
 
 const RetryBase = time.Hour
 const StaleAfter = 7 * 24 * time.Hour
-const Period = 12 * time.Hour
+const Period = 8 * time.Hour
 
 var ErrNotFound = errors.New("记录不存在")
 var ErrUnavailable = errors.New("MySQL 尚未配置或暂不可用")
 
 type Settings struct {
-	ExcludePattern        string            `json:"exclude_pattern"`
-	TestURL               string            `json:"test_url"`
-	TimeoutMS             int               `json:"timeout_ms"`
-	ProbeConcurrency      int               `json:"probe_concurrency"`
-	SourceConcurrency     int               `json:"source_concurrency"`
-	RefreshHours          int               `json:"refresh_hours"`
-	CheckHours            int               `json:"check_hours"`
-	SubscriptionLeaseDays int               `json:"subscription_lease_days"`
-	HistoryRetentionDays  int               `json:"history_retention_days"`
-	PublicURL             string            `json:"public_url"`
-	Community             CommunitySettings `json:"community"`
-	Maintenance           Maintenance       `json:"maintenance"`
-	Login                 LoginSettings     `json:"login"`
+	ExcludePattern        string `json:"exclude_pattern"`
+	TestURL               string `json:"test_url"`
+	TimeoutMS             int    `json:"timeout_ms"`
+	ProbeConcurrency      int    `json:"probe_concurrency"`
+	SourceConcurrency     int    `json:"source_concurrency"`
+	RefreshHours          int    `json:"refresh_hours"`
+	CheckHours            int    `json:"check_hours"`
+	SubscriptionLeaseDays int    `json:"subscription_lease_days"`
+	HistoryRetentionDays  int    `json:"history_retention_days"`
+	// FieldTestDays 国内用户实测结果参与排序和展示的天数
+	FieldTestDays int `json:"field_test_days"`
+	// IdleCheckDays 没人使用的节点的检测间隔；0 表示不定期检测（新节点仍测一次）
+	IdleCheckDays *int              `json:"idle_check_days"`
+	PublicURL     string            `json:"public_url"`
+	Community     CommunitySettings `json:"community"`
+	Maintenance   Maintenance       `json:"maintenance"`
+	Login         LoginSettings     `json:"login"`
 }
 
 // Maintenance keeps reads and subscription pulls available while blocking changes.
@@ -45,12 +49,30 @@ type Maintenance struct {
 	Since   *time.Time `json:"since,omitempty"`
 }
 
+const DefaultIdleCheckDays = 3
+
+func intPtr(v int) *int { return &v }
+
+// IdleDays 返回闲置节点检测间隔天数，未设置时取默认值
+func (s Settings) IdleDays() int {
+	if s.IdleCheckDays == nil {
+		return DefaultIdleCheckDays
+	}
+	return *s.IdleCheckDays
+}
+
 func Defaults() Settings {
-	return Settings{ExcludePattern: DefaultExclude, TestURL: "https://www.gstatic.com/generate_204", TimeoutMS: 5000, ProbeConcurrency: 16, SourceConcurrency: 5, RefreshHours: 6, CheckHours: 6, SubscriptionLeaseDays: 14, HistoryRetentionDays: 30, Community: DefaultCommunity(), Login: DefaultLogin()}
+	return Settings{ExcludePattern: DefaultExclude, TestURL: "https://www.gstatic.com/generate_204", TimeoutMS: 5000, ProbeConcurrency: 16, SourceConcurrency: 5, RefreshHours: 8, CheckHours: 8, SubscriptionLeaseDays: 14, HistoryRetentionDays: 30, FieldTestDays: 3, IdleCheckDays: intPtr(DefaultIdleCheckDays), Community: DefaultCommunity(), Login: DefaultLogin()}
 }
 func (s Settings) Validate() error {
 	if s.SubscriptionLeaseDays < 0 || s.SubscriptionLeaseDays > 365 || s.HistoryRetentionDays < 0 || s.HistoryRetentionDays > 3650 {
 		return errors.New("租期须为1–365天，历史保留须为1–3650天")
+	}
+	if s.FieldTestDays < 0 || s.FieldTestDays > 7 {
+		return errors.New("实测结果有效天数须为1–7天")
+	}
+	if s.IdleCheckDays != nil && (*s.IdleCheckDays < 0 || *s.IdleCheckDays > 30) {
+		return errors.New("闲置节点检测间隔须为0–30天")
 	}
 	if utf8.RuneCountInString(s.Maintenance.Message) > 300 {
 		return errors.New("维护公告最多 300 字")
@@ -194,6 +216,8 @@ type Node struct {
 	LastSuccessAt *time.Time       `json:"-"`
 	Blocked       bool             `json:"-"`
 	ExitCheckedAt *time.Time       `json:"-"`
+	// Manual 由手动复测领取，不受用户实测暂停影响
+	Manual bool `json:"-"`
 }
 type ParsedNode struct {
 	Name, Type, Server, Hash string

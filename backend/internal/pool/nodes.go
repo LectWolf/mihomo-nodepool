@@ -2,9 +2,9 @@ package pool
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -42,117 +42,36 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		return NodePage{}, errors.New("页码超出范围")
 	}
 	out := NodePage{Items: []Node{}, Page: f.Page, PageSize: f.PageSize}
-	e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(status='healthy'),0),COALESCE(SUM(status='unhealthy'),0),COALESCE(SUM(status='unknown'),0) FROM np_nodes n WHERE `+visible).Scan(&out.Stats.Total, &out.Stats.Healthy, &out.Stats.Unhealthy, &out.Stats.Pending)
+	ids, e := s.indexedNodes(ctx, f, &out)
 	if e != nil {
 		return out, e
 	}
-	where := visible
-	args := []any{}
-	for _, item := range []struct{ column, value string }{{"n.type", f.Type}, {"n.status", f.Status}} {
-		if item.value != "" {
-			where += " AND " + item.column + "=?"
-			args = append(args, item.value)
-		}
-	}
-	if len(f.Countries) == 0 && f.Country != "" {
-		f.Countries = []string{f.Country}
-	}
-	if len(f.Countries) > 0 {
-		marks := []string{}
-		for _, c := range f.Countries {
-			c = strings.TrimSpace(c)
-			if c != "" {
-				marks = append(marks, "?")
-				args = append(args, c)
-			}
-		}
-		if len(marks) > 0 {
-			where += " AND n.country_code IN (" + strings.Join(marks, ",") + ")"
-		}
-	}
-	if f.SourceID > 0 || f.ProviderID > 0 || f.Following || f.MinLevel != nil {
-		where += ` AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1 AND u.enabled=1`
-		if f.SourceID > 0 {
-			where += ` AND s.id=?`
-			args = append(args, f.SourceID)
-		}
-		if f.ProviderID > 0 {
-			where += ` AND s.owner_id=?`
-			args = append(args, f.ProviderID)
-		}
-		if f.Following {
-			where += ` AND EXISTS(SELECT 1 FROM np_follows f WHERE f.provider_id=s.owner_id AND f.user_id=?)`
-			args = append(args, f.UserID)
-		}
-		if f.MinLevel != nil {
-			if *f.MinLevel < 0 || *f.MinLevel > 6 {
-				return out, errors.New("最低等级筛选须为Lv0–Lv6")
-			}
-			where += ` AND s.min_level=?`
-			args = append(args, *f.MinLevel)
-		}
-		where += `)`
+	if len(ids) == 0 {
+		return out, nil
 	}
 	viewer := CurrentUser(ctx)
-	usable, usableArgs := usableSQL(viewer)
-	if f.Available && viewer.Role != "admin" {
-		where += " AND " + usable
-		args = append(args, usableArgs...)
-	}
-	if f.MaxLatency > 0 {
-		where += " AND n.latency_ms<=?"
-		args = append(args, f.MaxLatency)
-	}
-	if f.Q != "" {
-		nameMatch := `EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id WHERE sn.node_id=n.id AND s.enabled=1 AND sn.excluded=0 AND sn.node_name LIKE ?)`
-		// 服务器地址只允许管理员在未加密时搜索
-		if CurrentUser(ctx).Role == "admin" && !DataEncryptionEnabled() {
-			where += ` AND (n.server LIKE ? OR ` + nameMatch + `)`
-			args = append(args, "%"+f.Q+"%", "%"+f.Q+"%")
-		} else {
-			where += ` AND ` + nameMatch
-			args = append(args, "%"+f.Q+"%")
-		}
-	}
-	if e = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_nodes n WHERE `+where, args...).Scan(&out.Total); e != nil {
-		return out, e
-	}
-	order := "n.created_at DESC,n.id DESC"
-	switch f.Sort {
-	case "latency":
-		order = "n.latency_ms IS NULL,n.latency_ms,n.id"
-	case "name":
-		order = "n.name,n.id"
-	case "recommend":
-		// 新上架且健康的节点优先曝光，其余按健康与延迟排序
-		order = "(n.status='healthy' AND n.created_at>=?) DESC,n.status='healthy' DESC,n.latency_ms IS NULL,n.latency_ms,n.id"
-	}
-	orderArgs := []any{}
-	if f.Sort == "recommend" {
-		orderArgs = append(orderArgs, utcNow().Add(-FreshWindow))
-	}
-	// 普通用户看到的顺序：可选 → 席位已满等暂不可选 → 检测不可用
-	if viewer.Role != "admin" {
-		order = "CASE WHEN n.status='unhealthy' THEN 2 WHEN " + usable + " THEN 0 ELSE 1 END," + order
-		orderArgs = append(append([]any{}, usableArgs...), orderArgs...)
-	}
-	queryArgs := append(append(append([]any{}, args...), orderArgs...), f.PageSize, (f.Page-1)*f.PageSize)
-	rows, e := s.DB.QueryContext(ctx, `SELECT `+nodeColumns+` FROM np_nodes n WHERE `+where+` ORDER BY `+order+` LIMIT ? OFFSET ?`, queryArgs...)
+	rows, e := s.DB.QueryContext(ctx, `SELECT `+nodeColumns+` FROM np_nodes n WHERE n.id IN (`+placeholders(len(ids))+`)`, int64Args(ids)...)
 	if e != nil {
 		return out, e
 	}
+	loaded := map[int64]Node{}
 	for rows.Next() {
 		n, e := scanNode(rows)
 		if e != nil {
 			rows.Close()
 			return out, e
 		}
-		out.Items = append(out.Items, n)
+		loaded[n.ID] = n
 	}
 	e = rows.Err()
 	rows.Close()
 	if e != nil {
 		return out, e
+	}
+	for _, id := range ids {
+		if n, ok := loaded[id]; ok {
+			out.Items = append(out.Items, n)
+		}
 	}
 	if len(out.Items) == 0 {
 		return out, nil
@@ -269,38 +188,7 @@ func (s *Store) QueueNodes(ctx context.Context, ids []int64) error {
 }
 
 func (s *Store) Options(ctx context.Context) (map[string]any, error) {
-	types := []string{}
-	countries := []map[string]string{}
-	rows, e := s.DB.QueryContext(ctx, `SELECT DISTINCT type FROM np_nodes n WHERE `+visible+` ORDER BY type`)
-	if e != nil {
-		return nil, e
-	}
-	for rows.Next() {
-		var v string
-		if e = rows.Scan(&v); e != nil {
-			rows.Close()
-			return nil, e
-		}
-		types = append(types, v)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return nil, e
-	}
-	rows, e = s.DB.QueryContext(ctx, `SELECT country_code,MAX(country) FROM np_nodes n WHERE `+visible+` AND country_code<>'' GROUP BY country_code ORDER BY country_code`)
-	if e != nil {
-		return nil, e
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var code, name string
-		if e = rows.Scan(&code, &name); e != nil {
-			return nil, e
-		}
-		countries = append(countries, map[string]string{"code": code, "name": name})
-	}
-	return map[string]any{"types": types, "countries": countries}, rows.Err()
+	return s.indexedOptions(ctx)
 }
 
 func (s *Store) ClaimSource(ctx context.Context) (Source, error) {
@@ -320,21 +208,47 @@ func (s *Store) ClaimSource(ctx context.Context) (Source, error) {
 	return v, tx.Commit()
 }
 
+// eligible 节点至少关联一个启用来源中未被排除的条目
+// 写成带 LIMIT 的标量子查询，避免优化器整体物化后再连接；只对扫描到的行逐个判断
+const eligible = `(SELECT 1 FROM np_source_nodes sn JOIN np_sources src ON src.id=sn.source_id WHERE sn.node_id=n.id AND sn.excluded=0 AND src.enabled=1 LIMIT 1) IS NOT NULL`
+
+// ClaimNode 领取一个检测任务：先手动复测，再按 next_check_at 顺序取到期节点。
+// 两条查询都能走索引，不再对全部节点逐行求值。
 func (s *Store) ClaimNode(ctx context.Context) (Node, error) {
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return Node{}, e
 	}
 	defer tx.Rollback()
-	v, e := scanNode(tx.QueryRowContext(ctx, `SELECT `+nodeColumns+` FROM np_nodes n WHERE ((n.blocked=0 AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources src ON src.id=sn.source_id WHERE sn.node_id=n.id AND sn.excluded=0 AND src.enabled=1)) OR (n.blocked=1 AND n.pending=1 AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources src ON src.id=sn.source_id WHERE sn.node_id=n.id AND sn.excluded=0 AND src.enabled=1))) AND (n.lease_until IS NULL OR n.lease_until<UTC_TIMESTAMP(6)) AND (n.pending=1 OR n.next_check_at<=UTC_TIMESTAMP(6) OR n.lease_until IS NOT NULL) ORDER BY n.pending DESC,n.next_check_at,n.id LIMIT 1 FOR UPDATE SKIP LOCKED`))
+	free := `(n.lease_until IS NULL OR n.lease_until<UTC_TIMESTAMP(6))`
+	v, e := scanNode(tx.QueryRowContext(ctx, `SELECT `+nodeColumns+` FROM np_nodes n WHERE n.pending=1 AND `+free+` AND `+eligible+` ORDER BY n.id LIMIT 1 FOR UPDATE SKIP LOCKED`))
+	if e == nil {
+		v.Manual = true
+	} else if errors.Is(e, sql.ErrNoRows) {
+		v, e = scanNode(tx.QueryRowContext(ctx, `SELECT `+nodeColumns+` FROM np_nodes n WHERE n.next_check_at<=UTC_TIMESTAMP(6) AND n.blocked=0 AND `+free+` AND `+eligible+` ORDER BY n.next_check_at LIMIT 1 FOR UPDATE SKIP LOCKED`))
+	}
 	if e != nil {
 		return v, e
 	}
-	_, e = tx.ExecContext(ctx, `UPDATE np_nodes SET pending=0,lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 2 MINUTE) WHERE id=?`, v.ID)
+	// 租约过期后按到期顺序被重新领取，手动任务也一样
+	_, e = tx.ExecContext(ctx, `UPDATE np_nodes SET pending=0,next_check_at=LEAST(next_check_at,UTC_TIMESTAMP(6)),lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 2 MINUTE) WHERE id=?`, v.ID)
 	if e != nil {
 		return v, e
 	}
 	return v, tx.Commit()
+}
+
+// ParkIdleNodes 把到期但不可检测的节点（已屏蔽、未关联启用来源）推后一天，
+// 避免它们堆在到期队列前面拖慢领取。来源重新启用或刷新时会重新排队。
+func (s *Store) ParkIdleNodes(ctx context.Context) error {
+	_, e := s.DB.ExecContext(ctx, `UPDATE np_nodes n SET n.next_check_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 DAY) WHERE n.next_check_at<=UTC_TIMESTAMP(6) AND n.pending=0 AND n.lease_until IS NULL AND (n.blocked=1 OR NOT `+eligible+`)`)
+	return e
+}
+
+// DeferNode 释放租约并推迟检测，用于国内用户正在实测的节点
+func (s *Store) DeferNode(ctx context.Context, id int64, until time.Time) error {
+	_, e := s.DB.ExecContext(ctx, `UPDATE np_nodes SET lease_until=NULL,next_check_at=? WHERE id=?`, until, id)
+	return e
 }
 
 func (s *Store) SaveProbe(ctx context.Context, n Node, r ProbeResult) error {
@@ -350,7 +264,8 @@ func (s *Store) SaveProbe(ctx context.Context, n Node, r ProbeResult) error {
 		status = "healthy"
 		blocked = false
 		lastSuccess = &now
-		next = NextRun(n.CreatedAt, fmt.Sprintf("node:%d", n.ID), now)
+		// 按使用情况分级；订阅来源刷新后会更早重排，这里多留 1 小时兜底
+		next = now.Add(s.ProbeInterval(n.ID) + time.Hour)
 	} else {
 		failures++
 		successes = 0
@@ -366,6 +281,12 @@ func (s *Store) SaveProbe(ctx context.Context, n Node, r ProbeResult) error {
 			blocked = true
 		}
 		next = now.Add(RetryDelay(failures))
+		// 闲置节点确认不可用后不再按失败退避重试，改按闲置间隔
+		if status == "unhealthy" && s.IdleProbe(n.ID) {
+			if d := s.ProbeInterval(n.ID); d > RetryDelay(failures) {
+				next = now.Add(d)
+			}
+		}
 	}
 	_, e := s.DB.ExecContext(ctx, `UPDATE np_nodes SET latency_ms=?,status=?,failures=?,successes=?,last_checked_at=?,last_success_at=?,next_check_at=?,last_error=?,lease_until=NULL,blocked=? WHERE id=?`, r.LatencyMS, status, failures, successes, now, lastSuccess, next, r.Error, blocked, n.ID)
 	if e != nil {
@@ -394,6 +315,11 @@ func (s *Store) SaveProbe(ctx context.Context, n Node, r ProbeResult) error {
 			_, e = s.DB.ExecContext(ctx, `UPDATE np_nodes SET exit_checked_at=? WHERE id=?`, now, n.ID)
 		}
 	}
+	country, code := "", ""
+	if r.ExitAttempted && r.ExitIP != "" {
+		country, code = r.Country, r.CountryCode
+	}
+	s.patchIndex(n.ID, status, r.LatencyMS, country, code, blocked)
 	return e
 }
 

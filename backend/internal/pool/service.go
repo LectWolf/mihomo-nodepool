@@ -36,8 +36,18 @@ func (s *Service) Run(ctx context.Context) {
 	go func() { defer wg.Done(); s.nodeLoop(ctx) }()
 	go func() {
 		defer wg.Done()
+		var tiersAt time.Time
 		for ctx.Err() == nil {
 			if s.ready(ctx) {
+				if time.Since(tiersAt) >= ProbeTiersTTL {
+					tiersAt = time.Now()
+					if err := s.Store.RefreshProbeTiers(ctx); err != nil {
+						log.Print("检测分级统计失败，将自动重试")
+					}
+					if err := s.Store.ParkIdleNodes(ctx); err != nil {
+						log.Print("闲置节点排期整理失败，将自动重试")
+					}
+				}
 				if err := s.Store.SweepCommunity(ctx); err != nil {
 					log.Print("订阅席位维护失败，将自动重试")
 				}
@@ -172,6 +182,14 @@ func (s *Service) nodeLoop(ctx context.Context) {
 							log.Print("节点任务领取失败，将自动重试")
 						}
 						break
+					}
+					// 国内用户正在实测能连的健康节点，本机暂不检测
+					if until, paused := s.Store.FieldPause(ctx, n.ID); paused && !n.Manual && n.Status == "healthy" {
+						if e = s.Store.DeferNode(ctx, n.ID, until); e != nil {
+							log.Print("节点推迟检测失败，将自动重试")
+							break
+						}
+						continue
 					}
 					active++
 					wg.Add(1)

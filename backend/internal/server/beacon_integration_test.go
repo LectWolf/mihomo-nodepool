@@ -134,7 +134,7 @@ func TestMySQLBeaconFieldTests(t *testing.T) {
 			stats[n.Port] = *n.FieldTest
 		}
 	}
-	if stats[8001] != (pool.FieldTest{Fail: 1}) || stats[8002] != (pool.FieldTest{OK: 1}) || stats[8003] != (pool.FieldTest{OK: 1}) {
+	if stats[8001] != (pool.FieldTest{Fail: 1, Days: 3}) || stats[8002] != (pool.FieldTest{OK: 1, Days: 3}) || stats[8003] != (pool.FieldTest{OK: 1, Days: 3}) {
 		t.Fatalf("field tests: %v", stats)
 	}
 	if err = s.SetBeacon(ctx, u.ID, false); err != nil {

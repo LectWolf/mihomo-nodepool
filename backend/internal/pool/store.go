@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,6 +14,8 @@ type Store struct {
 	DB          *sql.DB
 	initMu      sync.Mutex
 	initialized bool
+	index       nodeIndex
+	tiers       atomic.Pointer[probeTiers]
 }
 
 func NewStore(db *sql.DB) *Store { return &Store{DB: db} }
@@ -114,7 +117,13 @@ func (s *Store) Settings(ctx context.Context) (Settings, error) {
 	if err == nil {
 		err = json.Unmarshal(raw, &v)
 	}
-	v.RefreshHours, v.CheckHours = 12, 12
+	v.RefreshHours, v.CheckHours = 8, 8
+	if v.FieldTestDays == 0 {
+		v.FieldTestDays = 3
+	}
+	if v.IdleCheckDays == nil {
+		v.IdleCheckDays = intPtr(DefaultIdleCheckDays)
+	}
 	if err == nil {
 		c, m, l := v.Community, v.Maintenance, v.Login
 		communityCache.Store(&c)
@@ -124,11 +133,15 @@ func (s *Store) Settings(ctx context.Context) (Settings, error) {
 	return v, err
 }
 func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
+	defer s.InvalidateIndex()
 	if v.SubscriptionLeaseDays == 0 {
 		v.SubscriptionLeaseDays = 14
 	}
 	if v.HistoryRetentionDays == 0 {
 		v.HistoryRetentionDays = 30
+	}
+	if v.FieldTestDays == 0 {
+		v.FieldTestDays = 3
 	}
 	if len(v.Community.LevelQuotas) == 0 {
 		// 旧版前端不提交社区设置时保留已保存的值
@@ -141,7 +154,7 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 	if err := v.Validate(); err != nil {
 		return err
 	}
-	v.RefreshHours, v.CheckHours = 12, 12
+	v.RefreshHours, v.CheckHours = 8, 8
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return e
@@ -163,6 +176,9 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 		if e = v.Login.mergeSecrets(old.Login); e != nil {
 			return e
 		}
+	}
+	if v.IdleCheckDays == nil {
+		v.IdleCheckDays = old.IdleCheckDays
 	}
 	v.Maintenance.Message = strings.TrimSpace(v.Maintenance.Message)
 	if !v.Maintenance.Enabled {

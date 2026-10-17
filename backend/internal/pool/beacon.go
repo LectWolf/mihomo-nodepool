@@ -20,18 +20,20 @@ import (
 // 客户端实测回报：订阅里为部分节点各加一个隐藏的 url-test 分组，检测地址指向本站。
 // 节点在用户网络中能连通时，请求经该节点到达本站并记录；同一批次其它节点已回报而它没有，视为该用户连不上。
 const (
-	BeaconInterval = 3 * time.Hour    // 客户端检测间隔
-	BeaconRotate   = 12 * time.Hour   // 同一订阅在此时长内复用同一批节点
-	BeaconWindow   = 72 * time.Hour   // 统计窗口
-	BeaconSettle   = 10 * time.Minute // 批次首次回报后等待其它节点回报的时间
-	BeaconKeep     = 7 * 24 * time.Hour
+	BeaconInterval = 3 * time.Hour      // 客户端检测间隔
+	BeaconRotate   = 12 * time.Hour     // 同一订阅在此时长内复用同一批节点
+	BeaconSettle   = 10 * time.Minute   // 批次首次回报后等待其它节点回报的时间
+	BeaconKeep     = 8 * 24 * time.Hour // 比最长统计窗口（7 天）多一天
 	BeaconMaxNodes = 15
 )
 
-// FieldTest 是近 72 小时国内用户客户端的实测结果（按用户去重）
+// FieldTest 是统计窗口内国内用户客户端的实测结果（按用户去重）
 type FieldTest struct {
 	OK   int `json:"ok"`
 	Fail int `json:"fail"`
+	// Days 统计窗口天数；Paused 表示国内用户近期能连，本机暂停检测延迟
+	Days   int  `json:"days,omitempty"`
+	Paused bool `json:"paused,omitempty"`
 }
 
 func (s *Store) ensureBeacon(ctx context.Context) error {
@@ -163,7 +165,7 @@ func (s *Store) pickBeaconNodes(ctx context.Context, userID int64, ids []int64, 
 	stats := map[int64]stat{}
 	for start := 0; start < len(ids); start += 500 {
 		chunk := ids[start:min(start+500, len(ids))]
-		args := []any{userID, now.Add(-BeaconWindow)}
+		args := []any{userID, now.Add(-s.fieldWindow(ctx))}
 		for _, id := range chunk {
 			args = append(args, id)
 		}
@@ -259,7 +261,7 @@ func (s *Store) beaconResults(ctx context.Context, where string, args []any, ids
 		return out, nil
 	}
 	now := utcNow()
-	q := append(append([]any{}, args...), now.Add(-BeaconWindow), now.Add(-BeaconSettle))
+	q := append(append([]any{}, args...), now.Add(-s.fieldWindow(ctx)), now.Add(-BeaconSettle))
 	for _, id := range ids {
 		q = append(q, id)
 	}
@@ -292,12 +294,13 @@ func (s *Store) attachFieldTests(ctx context.Context, items []Node) error {
 	if err != nil {
 		return err
 	}
+	days := int(s.fieldWindow(ctx) / (24 * time.Hour))
 	for i := range items {
 		users := res[items[i].ID]
 		if len(users) == 0 {
 			continue
 		}
-		v := &FieldTest{}
+		v := &FieldTest{Days: days}
 		for _, ok := range users {
 			if ok {
 				v.OK++
@@ -305,6 +308,7 @@ func (s *Store) attachFieldTests(ctx context.Context, items []Node) error {
 				v.Fail++
 			}
 		}
+		v.Paused = items[i].Status == "healthy" && s.FieldTested(ctx, items[i].ID)
 		items[i].FieldTest = v
 	}
 	return nil

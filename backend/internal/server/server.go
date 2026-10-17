@@ -103,9 +103,16 @@ func New(o Options) http.Handler {
 				return nil
 			}
 		}
-		v, e := store.Statistics(r.Context())
-		if e != nil {
-			return e
+		// 管理员也复用 5 秒内的数据库统计，运行时数据仍实时读取
+		var v pool.Statistics
+		if cached, ok := adminStats.get(); ok && admin {
+			v = cached.(pool.Statistics)
+		} else {
+			var e error
+			if v, e = store.Statistics(r.Context()); e != nil {
+				return e
+			}
+			adminStats.set(v)
 		}
 		rt := o.Service.RuntimeStatistics()
 		if !admin {
@@ -374,7 +381,7 @@ func maintenanceBlocks(r *http.Request, u pool.User) (bool, string) {
 }
 
 // publicStats 普通用户与访客共享 5 秒内的统计结果，避免频繁轮询压垮数据库
-var publicStats statsCache
+var publicStats, adminStats statsCache
 
 type statsCache struct {
 	mu   sync.Mutex

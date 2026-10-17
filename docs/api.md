@@ -89,7 +89,7 @@ Node另带`insights:{v2ray_compatible,v2ray_reason,cipher?,transport?,tls,warnin
 - POST `/nodes/test` `{ids?:number[]}` → `{queued:true}`，仅管理员；省略 ids 检测全部有效节点。
 - GET `/options` → `{types:string[],countries:[{code,name}]}`。
 
-检测失败按 1／2／4／8／16／24 小时退避，之后最多 24 小时；连续 7 天无成功检测则屏蔽。屏蔽节点不计入正常列表、统计、选项或无 ID 的批量检测。明确 ID 的手动复测仍可恢复屏蔽节点，成功后清零失败并恢复 12 小时错峰。`blocked`、`last_success_at` 为内部字段。
+检测失败按 1／2／4／8／16／24 小时退避，之后最多 24 小时；连续 7 天无成功检测则屏蔽。屏蔽节点不计入正常列表、统计、选项或无 ID 的批量检测。明确 ID 的手动复测仍可恢复屏蔽节点，成功后清零失败，兜底 9 小时后再测；订阅来源刷新后会更早重排。`blocked`、`last_success_at` 为内部字段。
 
 ## 组合订阅
 
@@ -152,13 +152,15 @@ GET `/sub/{token}?format=clash|v2ray|auto`，**无 `/api/v1` 前缀**，无 Cook
 - `v2ray`：UTF-8 分享 URI 按行连接后 Base64。支持可以完整表达的 SS／SS2022、VMess、VLESS、Trojan、Hysteria2、TUIC、HTTP／SOCKS；不能保留参数的节点会跳过，全部无法表达则 422。
 - `auto` 或省略：按 User-Agent 选择。Mihomo／Clash／Stash 返回 Clash，v2rayN／v2rayNG 等兼容客户端返回 URI 订阅，未知 UA 默认 Clash。显式格式优先。
 
-URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集合伪装为 JSON。复杂插件、传输头、证书选项等无法保真时，请使用 Clash 格式。
+URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集合伪装为 JSON。v2ray 输出 v2rayN 等客户端通用的分享 URI：只要求连接必需的信息能完整表示，TFO、多路复用、UDP 开关、early data、除 Host 外的伪装请求头等客户端调优参数不保留；链式代理、未知协议、未知传输方式和插件（如 shadow-tls）无法连接，跳过并通过 `X-Subscription-Skipped` 报告数量。全部无法输出时返回只含一条提示节点的订阅（HTTP 200），避免客户端只报“无效的订阅内容”。支持 ss（obfs、v2ray-plugin）、vmess、vless（含 reality）、trojan、hysteria2（`mport` 端口跳跃）、tuic、anytls、http、socks5；传输方式 tcp、ws、httpupgrade、grpc、h2、http、xhttp。
 
 响应提供 `X-Subscription-Format`、`X-Subscription-Skipped`、`X-Subscription-Routing-Skipped`；v2ray 另带 `X-Subscription-Compatibility: v2ray-compatible URI import only`。设置合理 Content-Type、inline 文件名、`Cache-Control: no-store, private, max-age=0`、`Vary: User-Agent` 与 `Referrer-Policy: no-referrer`。
 
 `/sub/` 与 `/link/` 下载均带 `Content-Disposition: attachment; filename="MCII"; filename*=UTF-8''MCII%E8%AE%A2%E9%98%85%E5%85%B1%E4%BA%AB` 及 `Profile-Title: base64:…`，客户端显示订阅名「MCII节点共享」，不再显示令牌。个人下载另带`X-Subscription-State:active|expired`、`Profile-Web-Page-Url`和`Subscription-Userinfo: expire=个人租期Unix秒`。到期返回200提示节点，不输出真实节点。有效下载附保活VLESS/WS节点及独立hidden url-test组；只有固定HTTP gstatic204的HEAD／GET有效探测续期，旧过期UUID不能复活。GET `/ws/lease/{uuid}`仅WebSocket协议入口，不提供通用转发。公网源优先settings.public_url，否则按请求TLS／Host推断，不信任转发头；反代须配置真实HTTPS源和WS Upgrade。来源`/link/`转发已解析来源用量头，不套个人到期。
 
-实测回报：开启 `beacon_enabled` 的用户下载 Clash 格式时，订阅另附最多 15 个隐藏 url-test 组（`实测回报 N`），每组只含一个节点，检测地址为 `http://<公网主机>/b/<32位令牌>`，间隔 3 小时、`lazy:false`。令牌按（批次，节点）随机生成，同一订阅 12 小时内复用同一批次，之后轮换并优先选该用户未测、全站数据少的节点。GET／HEAD `/b/{token}` 始终返回空 204；首次回报记录该节点连通。批次已有回报 10 分钟后仍未回报的节点视为该用户连不上：订阅中排到末尾，订阅详情 `node_details[].my_failed=true`。拉取订阅的 IP 属于中国大陆（内嵌 APNIC 数据，`scripts/update-cnip.py` 更新）时批次计入国内统计；节点列表 Node 另带 `field_test:{ok,fail}`，为近 72 小时按用户去重的国内实测结果。回报走 HTTP 80 端口以免每次握手，反代须让 `/b/` 不跳转 HTTPS。批次保留 7 天。
+实测回报：开启 `beacon_enabled` 的用户下载 Clash 格式时，订阅另附最多 15 个隐藏 url-test 组（`实测回报 N`），每组只含一个节点，检测地址为 `http://<公网主机>/b/<32位令牌>`，间隔 3 小时、`lazy:false`。令牌按（批次，节点）随机生成，同一订阅 12 小时内复用同一批次，之后轮换并优先选该用户未测、全站数据少的节点。GET／HEAD `/b/{token}` 始终返回空 204；首次回报记录该节点连通。批次已有回报 10 分钟后仍未回报的节点视为该用户连不上：订阅中排到末尾，订阅详情 `node_details[].my_failed=true`。拉取订阅的 IP 属于中国大陆（内嵌 APNIC 数据，`scripts/update-cnip.py` 更新）时批次计入国内统计；节点列表 Node 另带 `field_test:{ok,fail,days,paused}`：统计窗口（`settings.field_test_days`，默认 3 天）内按用户去重的国内实测结果；`paused=true` 表示本机状态健康、窗口内多数国内用户能连、最近一次国内回报为能连且在 24 小时内，本机暂停检测，延迟为最后一次本机结果；有人连不上或超过 24 小时无人回报后恢复。连不上不会有任何请求到达服务器：同一批次已有其他节点回报（证明客户端在线并已加载订阅）10 分钟后仍未回报的节点记为连不上。回报走 HTTP 80 端口以免每次握手，反代须让 `/b/` 不跳转 HTTPS。批次保留 8 天。
+
+国内实测参与排序：每个节点按窗口内结果分档——能连用户占比 ≥70% 为“能连”，无数据为“未知”，至少 2 位连不上且能连占比 <30% 为“连不上”，其余为“不一”。`sort=latency` 与 `sort=recommend` 在可选性分组内先按该档位、再按本机延迟；普通用户视角下，本机不可用但国内能连的节点不再排到末尾，国内连不上的节点排到末尾。
 
 ## 积分、头像与反馈
 
@@ -173,9 +175,9 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 
 ## 设置和版本
 
-- GET `/settings` → `{exclude_pattern,test_url,timeout_ms,probe_concurrency,source_concurrency,refresh_hours:6,check_hours:6,subscription_lease_days:14,history_retention_days:30,public_url:""}`。
+- GET `/settings` → `{exclude_pattern,test_url,timeout_ms,probe_concurrency,source_concurrency,refresh_hours:8,check_hours:8,subscription_lease_days:14,history_retention_days:30,field_test_days:3,idle_check_days:3,public_url:""}`。
 - GET／PUT `/settings` 另含 `community`（等级额度、经验积分、兑换价格、称号、风控与反馈参数），旧前端不提交时保留已保存值；服务端统一校验范围。
-- PUT `/settings`提交以上可编辑字段，固定周期不需提交。租期1–365天、历史1–3650天，旧缺字段使用默认值；public_url可空，否则必须无用户信息／路径／查询的HTTP(S)源地址。排除正则变化按缓存重算，失败保留旧列表。
+- PUT `/settings`提交以上可编辑字段，固定周期不需提交。租期1–365天、历史1–3650天、实测窗口1–7天、闲置检测间隔0–30天（0为不定期检测，旧前端不提交时保留原值），旧缺字段使用默认值；public_url可空，否则必须无用户信息／路径／查询的HTTP(S)源地址。排除正则变化按缓存重算，失败保留旧列表。
 - GET `/releases` → `{current_version,latest_version,update_available,can_update,can_rollback,need_restart,state,message,releases:[{version,name,body,published_at,url}]}`。
 - POST `/system/update` `{version?:string}` → `{queued:true}`，默认最新稳定版。
 - POST `/system/rollback` `{version?:string}` → `{queued:true}`，空值恢复本地 backup，否则安装指定历史版。

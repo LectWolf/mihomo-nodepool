@@ -97,6 +97,7 @@ type ModerationResult struct {
 
 // ModerateSource 下架或恢复来源；下架必须选择原因，选“其他”时必须填写说明
 func (s *Store) ModerateSource(ctx context.Context, id int64, action, reason, detail string) (ModerationResult, error) {
+	defer s.InvalidateIndex()
 	var out ModerationResult
 	actor := CurrentUser(ctx)
 	detail = strings.TrimSpace(detail)

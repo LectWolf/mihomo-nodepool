@@ -82,18 +82,8 @@ func (s *Service) pollUsage(ctx context.Context) {
 			defer func() { <-sem; wg.Done() }()
 			c, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
-			req, err := http.NewRequestWithContext(c, http.MethodGet, src.URL, nil)
-			if err != nil {
-				return
-			}
-			req.Header.Set("User-Agent", "clash.meta")
-			resp, err := s.Client.Do(req)
-			if err != nil {
-				return
-			}
-			resp.Body.Close()
-			usage := ParseSubscriptionUsage(resp.Header.Get("Subscription-Userinfo"))
-			if resp.StatusCode != http.StatusOK || usage == nil {
+			usage := fetchUsage(c, s.Client, src.URL)
+			if usage == nil {
 				return
 			}
 			fetched := utcNow()
@@ -270,4 +260,27 @@ func (s *Store) ProviderTrend(ctx context.Context, owner int64, days int) ([]Tre
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Day.Before(out[j].Day) })
 	return out, nil
+}
+
+// fetchUsage 读取订阅的 Subscription-Userinfo：先用 HEAD 只取响应头，
+// 面板不支持时退回 GET 并立即断开
+func fetchUsage(ctx context.Context, client *http.Client, url string) *SubscriptionUsage {
+	for _, method := range []string{http.MethodHead, http.MethodGet} {
+		req, err := http.NewRequestWithContext(ctx, method, url, nil)
+		if err != nil {
+			return nil
+		}
+		req.Header.Set("User-Agent", "clash.meta")
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			if usage := ParseSubscriptionUsage(resp.Header.Get("Subscription-Userinfo")); usage != nil {
+				return usage
+			}
+		}
+	}
+	return nil
 }
