@@ -8,3 +8,4 @@ backend/internal/web/dist
 build
 data
 *.log
+e2e

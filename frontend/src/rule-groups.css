@@ -1,0 +1,35 @@
+.rule-groups-section { min-width: 0; }
+.rule-group-toolbar, .rule-group-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 16px; }
+.rule-group-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
+.rule-group-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow-wrap: anywhere; }
+.rule-group-card-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.rule-group-card-heading strong { min-width: 0; }
+.rule-group-card p { margin-block: 10px; line-height: 1.6; }
+.rule-group-card-actions { margin-bottom: 0; }
+.rule-group-references { color: var(--text-secondary); }
+.rule-group-dialog { min-width: 0; }
+.rule-group-fields { display: grid; gap: 20px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.rule-group-fields .form-field { min-width: 0; }
+.rule-group-basics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.rule-group-basics > .field-hint { grid-column: 1 / -1; margin: 0; overflow-wrap: anywhere; }
+.rule-group-check { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--text-secondary); cursor: pointer; }
+.rule-group-check:has(input:checked) { background: var(--surface-subtle); }
+.rule-group-check:has(input:disabled) { cursor: default; }
+.rule-group-check input[type="checkbox"] { flex: 0 0 16px; width: 16px; min-width: 16px; height: 16px; min-height: 16px; margin: 2px 0 0; padding: 0; }
+.rule-group-check > span { display: block; min-width: 0; overflow-wrap: anywhere; line-height: 1.5; }
+.rule-group-check small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.rule-group-ref-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 8px; max-height: 250px; overflow-y: auto; }
+.rule-group-node-list { display: grid; gap: 6px; max-height: 350px; overflow-y: auto; margin-top: 10px; }
+.rule-group-selected { display: flex; flex-wrap: wrap; gap: 6px; max-height: 160px; overflow: auto; margin-bottom: 10px; }
+.rule-group-selected button { display: flex; gap: 6px; align-items: center; min-width: 0; max-width: 100%; min-height: 28px; padding: 5px 8px; white-space: normal; overflow-wrap: anywhere; font-size: 12px; text-align: left; }
+.rule-group-selected svg { flex-shrink: 0; width: 14px; height: 14px; }
+.rule-group-dialog .compact-pagination, .rule-group-discard { display: flex; flex-wrap: wrap; gap: 8px; }
+.rule-group-dialog .filter-trigger { max-width: 100%; }
+.rule-group-dialog .filter-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 640px) {
+  .rule-group-basics { grid-template-columns: minmax(0, 1fr); }
+  .rule-group-dialog .compact-pagination > .small { flex-basis: 100%; }
+  .rule-group-card { padding: 12px; }
+  .rule-workbench-nav { min-width: 0; }
+  .rule-workbench-nav > button { min-width: 0; }
+}

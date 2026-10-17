@@ -29,6 +29,7 @@ RUN apk add --no-cache ca-certificates tzdata su-exec \
     && chown -R nodepool:nodepool /app
 WORKDIR /app
 COPY --from=backend --chown=nodepool:nodepool /out/nodepool /app/nodepool
+COPY LICENSE NOTICE /app/
 COPY deploy/docker-entrypoint.sh /usr/local/bin/nodepool-entrypoint
 RUN chmod 0755 /usr/local/bin/nodepool-entrypoint
 ARG VERSION=dev

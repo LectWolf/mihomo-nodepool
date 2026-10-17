@@ -12,23 +12,34 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/auth"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/buildinfo"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/config"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/core"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/database"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/server"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/update"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	if err := run(); err != nil {
-		log.Print(err)
+	if e := run(); e != nil {
+		log.Print(e)
 		os.Exit(1)
 	}
 }
-
 func run() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
+	envFile := os.Getenv("NODEPOOL_ENV_FILE")
+	if envFile == "" {
+		envFile = ".env"
+	}
+	if err := godotenv.Load(envFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.New("无法读取环境配置文件，请检查 .env 格式")
+	}
+	cfg, e := config.Load()
+	if e != nil {
+		return e
 	}
 	if len(os.Args) > 1 {
 		if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
@@ -36,55 +47,69 @@ func run() error {
 		}
 		return fmt.Errorf("用法：nodepool [healthcheck]")
 	}
-	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
-		return fmt.Errorf("无法创建数据目录：%w", err)
+	if e = os.MkdirAll(cfg.DataDir, 0700); e != nil {
+		return fmt.Errorf("无法创建数据目录：%w", e)
 	}
-	db, err := database.Open(cfg.MySQL)
-	if err != nil {
+	db, e := database.Open(cfg.MySQL)
+	if e != nil {
 		return fmt.Errorf("无法初始化 MySQL 连接配置")
 	}
 	if db != nil {
 		defer db.Close()
 	}
-	srv := &http.Server{
-		Addr: cfg.HTTPAddr, Handler: server.Handler(db),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second, WriteTimeout: 10 * time.Second,
-		IdleTimeout: 60 * time.Second,
+	admin, e := auth.New(cfg.DataDir, os.Getenv("ADMIN_PASSWORD"))
+	if e != nil {
+		return e
 	}
+	updater, err := update.New(update.Options{Version: buildinfo.Version})
+	if err != nil {
+		return fmt.Errorf("无法初始化版本更新器：%w", err)
+	}
+	if admin.PasswordFile != "" {
+		log.Printf("管理员密码文件：%s", admin.PasswordFile)
+	}
+	service := pool.NewService(pool.NewStore(db), core.New())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	workerDone := make(chan struct{})
+	go func() { defer close(workerDone); service.Run(ctx) }()
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: server.New(server.Options{Service: service, Auth: admin, Updates: updater}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second}
 	errorsCh := make(chan error, 1)
 	go func() { errorsCh <- srv.ListenAndServe() }()
 	log.Printf("Mihomo NodePool %s 正在监听 %s", buildinfo.Version, cfg.HTTPAddr)
 	select {
-	case err := <-errorsCh:
-		if !errors.Is(err, http.ErrServerClosed) {
-			return err
+	case e = <-errorsCh:
+		stop()
+		if !errors.Is(e, http.ErrServerClosed) {
+			return e
 		}
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		e = srv.Shutdown(shutdownCtx)
 	}
-	return nil
+	stop()
+	select {
+	case <-workerDone:
+	case <-time.After(10 * time.Second):
+	}
+	return e
 }
-
 func healthcheck(addr string) error {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
+	host, port, e := net.SplitHostPort(addr)
+	if e != nil {
 		return fmt.Errorf("健康检查地址无效")
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
-	if err != nil {
+	resp, e := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
+	if e != nil {
 		return fmt.Errorf("健康检查无法连接应用")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != 200 {
 		return fmt.Errorf("健康检查失败：HTTP %d", resp.StatusCode)
 	}
 	return nil
