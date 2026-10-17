@@ -17,7 +17,7 @@ const DefaultExclude = `(?i)(剩余|到期|过期|流量|官网|套餐|重置|ex
 
 const RetryBase = time.Hour
 const StaleAfter = 7 * 24 * time.Hour
-const Period = 6 * time.Hour
+const Period = 12 * time.Hour
 
 var ErrNotFound = errors.New("记录不存在")
 var ErrUnavailable = errors.New("MySQL 尚未配置或暂不可用")
@@ -186,6 +186,7 @@ type Node struct {
 	Feedback      *FeedbackSummary `json:"feedback,omitempty"`
 	Unavailable   string           `json:"unavailable,omitempty"`
 	Fresh         bool             `json:"fresh,omitempty"`
+	FieldTest     *FieldTest       `json:"field_test,omitempty"`
 	Config        json.RawMessage  `json:"-"`
 	CreatedAt     time.Time        `json:"-"`
 	Failures      int              `json:"-"`

@@ -263,6 +263,7 @@ func New(o Options) http.Handler {
 	registerSubscriptionDownload(mux, store, o.TrustedProxies)
 	registerSourceLink(mux, store)
 	registerLeaseProbe(mux, store)
+	registerBeacon(mux, store)
 	registerSignup(mux, store, o.Auth, o.TrustedProxies)
 	registerOAuth(mux, store, o.Auth)
 	o.Auth.Register(mux)

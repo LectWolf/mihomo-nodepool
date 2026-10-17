@@ -7,7 +7,7 @@ import Modal from './Modal.vue'
 import TitleChip from './TitleChip.vue'
 import UserAvatar from './UserAvatar.vue'
 import '../community.css'
-type Item = DetailedSelection & { demoted?: boolean; provider_id?: number; provider_name?: string; provider_avatar?: number; provider_title?: string }
+type Item = DetailedSelection & { demoted?: boolean; my_failed?: boolean; provider_id?: number; provider_name?: string; provider_avatar?: number; provider_title?: string }
 const props = defineProps<{ nodes: Item[]; removable?: boolean; disabled?: boolean; grouped?: boolean; feedback?: boolean }>()
 const emit = defineEmits<{ remove: [node: Item]; source: [id: number]; feedback: [node: Item] }>()
 const detail = ref<Item | null>(null)
@@ -37,13 +37,13 @@ const groups = computed(() => {
         <span class="small muted">{{ group.nodes.length }} 个节点</span>
       </header>
       <div class="preview-node-grid">
-        <article v-for="node in group.nodes" :key="`${node.node_id}-${node.source_id}`" :class="['preview-node', { demoted: node.demoted, unavailable: node.available === false }]">
+        <article v-for="node in group.nodes" :key="`${node.node_id}-${node.source_id}`" :class="['preview-node', { demoted: node.demoted || node.my_failed, unavailable: node.available === false }]">
           <div class="preview-node-title"><button type="button" class="text-button" :title="node.name || `节点 #${node.node_id}`" @click="detail = node">{{ node.name || `节点 #${node.node_id}` }}</button><span v-if="node.type" class="protocol-tag">{{ node.type.toUpperCase() }}</span></div>
           <span v-if="node.server" class="small muted mono ellipsis" :title="`${node.server}:${node.port}`">{{ node.server }}:{{ node.port }}</span>
           <span v-if="removable" class="small muted ellipsis" :title="node.source_name || `来源 #${node.source_id}`">{{ node.source_name || `来源 #${node.source_id}` }}</span>
           <button v-else type="button" class="text-button preview-source" :title="node.source_name || `来源 #${node.source_id}`" @click="emit('source', node.source_id)">{{ node.source_name || `来源 #${node.source_id}` }}<AppIcon name="right" /></button>
           <NodeBadges :insights="node.insights" :min-level="node.min_level" :usage="node.subscription_usage" />
-          <span v-if="node.demoted" class="small amber-text"><AppIcon name="alert" />多人反馈异常，已排到订阅末尾</span>
+          <span v-if="node.demoted" class="small amber-text"><AppIcon name="alert" />多人反馈异常，已排到订阅末尾</span><span v-else-if="node.my_failed" class="small amber-text" title="你的客户端自动检测时没能连上这个节点"><AppIcon name="alert" />你的客户端实测连不上，已排到订阅末尾</span>
           <span v-if="node.available === false" class="small danger-text">当前失效或停用，客户端下载会过滤</span>
           <button v-if="removable" type="button" class="remove-selection" :disabled="disabled" :aria-label="`移除节点 ${node.name || node.node_id}`" @click="emit('remove', node)"><AppIcon name="close" />移除</button>
           <button v-else-if="feedback" type="button" class="text-button preview-feedback" :aria-label="`反馈节点 ${node.name || node.node_id}`" @click="emit('feedback', node)"><AppIcon name="edit" />反馈</button>

@@ -20,6 +20,7 @@ import UsageHint from './UsageHint.vue'
 import UserAvatar from './UserAvatar.vue'
 import FeedbackPanel from './FeedbackPanel.vue'
 import FeedbackBadge from './FeedbackBadge.vue'
+import FieldTestBadge from './FieldTestBadge.vue'
 import SourceGallery from './SourceGallery.vue'
 import { blockHint, blockLabel, communityUser, levelOptions, selectionFor, useAccountScope } from '../community'
 import '../community.css'
@@ -271,7 +272,7 @@ async function save() {
         <table v-if="data?.items.length && layout === 'list'" class="node-table"><thead><tr><th v-if="selectingNodes"><span class="sr-only">选择状态</span></th><th>节点名称 / 地址</th><th>协议</th><th>出口 IP / 地区</th><th>延迟 / 状态</th><th>关联来源</th><th>最近检测</th></tr></thead><tbody>
           <tr v-for="node in data.items" :key="node.id" class="node-row" :class="{ selected: selectedIDs.has(node.id), unavailable: !!node.unavailable && !selectedIDs.has(node.id) }" :data-node-id="node.id" @click="activateNode(node)">
             <td v-if="selectingNodes"><span class="selection-indicator" :class="{ on: selectedIDs.has(node.id) }" aria-hidden="true"><AppIcon v-if="selectedIDs.has(node.id)" name="check" /></span></td>
-            <td><button class="node-name text-button" :title="node.name" :aria-label="`${selectingNodes ? '选择' : '查看'} ${node.name}`" :aria-pressed="selectingNodes ? selectedIDs.has(node.id) : undefined" @click.stop="activateNode(node)">{{ node.name }}</button><span :class="['cell-sub', { mono: !node.server_hidden, 'address-hidden': node.server_hidden }]">{{ address(node) }}</span><span v-if="node.unavailable" class="mini-tag tone-red block-tag">{{ blockLabel(node.unavailable, cardOrigin(node)?.min_level) }}</span><span v-else-if="node.fresh" class="mini-tag tone-violet">新上架</span><NodeBadges :insights="node.insights" :min-level="cardOrigin(node)?.min_level" :usage="cardOrigin(node)?.subscription_usage" /><FeedbackBadge :summary="node.feedback" /></td><td><span class="protocol-tag">{{ node.type.toUpperCase() }}</span></td><td><NodeLocation :node="node" /></td>
+            <td><button class="node-name text-button" :title="node.name" :aria-label="`${selectingNodes ? '选择' : '查看'} ${node.name}`" :aria-pressed="selectingNodes ? selectedIDs.has(node.id) : undefined" @click.stop="activateNode(node)">{{ node.name }}</button><span :class="['cell-sub', { mono: !node.server_hidden, 'address-hidden': node.server_hidden }]">{{ address(node) }}</span><span v-if="node.unavailable" class="mini-tag tone-red block-tag">{{ blockLabel(node.unavailable, cardOrigin(node)?.min_level) }}</span><span v-else-if="node.fresh" class="mini-tag tone-violet">新上架</span><NodeBadges :insights="node.insights" :min-level="cardOrigin(node)?.min_level" :usage="cardOrigin(node)?.subscription_usage" /><FeedbackBadge :summary="node.feedback" /><FieldTestBadge :result="node.field_test" /></td><td><span class="protocol-tag">{{ node.type.toUpperCase() }}</span></td><td><NodeLocation :node="node" /></td>
             <td><span :class="['latency', latencyTier(node), { 'green-text': node.status === 'healthy' }]">{{ node.latency_ms === null ? '—' : `${node.latency_ms} ms` }}</span><span :class="['cell-sub', 'status-text', node.status]"><span class="dot" :class="{ bad: node.status === 'unhealthy', pending: node.status === 'unknown' }"></span>{{ statusLabels[node.status] }}</span></td><td><span class="source-association">{{ node.sources[0]?.name || '—' }}<span v-if="node.sources.length > 1" class="count">+{{ node.sources.length - 1 }}</span></span></td><td><span class="small">{{ formatDate(node.last_checked_at) }}</span></td>
           </tr>
         </tbody></table>
@@ -280,7 +281,7 @@ async function save() {
           <span :class="['node-card-address', { mono: !node.server_hidden, 'address-hidden': node.server_hidden }]" :title="address(node)">{{ address(node) }}</span>
           <span class="node-card-overview"><NodeLocation :node="node" /><span :class="['latency', latencyTier(node), { 'green-text': node.status === 'healthy' }]">{{ node.latency_ms === null ? '—' : `${node.latency_ms} ms` }}</span></span>
           <NodeBadges :insights="node.insights" :min-level="cardOrigin(node)?.min_level" :usage="cardOrigin(node)?.subscription_usage" />
-          <FeedbackBadge :summary="node.feedback" />
+          <span class="node-card-signals"><FeedbackBadge :summary="node.feedback" /><FieldTestBadge :result="node.field_test" /></span>
           <span class="node-card-footer"><span class="source-association" :title="node.sources.map(s => s.name).join(' · ')">{{ node.sources[0]?.name || '—' }}<span v-if="node.sources.length > 1" class="count">+{{ node.sources.length - 1 }}</span></span><span class="status-text"><span class="dot" :class="{ bad: node.status === 'unhealthy', pending: node.status === 'unknown' }"></span>{{ statusLabels[node.status] }}</span></span>
         </button></div>
         <div v-else-if="loading && !data" class="empty-state" role="status"><span class="spinner"></span><h3>正在读取节点</h3><p>等待服务返回最新列表…</p></div>
@@ -290,7 +291,7 @@ async function save() {
     </div>
     <Modal v-if="details" title="节点详情" @close="details = null">
       <div class="detail-title"><h3>{{ details.name }}</h3><span class="protocol-tag">{{ details.type.toUpperCase() }}</span></div>
-      <dl class="detail-list"><div><dt>连接地址</dt><dd :class="{ mono: !details.server_hidden, muted: details.server_hidden }">{{ address(details) }}<small v-if="details.server_hidden" class="field-hint">为防止节点被单独提取，仅提供方与管理员可见；加入订阅后由客户端直接使用。</small></dd></div><div><dt>状态</dt><dd>{{ statusLabels[details.status] }} · {{ details.latency_ms === null ? '暂无延迟' : `${details.latency_ms} ms` }}</dd></div><div><dt>出口 / 地区</dt><dd><NodeLocation :node="details" /></dd></div><div><dt>最近检测</dt><dd>{{ formatDate(details.last_checked_at) }}</dd></div></dl>
+      <dl class="detail-list"><div><dt>连接地址</dt><dd :class="{ mono: !details.server_hidden, muted: details.server_hidden }">{{ address(details) }}<small v-if="details.server_hidden" class="field-hint">为防止节点被单独提取，仅提供方与管理员可见；加入订阅后由客户端直接使用。</small></dd></div><div><dt>状态</dt><dd>{{ statusLabels[details.status] }} · {{ details.latency_ms === null ? '暂无延迟' : `${details.latency_ms} ms` }}</dd></div><div><dt>国内实测</dt><dd><FieldTestBadge :result="details.field_test" detail /></dd></div><div><dt>出口 / 地区</dt><dd><NodeLocation :node="details" /></dd></div><div><dt>最近检测</dt><dd>{{ formatDate(details.last_checked_at) }}</dd></div></dl>
       <p v-if="details.last_error" class="notice error">{{ details.last_error }}</p>
       <NodeBadges :insights="details.insights" detail />
       <h3>关联来源 <span class="count">{{ details.sources.length }}</span></h3>

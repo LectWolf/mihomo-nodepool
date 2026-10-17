@@ -25,10 +25,11 @@ const admin = { id: 1, username: 'admin', display_name: '管理员', role: 'admi
 const makeSource = (id, name, kind = 'url') => ({ id, name, kind, enabled: true, exclude_pattern: '', status: 'ready', node_count: 1, excluded_count: 0, last_error: '', last_refresh_at: date, next_refresh_at: date, created_at: date })
 let sources = [makeSource(1, '主要来源'), makeSource(2, '备用来源')]
 let nextId = 3
-let settings = { exclude_pattern: '流量|到期', test_url: 'https://www.gstatic.com/generate_204', timeout_ms: 5000, probe_concurrency: 16, source_concurrency: 3, refresh_hours: 6, check_hours: 6 }
+let settings = { exclude_pattern: '流量|到期', test_url: 'https://www.gstatic.com/generate_204', timeout_ms: 5000, probe_concurrency: 16, source_concurrency: 3, refresh_hours: 12, check_hours: 12 }
 const releases = { current_version: 'v1.0.0', latest_version: 'v2.0.0', update_available: true, can_update: true, can_rollback: true, need_restart: false, state: 'idle', message: '', releases: ['v2.0.0', 'v1.0.0', 'v0.9.0'].map(version => ({ version, name: `Release ${version}`, body: `真实契约测试发布说明 ${version}\n- 测试条目`, published_at: date, url: `https://github.com/example/test/releases/tag/${version}` })) }
 let targetVersion = releases.current_version
 const nodes = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, name: `节点-${index + 1}`, type: 'ss', server: 'example.test', port: 443, latency_ms: 40 + index, status: 'healthy', country: 'United States', country_code: 'US', exit_ip: '192.0.2.1', ...(index === 0 ? { region: ' 加州 ', city: '洛杉矶' } : index === 1 ? { region: '美国', city: ' 美国 ' } : {}), last_checked_at: date, next_check_at: date, last_error: '', sources: [{ id: 1, name: '主要来源', node_name: '原名 A', max_users: 10 }, { id: 2, name: '备用来源', node_name: '原名 B', max_users: index === 2 ? 0 : 20 }] }))
+nodes[0].field_test = { ok: 9, fail: 1 }
 nodes[0].insights = { v2ray_compatible: false, v2ray_reason: '测试不兼容配置', tls: 'enabled', warnings: [{ code: 'certificate_verification_disabled', severity: 'warning', message: '节点配置关闭了TLS证书验证，存在中间人攻击风险' }] }
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
@@ -367,8 +368,8 @@ try {
   await select('每页条数', 50); await sleep(450)
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false })
   check('cards preserve filters/page, persist on reload, share detection/details, custom page size and 320px layout')
-  await click('重置筛选'); await hasText('节点-1')
-  await evaluate('document.querySelector("tbody .node-name").click()'); await hasText('原名 B')
+  await click('重置筛选'); await hasText('节点-1'); await hasText('国内实测 9/10')
+  await evaluate('document.querySelector("tbody .node-name").click()'); await hasText('原名 B'); await hasText('9/10 位国内用户能连上')
   await click('检测节点', 'document.querySelector("dialog[open]")'); await key('Escape'); await hasText('已加入检测队列')
   assert.ok(requests.some(item => /^\/nodes\/\d+\/test$/.test(item.route)))
   assert.equal(await evaluate('document.querySelectorAll(".node-card-actions").length'), 0)

@@ -41,6 +41,7 @@ type User struct {
 	ProbeUUID             string     `json:"-"`
 	PasswordHash          string     `json:"-"`
 	HasPassword           bool       `json:"has_password"`
+	BeaconEnabled         bool       `json:"beacon_enabled"`
 	AuthVersion           int64      `json:"-"`
 }
 type UserInput struct {
@@ -90,11 +91,11 @@ func CurrentUser(ctx context.Context) User {
 	return User{ID: 1, Username: "admin", Role: "admin", Enabled: true}
 }
 
-const userColumns = `id,username,display_name,role,enabled,node_limit,source_limit,subscription_limit,created_at,password_hash,auth_version,xp,points,checkin_on,checkin_streak,subscription_expires_at,COALESCE(probe_uuid,''),title,avatar_version,risk_frozen_until,COALESCE(email,''),email_verified_at IS NOT NULL`
+const userColumns = `id,username,display_name,role,enabled,node_limit,source_limit,subscription_limit,created_at,password_hash,auth_version,xp,points,checkin_on,checkin_streak,subscription_expires_at,COALESCE(probe_uuid,''),title,avatar_version,risk_frozen_until,COALESCE(email,''),email_verified_at IS NOT NULL,beacon_disabled=0`
 
 func scanUser(row scanner) (User, error) {
 	var u User
-	e := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.NodeLimit, &u.SourceLimit, &u.SubscriptionLimit, &u.CreatedAt, &u.PasswordHash, &u.AuthVersion, &u.XP, &u.Points, &u.CheckinOn, &u.CheckinStreak, &u.SubscriptionExpiresAt, &u.ProbeUUID, &u.Title, &u.AvatarVersion, &u.RiskFrozenUntil, &u.Email, &u.EmailVerified)
+	e := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.NodeLimit, &u.SourceLimit, &u.SubscriptionLimit, &u.CreatedAt, &u.PasswordHash, &u.AuthVersion, &u.XP, &u.Points, &u.CheckinOn, &u.CheckinStreak, &u.SubscriptionExpiresAt, &u.ProbeUUID, &u.Title, &u.AvatarVersion, &u.RiskFrozenUntil, &u.Email, &u.EmailVerified, &u.BeaconEnabled)
 	u.Level = LevelForXP(u.XP)
 	u.HasPassword = u.PasswordHash != ""
 	return u, e

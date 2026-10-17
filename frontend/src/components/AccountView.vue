@@ -71,7 +71,7 @@ async function unlink(id: string) {
 function bindHref(id: string) { return oauthHref(id, 'bind') }
 function emailBound() { emailEditing.value = false; void loadProfile() }
 watch(ledgerPage, () => void loadLedger())
-async function patch(kind: 'profile' | 'password', body: Record<string, string>, done: string) {
+async function patch(kind: 'profile' | 'password' | 'beacon', body: Record<string, unknown>, done: string) {
   if (saving.value || props.paused) return
   const ticket = scope.ticket()
   saving.value = kind; error.value = ''; message.value = ''
@@ -84,6 +84,8 @@ async function patch(kind: 'profile' | 'password', body: Record<string, string>,
   } catch (cause) { if (scope.current(ticket) && !isCancelled(cause)) error.value = errorText(cause) }
   finally { saving.value = '' }
 }
+const beaconOn = computed(() => currentUser.value?.beacon_enabled !== false)
+function toggleBeacon() { void patch('beacon', { beacon_enabled: !beaconOn.value }, beaconOn.value ? '已关闭实测回报，客户端下次更新订阅后生效。' : '已开启实测回报，客户端下次更新订阅后生效。') }
 function saveProfile() { void patch('profile', { display_name: displayName.value.trim() }, '昵称已保存。') }
 function savePassword() {
   if (hasPassword.value && !currentPassword.value) { error.value = '请输入当前密码。'; return }
@@ -235,6 +237,14 @@ const achievementList = [
           <button v-if="row.bound" type="button" class="compact ghost" :disabled="!!unlinking" @click="unlink(row.id)">{{ unlinking === row.id ? '解绑中…' : '解绑' }}</button>
           <a v-else-if="row.enabled" class="button compact" :href="bindHref(row.id)">绑定</a>
         </li></ul>
+      </section>
+      <section class="panel security-card">
+        <div class="panel-heading"><div><h2>节点实测回报</h2><p class="small muted">让大家知道节点在国内到底能不能连。</p></div><label class="switch-field"><span>{{ beaconOn ? '已开启' : '已关闭' }}</span><button type="button" :class="['switch', { on: beaconOn }]" role="switch" :aria-checked="beaconOn" aria-label="节点实测回报" :disabled="!!saving || paused" @click="toggleBeacon"><span></span></button></label></div>
+        <ul class="beacon-notes">
+          <li>Clash 客户端每 3 小时经订阅里最多 15 个节点访问一次本站，每次约 1 KB，只记录哪个节点能连上，不涉及浏览内容。</li>
+          <li>结果显示在节点卡片的“国内实测”上；你的客户端连不上的节点，会自动排到你订阅的末尾。</li>
+          <li>关闭后客户端下次更新订阅时生效，网站上仍能看到其他人的实测数据。</li>
+        </ul>
       </section>
       </div>
     </div>

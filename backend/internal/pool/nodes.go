@@ -131,9 +131,9 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 	if f.Sort == "recommend" {
 		orderArgs = append(orderArgs, utcNow().Add(-FreshWindow))
 	}
-	// 普通用户看不可选的节点排在后面
+	// 普通用户看到的顺序：可选 → 席位已满等暂不可选 → 检测不可用
 	if viewer.Role != "admin" {
-		order = usable + " DESC," + order
+		order = "CASE WHEN n.status='unhealthy' THEN 2 WHEN " + usable + " THEN 0 ELSE 1 END," + order
 		orderArgs = append(append([]any{}, usableArgs...), orderArgs...)
 	}
 	queryArgs := append(append(append([]any{}, args...), orderArgs...), f.PageSize, (f.Page-1)*f.PageSize)
@@ -202,7 +202,10 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		n.Unavailable = nodeBlock(n.Sources)
 	}
 	maskServers(viewer, out.Items)
-	return out, s.attachNodeFeedback(ctx, out.Items)
+	if e = s.attachNodeFeedback(ctx, out.Items); e != nil {
+		return out, e
+	}
+	return out, s.attachFieldTests(ctx, out.Items)
 }
 
 // FreshWindow 内首次入池的节点视为新上架

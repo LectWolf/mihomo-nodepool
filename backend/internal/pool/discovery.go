@@ -57,11 +57,14 @@ func (s *Store) Catalog(ctx context.Context, f CatalogFilter) (map[string]any, e
 	order, orderArgs := "id", []any{}
 	switch f.Sort {
 	case "recommend":
-		// 可选优先，新上架来源优先曝光，再按健康节点数
-		order = "created_at>=? DESC,(SELECT COUNT(*) FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id WHERE sn.source_id=np_sources.id AND sn.excluded=0 AND n.blocked=0 AND n.status='healthy') DESC,id DESC"
+		// 新上架来源优先曝光，再按健康节点数
+		healthy := "(SELECT COUNT(*) FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id WHERE sn.source_id=np_sources.id AND sn.excluded=0 AND n.blocked=0 AND n.status='healthy')"
+		order = "created_at>=? DESC," + healthy + " DESC,id DESC"
 		orderArgs = append(orderArgs, utcNow().Add(FreshSourceWindow*-1))
+		// 可选 → 席位已满等暂不可选 → 节点全部检测不可用
 		if viewer.Role != "admin" {
-			order = usable + " DESC," + order
+			alive := strings.Replace(healthy, "n.status='healthy'", "n.status<>'unhealthy'", 1)
+			order = "CASE WHEN " + alive + "=0 THEN 2 WHEN " + usable + " THEN 0 ELSE 1 END," + order
 			orderArgs = append(append([]any{}, usableArgs...), orderArgs...)
 		}
 	case "new":

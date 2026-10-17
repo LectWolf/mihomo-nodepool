@@ -317,6 +317,8 @@ func (s *Store) PruneRisk(ctx context.Context) error {
 	if _, err := s.DB.ExecContext(ctx, `DELETE FROM np_pull_stats WHERE day<?`, day); err != nil {
 		return err
 	}
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM np_feedback WHERE created_at<?`, now.Add(-90*24*time.Hour))
-	return err
+	if _, err := s.DB.ExecContext(ctx, `DELETE FROM np_feedback WHERE created_at<?`, now.Add(-90*24*time.Hour)); err != nil {
+		return err
+	}
+	return s.PruneBeacons(ctx)
 }

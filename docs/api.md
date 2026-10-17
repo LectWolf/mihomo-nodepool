@@ -20,7 +20,7 @@
 - POST `/auth/persist` `{remember}` → 同 `/auth`；登录后“保持登录状态？”确认用，把当前会话改为 30 天持久会话。会话以 SHA-256 摘要存入 `np_sessions`，服务重启不掉线，退出登录、改密码或停用账号即失效。
 - POST `/auth/logout` → `{authenticated:false}`。
 - GET `/me` → `{user:User,usage:{nodes,sources,subscriptions},provider_path}`。
-- PATCH `/me` `{display_name?,password?,current_password?}` → User；User 含 `has_password`。已有密码的账号修改密码必须提供正确的 `current_password`（错误 400，同一账号 15 分钟内错 5 次后 429）；没有密码的账号可直接设置。修改密码撤销其他会话，保留当前浏览器。
+- PATCH `/me` `{display_name?,password?,current_password?,beacon_enabled?}` → User；User 含 `has_password`、`beacon_enabled`（实测回报，默认开启，关闭后客户端下次更新订阅生效）。已有密码的账号修改密码必须提供正确的 `current_password`（错误 400，同一账号 15 分钟内错 5 次后 429）；没有密码的账号可直接设置。修改密码撤销其他会话，保留当前浏览器。
 - GET `/users?q=&role=&status=&risk=&quota=&page=1&page_size=20` → `{items:User[],total,page,page_size,limits,risk}`，管理员与用户管理员（manager）。`role=admin|manager|user`，`status=enabled|disabled`，`risk=flagged|frozen|clean`（触发任一风控标记／冻结中／无标记），`quota=custom|level`（单独设置额度／跟随等级）；参数可组合。
 - POST `/users` `{username,password,display_name?,node_limit?,source_limit?,subscription_limit?,role?}` → User，201。管理员创建的账号沿用 1–64 位用户名规则，便于导入旧平台数据。
 - PATCH `/users/{id}` `{display_name?,password?,enabled?,node_limit?,source_limit?,subscription_limit?,xp?,points?,role?}` → User。
@@ -79,6 +79,8 @@ GET `/nodes?page=1&page_size=50&q=&type=&countries=JP,US&min_level=0..6&source_i
 
 `Node = {id,name,type,server,port,latency_ms:number|null,status:"unknown"|"healthy"|"unhealthy",country,country_code,region,city,exit_ip,last_checked_at,next_check_at,last_error,sources:[{id,name,node_name,owner_id,provider_name}]}`。
 
+普通用户的节点列表按“可选 → 席位已满等暂不可选 → 检测不可用”分层，层内再按所选排序；来源推荐排序同理（没有可用节点的来源最后）。
+
 Node另带`insights:{v2ray_compatible,v2ray_reason,cipher?,transport?,tls,warnings:[{code,severity,message}]}`，Origin另带`min_level,subscription_usage?`；只分析配置，不保证实际客户端连通，不输出凭据。TLS状态按协议判断，不把SS AEAD／SS2022／WireGuard泛化为明文。
 
 `SubscriptionUsage={upload_bytes,download_bytes,total_bytes,remaining_bytes,expires_at,status,fetched_at}`，缺失值为null，未提供头则整个对象省略；来源级元数据，不是个人用量。`status=unknown|normal|low|exhausted|expired|invalid`，low为已知剩余≤10%；total=0表示未知，整数／重复／溢出严格校验。到期时间为UTC ISO，读取时刷新到期状态。
@@ -87,7 +89,7 @@ Node另带`insights:{v2ray_compatible,v2ray_reason,cipher?,transport?,tls,warnin
 - POST `/nodes/test` `{ids?:number[]}` → `{queued:true}`，仅管理员；省略 ids 检测全部有效节点。
 - GET `/options` → `{types:string[],countries:[{code,name}]}`。
 
-检测失败按 1／2／4／8／16／24 小时退避，之后最多 24 小时；连续 7 天无成功检测则屏蔽。屏蔽节点不计入正常列表、统计、选项或无 ID 的批量检测。明确 ID 的手动复测仍可恢复屏蔽节点，成功后清零失败并恢复 6 小时错峰。`blocked`、`last_success_at` 为内部字段。
+检测失败按 1／2／4／8／16／24 小时退避，之后最多 24 小时；连续 7 天无成功检测则屏蔽。屏蔽节点不计入正常列表、统计、选项或无 ID 的批量检测。明确 ID 的手动复测仍可恢复屏蔽节点，成功后清零失败并恢复 12 小时错峰。`blocked`、`last_success_at` 为内部字段。
 
 ## 组合订阅
 
@@ -155,6 +157,8 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 响应提供 `X-Subscription-Format`、`X-Subscription-Skipped`、`X-Subscription-Routing-Skipped`；v2ray 另带 `X-Subscription-Compatibility: v2ray-compatible URI import only`。设置合理 Content-Type、inline 文件名、`Cache-Control: no-store, private, max-age=0`、`Vary: User-Agent` 与 `Referrer-Policy: no-referrer`。
 
 `/sub/` 与 `/link/` 下载均带 `Content-Disposition: attachment; filename="MCII"; filename*=UTF-8''MCII%E8%AE%A2%E9%98%85%E5%85%B1%E4%BA%AB` 及 `Profile-Title: base64:…`，客户端显示订阅名「MCII节点共享」，不再显示令牌。个人下载另带`X-Subscription-State:active|expired`、`Profile-Web-Page-Url`和`Subscription-Userinfo: expire=个人租期Unix秒`。到期返回200提示节点，不输出真实节点。有效下载附保活VLESS/WS节点及独立hidden url-test组；只有固定HTTP gstatic204的HEAD／GET有效探测续期，旧过期UUID不能复活。GET `/ws/lease/{uuid}`仅WebSocket协议入口，不提供通用转发。公网源优先settings.public_url，否则按请求TLS／Host推断，不信任转发头；反代须配置真实HTTPS源和WS Upgrade。来源`/link/`转发已解析来源用量头，不套个人到期。
+
+实测回报：开启 `beacon_enabled` 的用户下载 Clash 格式时，订阅另附最多 15 个隐藏 url-test 组（`实测回报 N`），每组只含一个节点，检测地址为 `http://<公网主机>/b/<32位令牌>`，间隔 3 小时、`lazy:false`。令牌按（批次，节点）随机生成，同一订阅 12 小时内复用同一批次，之后轮换并优先选该用户未测、全站数据少的节点。GET／HEAD `/b/{token}` 始终返回空 204；首次回报记录该节点连通。批次已有回报 10 分钟后仍未回报的节点视为该用户连不上：订阅中排到末尾，订阅详情 `node_details[].my_failed=true`。拉取订阅的 IP 属于中国大陆（内嵌 APNIC 数据，`scripts/update-cnip.py` 更新）时批次计入国内统计；节点列表 Node 另带 `field_test:{ok,fail}`，为近 72 小时按用户去重的国内实测结果。回报走 HTTP 80 端口以免每次握手，反代须让 `/b/` 不跳转 HTTPS。批次保留 7 天。
 
 ## 积分、头像与反馈
 

@@ -33,7 +33,7 @@ const qr = ref<Subscription | null>(null)
 const ruleTarget = ref<Subscription | null>(null)
 const ruleID = ref<number | null>(null)
 const busy = ref(false)
-type ShownNode = DetailedSelection & { demoted?: boolean; provider_id?: number; provider_name?: string; provider_avatar?: number }
+type ShownNode = DetailedSelection & { demoted?: boolean; my_failed?: boolean; provider_id?: number; provider_name?: string; provider_avatar?: number }
 const feedbackNode = ref<ShownNode | null>(null)
 const historyRevision = ref(0)
 let sequence = 0
@@ -84,6 +84,7 @@ function providers(item: Subscription) {
 function totalNodes(item: Subscription) { return item.node_count + (item.follow_node_count ?? 0) }
 function follows(item: Subscription) { return item.follow_details ?? [] }
 function demotedCount(item: Subscription) { return displayNodes(item).filter(node => node.demoted).length }
+function failedCount(item: Subscription) { return displayNodes(item).filter(node => node.my_failed && !node.demoted).length }
 function unavailableCount(item: Subscription) { return displayNodes(item).filter(node => node.available === false).length }
 function openFeedback(node: ShownNode) { feedbackNode.value = node }
 function url(item: Subscription, format?: string) { const value = new URL(absoluteURL(item.url)); if (format) value.searchParams.set('format', format); return value.href }
@@ -191,7 +192,7 @@ const subscriptionGuide = [
           <div v-if="follows(item).length"><dt>跟随来源</dt><dd class="follow-list"><button v-for="s in follows(item)" :key="s.source_id" type="button" :class="['mini-tag', s.available ? 'green' : 'red']" :title="s.available ? `${s.name}：当前 ${s.node_count} 个可用节点，自动同步` : `${s.name}：来源已停用或下架`" @click="viewSource(s.source_id)">{{ s.name }} · {{ s.available ? s.node_count : '不可用' }}</button></dd></div>
           <div v-if="item.node_count || !follows(item).length"><dt>URI 兼容</dt><dd><span class="mini-tag green">可导 {{ uriCounts(item).ok }}</span><span class="mini-tag">跳过 {{ uriCounts(item).skip }}</span><span v-if="unavailableCount(item)" class="mini-tag red">失效 {{ unavailableCount(item) }}</span></dd></div>
           <div class="sub-providers"><dt>提供方</dt><dd><span class="avatar-stack"><UserAvatar v-for="p in providers(item).slice(0, 5)" :key="p.id" :id="p.id" :name="p.name" :version="p.avatar" :size="24" /></span><span class="ellipsis small" :title="providers(item).map(p => `${p.name}（${p.count}）`).join('、')">{{ providers(item).length ? providers(item).slice(0, 2).map(p => p.name).join('、') + (providers(item).length > 2 ? ` 等 ${providers(item).length} 位` : '') : '暂无' }}</span></dd></div>
-          <div v-if="demotedCount(item)"><dt>用户反馈</dt><dd class="amber-text"><AppIcon name="alert" />{{ demotedCount(item) }} 个节点被多人反馈，已排到末尾</dd></div>
+          <div v-if="demotedCount(item)"><dt>用户反馈</dt><dd class="amber-text"><AppIcon name="alert" />{{ demotedCount(item) }} 个节点被多人反馈，已排到末尾</dd></div><div v-if="failedCount(item)"><dt>客户端实测</dt><dd class="amber-text"><AppIcon name="alert" />{{ failedCount(item) }} 个节点你的客户端连不上，已排到末尾</dd></div>
         </dl>
       </div>
       <footer class="sub-foot"><span class="small muted"><AppIcon name="lock" />链接包含个人令牌，请勿分享</span><div><button class="text-button" @click="confirm = { item, action: 'rotate' }; error = ''"><AppIcon name="reset" />重置链接</button><button class="text-button danger" @click="confirm = { item, action: 'delete' }; error = ''"><AppIcon name="trash" />删除订阅</button></div></footer>

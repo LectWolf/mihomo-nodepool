@@ -39,6 +39,7 @@ func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manage
 			DisplayName     *string `json:"display_name"`
 			Password        *string `json:"password"`
 			CurrentPassword string  `json:"current_password"`
+			BeaconEnabled   *bool   `json:"beacon_enabled"`
 		}
 		if e := decode(w, r, &in); e != nil {
 			return e
@@ -59,6 +60,11 @@ func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manage
 					return errors.New("当前密码不正确")
 				}
 				guard.reset(id)
+			}
+		}
+		if in.BeaconEnabled != nil {
+			if e := s.SetBeacon(r.Context(), id, *in.BeaconEnabled); e != nil {
+				return e
 			}
 		}
 		u, e := s.PatchUser(r.Context(), id, pool.UserPatch{DisplayName: in.DisplayName, Password: in.Password})
@@ -277,7 +283,7 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 			writeError(w, e)
 			return
 		}
-		raw, skipped, routingSkipped, e := s.ExportSavedSubscription(ctx, r.PathValue("token"), format)
+		raw, skipped, routingSkipped, nodes, e := s.ExportSavedSubscriptionNodes(ctx, r.PathValue("token"), format)
 		user, infoErr := s.SubscriptionDeliveryInfo(ctx, r.PathValue("token"))
 		if infoErr != nil {
 			writeError(w, infoErr)
@@ -299,6 +305,9 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 			w.Header().Set("X-Subscription-State", "expired")
 		} else if e == nil {
 			raw, e = attachKeepalive(raw, format, user, origin)
+			if e == nil && format == "clash" && user.BeaconEnabled {
+				raw = attachBeacons(ctx, s, raw, r.PathValue("token"), nodes, origin, clientIP(r, trusted))
+			}
 			if e == nil {
 				e = s.TouchSubscriptionPull(ctx, r.PathValue("token"))
 			}

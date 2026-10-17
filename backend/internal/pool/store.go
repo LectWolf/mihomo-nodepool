@@ -94,6 +94,9 @@ func (s *Store) Ensure(ctx context.Context) error {
 	if err := s.ensureFollow(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureBeacon(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureEncryption(ctx); err != nil {
 		return err
 	}
@@ -111,7 +114,7 @@ func (s *Store) Settings(ctx context.Context) (Settings, error) {
 	if err == nil {
 		err = json.Unmarshal(raw, &v)
 	}
-	v.RefreshHours, v.CheckHours = 6, 6
+	v.RefreshHours, v.CheckHours = 12, 12
 	if err == nil {
 		c, m, l := v.Community, v.Maintenance, v.Login
 		communityCache.Store(&c)
@@ -138,7 +141,7 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 	if err := v.Validate(); err != nil {
 		return err
 	}
-	v.RefreshHours, v.CheckHours = 6, 6
+	v.RefreshHours, v.CheckHours = 12, 12
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return e
