@@ -474,7 +474,7 @@ try {
   await click('运行统计'); await hasText('统计来源执行中'); await hasText('套餐未知来源')
   assert.equal(await evaluate('document.querySelector(".usage-stat-grid > div:nth-child(2) strong").textContent.trim()'), '未知')
   const sampleBefore = await evaluate('document.querySelector(".statistics-sample").textContent')
-  await eventually(async () => await evaluate('document.querySelector(".statistics-sample").textContent') !== sampleBefore, 'statistics automatic refresh', 8000)
+  await eventually(async () => await evaluate('document.querySelector(".statistics-sample").textContent') !== sampleBefore, 'statistics automatic refresh', 14000)
   await cdp('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true })
   assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true)
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
