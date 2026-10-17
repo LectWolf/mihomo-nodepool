@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ func urlHash(raw string) any {
 	return hex.EncodeToString(h[:])
 }
 func (s *Store) AddSource(ctx context.Context, in SourceInput) (Source, error) {
+	defer s.InvalidateIndex()
 	if e := checkSource(in); e != nil {
 		return Source{}, e
 	}
@@ -78,6 +80,7 @@ func (s *Store) AddSource(ctx context.Context, in SourceInput) (Source, error) {
 const MaxOwnedSources = 100
 
 func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Source, error) {
+	defer s.InvalidateIndex()
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return Source{}, e
@@ -182,6 +185,7 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 	return s.Source(ctx, id)
 }
 func (s *Store) DeleteSource(ctx context.Context, id int64) error {
+	defer s.InvalidateIndex()
 	if e := s.SourcePermission(ctx, id); e != nil {
 		return e
 	}
@@ -248,6 +252,10 @@ func (s *Store) ApplySource(ctx context.Context, src Source, body string, parsed
 		return e
 	}
 	local, e := Pattern(src.ExcludePattern)
+	if e != nil {
+		return e
+	}
+	oldNames, e := sourceNodeNames(ctx, tx, src.ID)
 	if e != nil {
 		return e
 	}
@@ -324,7 +332,18 @@ func (s *Store) ApplySource(ctx context.Context, src Source, body string, parsed
 			return e
 		}
 	}
-	return tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return e
+	}
+	s.InvalidateIndex()
+	// 节点已保存，后续两步失败只影响排队和换绑，下次刷新会再做
+	if e = s.RebindSelections(ctx, src.ID, oldNames); e != nil {
+		log.Print("订阅节点同名换绑失败，下次刷新重试")
+	}
+	if e = s.QueueSourceNodes(ctx, src.ID, now); e != nil {
+		log.Print("来源节点排队检测失败，节点按兜底周期检测")
+	}
+	return nil
 }
 func (s *Store) FailSource(ctx context.Context, src Source, message string) error {
 	// Network diagnostics deliberately omit URLs and upstream bodies (subscription tokens).

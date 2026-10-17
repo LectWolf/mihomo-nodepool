@@ -3,7 +3,6 @@ package pool
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/url"
 	"reflect"
 	"strings"
@@ -52,8 +51,9 @@ func TestSubscriptionFormatsAndCompleteClash(t *testing.T) {
 			t.Fatal("clash dropped config")
 		}
 	}
-	if _, skip, e = ExportSubscription(nodes, "v2ray"); !errors.Is(e, ErrUnexportable) || skip != 2 {
-		t.Fatalf("complex headers silently lost: %d %v", skip, e)
+	// 自定义请求头只影响伪装，v2ray 链接只保留 Host
+	if _, skip, e = ExportSubscription(nodes, "v2ray"); e != nil || skip != 0 {
+		t.Fatalf("v2ray export: %d %v", skip, e)
 	}
 }
 func TestShareURIRoundTrips(t *testing.T) {
@@ -127,19 +127,20 @@ func TestShareURIRoundTrips(t *testing.T) {
 		})
 	}
 }
-func TestURIRejectsUnrepresentedParameters(t *testing.T) {
-	for _, extra := range []string{`"smux":{"enabled":true}`, `"tfo":true`, `"plugin-opts":{"nested":{}}`, `"udp":false`, `"dialer-proxy":"upstream"`} {
+func TestURIIgnoresTuningParameters(t *testing.T) {
+	for _, extra := range []string{`"smux":{"enabled":true}`, `"tfo":true`, `"plugin":"obfs","plugin-opts":{"mode":"http","nested":{}}`, `"udp":false`, `"ip-version":"ipv4"`, `"client-fingerprint":"chrome"`} {
 		raw := `{"name":"SS","type":"ss","server":"example.com","port":443,"cipher":"aes-128-gcm","password":"secret",` + extra + `}`
 		var m map[string]any
 		_ = json.Unmarshal([]byte(raw), &m)
-		if uri, e := shareURI(m); e == nil {
-			t.Fatalf("silently lost %s: %s", extra, uri)
+		if _, e := shareURI(m); e != nil {
+			t.Fatalf("%s blocked export: %v", extra, e)
 		}
 	}
 	good := Node{Config: json.RawMessage(`{"name":"a","type":"ss","server":"example.com","port":443,"cipher":"aes-128-gcm","password":"secret"}`)}
 	bad := Node{Config: json.RawMessage(`{"name":"b","type":"wireguard","server":"example.com","port":443}`)}
-	raw, skipped, e := ExportSubscription([]Node{good, bad}, "v2ray")
-	if e != nil || skipped != 1 {
+	chained := Node{Config: json.RawMessage(`{"name":"c","type":"ss","server":"example.com","port":443,"cipher":"aes-128-gcm","password":"secret","dialer-proxy":"up"}`)}
+	raw, skipped, e := ExportSubscription([]Node{good, bad, chained}, "v2ray")
+	if e != nil || skipped != 2 {
 		t.Fatalf("skip %d: %v", skipped, e)
 	}
 	decoded, e := base64.StdEncoding.DecodeString(string(raw))
@@ -148,17 +149,71 @@ func TestURIRejectsUnrepresentedParameters(t *testing.T) {
 	}
 }
 
-func TestURISkipsNonportableProtocolOptions(t *testing.T) {
-	for _, raw := range []string{
-		`{"name":"VMess","type":"vmess","server":"example.com","port":443,"uuid":"uuid","tls":true,"skip-cert-verify":true}`,
-		`{"name":"SS","type":"ss","server":"example.com","port":443,"cipher":"aes-128-gcm","password":"secret","plugin":"v2ray-plugin","plugin-opts":{"mux":false}}`,
-		`{"name":"HY2","type":"hysteria2","server":"example.com","port":443,"password":"secret","client-fingerprint":"chrome"}`,
-		`{"name":"VLESS","type":"vless","server":"example.com","port":443,"uuid":"uuid","tls":"true"}`,
+// 常见机场配置（含 Mihomo 自己转换分享链接时生成的参数）都应能导出，且关键参数能被客户端还原
+func TestURIExportsCommonProviderConfigs(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want map[string]any
+	}{
+		{`{"name":"vmess ws","type":"vmess","server":"a.example","port":443,"uuid":"00112233-4455-6677-8899-aabbccddeeff","alterId":0,"cipher":"auto","udp":true,"xudp":true,"tls":true,"skip-cert-verify":true,"servername":"s.example","network":"ws","ws-opts":{"path":"/ws","headers":{"Host":"h.example","User-Agent":"Mozilla/5.0"},"max-early-data":2048,"early-data-header-name":"Sec-WebSocket-Protocol"}}`,
+			map[string]any{"type": "vmess", "network": "ws", "servername": "s.example", "tls": true}},
+		{`{"name":"vless reality","type":"vless","server":"b.example","port":443,"uuid":"00112233-4455-6677-8899-aabbccddeeff","udp":true,"tls":true,"flow":"xtls-rprx-vision","client-fingerprint":"chrome","servername":"www.microsoft.com","packet-encoding":"xudp","reality-opts":{"public-key":"pk","short-id":"ab","support-x25519mlkem768":false}}`,
+			map[string]any{"type": "vless", "flow": "xtls-rprx-vision", "servername": "www.microsoft.com", "client-fingerprint": "chrome"}},
+		{`{"name":"vless h2","type":"vless","server":"b.example","port":443,"uuid":"00112233-4455-6677-8899-aabbccddeeff","tls":true,"network":"h2","h2-opts":{"host":["h.example"],"path":"/h2"}}`,
+			map[string]any{"type": "vless", "network": "h2"}},
+		{`{"name":"vmess http","type":"vmess","server":"b.example","port":80,"uuid":"00112233-4455-6677-8899-aabbccddeeff","alterId":0,"cipher":"auto","network":"http","http-opts":{"method":"GET","path":["/"],"headers":{"Host":["h.example"]}}}`,
+			map[string]any{"type": "vmess", "network": "http"}},
+		{`{"name":"vless upgrade","type":"vless","server":"b.example","port":443,"uuid":"00112233-4455-6677-8899-aabbccddeeff","tls":true,"network":"ws","ws-opts":{"path":"/up","v2ray-http-upgrade":true,"v2ray-http-upgrade-fast-open":true}}`,
+			map[string]any{"type": "vless", "network": "httpupgrade"}},
+		{`{"name":"vless xhttp","type":"vless","server":"b.example","port":443,"uuid":"00112233-4455-6677-8899-aabbccddeeff","tls":true,"network":"xhttp","xhttp-opts":{"path":"/x","mode":"auto"}}`,
+			map[string]any{"type": "vless", "network": "xhttp"}},
+		{`{"name":"trojan","type":"trojan","server":"c.example","port":443,"password":"p","udp":true,"sni":"c.example","skip-cert-verify":true,"tfo":false}`,
+			map[string]any{"type": "trojan", "sni": "c.example", "skip-cert-verify": true}},
+		{`{"name":"hy2 ports","type":"hysteria2","server":"d.example","port":443,"ports":"20000-30000","password":"p","up":"50 Mbps","down":"200 Mbps","sni":"d.example","skip-cert-verify":true}`,
+			map[string]any{"type": "hysteria2", "sni": "d.example", "skip-cert-verify": true}},
+		{`{"name":"ss uot","type":"ss","server":"e.example","port":8388,"cipher":"aes-256-gcm","password":"p","udp":true,"udp-over-tcp":true,"udp-over-tcp-version":2}`,
+			map[string]any{"type": "ss", "cipher": "aes-256-gcm"}},
+		{`{"name":"anytls","type":"anytls","server":"f.example","port":443,"password":"p","sni":"f.example","skip-cert-verify":true,"client-fingerprint":"chrome","idle-session-check-interval":30}`,
+			map[string]any{"type": "anytls", "sni": "f.example", "skip-cert-verify": true}},
 	} {
 		var m map[string]any
-		_ = json.Unmarshal([]byte(raw), &m)
-		if uri, e := shareURI(m); e == nil {
-			t.Fatalf("nonportable options exported: %s", uri)
+		if e := json.Unmarshal([]byte(tc.raw), &m); e != nil {
+			t.Fatal(e)
 		}
+		uri, e := shareURI(m)
+		if e != nil {
+			t.Fatalf("%s: %v", m["name"], e)
+		}
+		parsed, e := Parse(uri, nil)
+		if e != nil || len(parsed.Nodes) != 1 {
+			t.Fatalf("%s round trip: %v %s", m["name"], e, uri)
+		}
+		var got map[string]any
+		_ = json.Unmarshal(parsed.Nodes[0].Config, &got)
+		for k, v := range tc.want {
+			if !reflect.DeepEqual(got[k], v) {
+				t.Errorf("%s %s: want %#v got %#v (%s)", m["name"], k, v, got[k], uri)
+			}
+		}
+		if got["server"] != m["server"] {
+			t.Errorf("%s server lost", m["name"])
+		}
+	}
+}
+
+func TestURIVMessInsecureAndStringTLS(t *testing.T) {
+	m := map[string]any{"name": "v", "type": "vmess", "server": "a.example", "port": 443, "uuid": "id", "tls": true, "skip-cert-verify": true}
+	uri, e := shareURI(m)
+	if e != nil {
+		t.Fatal(e)
+	}
+	raw, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(uri, "vmess://"))
+	var vm map[string]any
+	if json.Unmarshal(raw, &vm) != nil || vm["insecure"] != "1" || vm["tls"] != "tls" {
+		t.Fatalf("vmess insecure: %s", raw)
+	}
+	uri, e = shareURI(map[string]any{"name": "l", "type": "vless", "server": "a.example", "port": "443", "uuid": "id", "tls": "true"})
+	if e != nil || !strings.Contains(uri, "security=tls") {
+		t.Fatalf("string tls: %s %v", uri, e)
 	}
 }

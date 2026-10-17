@@ -38,9 +38,7 @@ func ExportFormat(explicit, ua string) (string, error) {
 	return "clash", nil
 }
 
-// ExportSubscription never includes provider URLs, source contents or directives.
-// URI conversion is fail-closed: every configuration key must be represented or
-// known to have the same semantics as the URI format's default.
+// ExportSubscription 不输出来源地址、来源内容或路由指令；v2ray 转换规则见 shareURI
 func ExportSubscription(nodes []Node, format string) ([]byte, int, error) {
 	configs := []map[string]any{}
 	used := map[string]bool{"DIRECT": true, "REJECT": true, "NodePool": true, SubscriptionDisplayName: true}
@@ -103,77 +101,92 @@ func text(v any) string {
 	return fmt.Sprint(v)
 }
 
-type uriConfig struct {
-	values map[string]any
-	used   map[string]bool
-	err    error
+func str(m map[string]any, k string) string { return text(m[k]) }
+
+// truthy 兼容布尔值和 "true"/"1" 字符串
+func truthy(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		b, _ := strconv.ParseBool(strings.TrimSpace(x))
+		return b
+	case float64:
+		return x != 0
+	case int:
+		return x != 0
+	}
+	return false
+}
+func opts(m map[string]any, k string) map[string]any {
+	o, _ := m[k].(map[string]any)
+	return o
 }
 
-func (c *uriConfig) take(k string) any   { c.used[k] = true; return c.values[k] }
-func (c *uriConfig) str(k string) string { return text(c.take(k)) }
-func (c *uriConfig) flag(k string) bool {
-	v := c.take(k)
-	if v == nil {
-		return false
-	}
-	b, ok := v.(bool)
-	if !ok {
-		c.err = ErrUnexportable
-	}
-	return b
-}
-func (c *uriConfig) complete() error {
-	if c.err != nil {
-		return c.err
-	}
-	for k := range c.values {
-		if !c.used[k] {
-			return fmt.Errorf("URI不能保真表示参数%s", k)
-		}
-	}
-	return nil
-}
-func stringList(v any) (string, error) {
+// first 取字符串或字符串列表的第一个非空值
+func first(v any) string {
 	switch x := v.(type) {
-	case nil:
-		return "", nil
 	case []any:
-		items := []string{}
 		for _, a := range x {
-			s, ok := a.(string)
-			if !ok || strings.Contains(s, ",") {
-				return "", ErrUnexportable
+			if s := text(a); s != "" {
+				return s
 			}
-			items = append(items, s)
 		}
-		return strings.Join(items, ","), nil
 	case []string:
-		return strings.Join(x, ","), nil
-	default:
-		return "", ErrUnexportable
-	}
-}
-func shareURI(m map[string]any) (string, error) {
-	c := &uriConfig{values: m, used: map[string]bool{}}
-	typ := c.str("type")
-	name := c.str("name")
-	host := c.str("server")
-	port := c.str("port")
-	p, e := strconv.Atoi(port)
-	if e != nil || p < 1 || p > 65535 || host == "" {
-		return "", ErrUnexportable
-	}
-	if udp, ok := m["udp"]; ok {
-		if udp != true {
-			return "", ErrUnexportable
+		for _, s := range x {
+			if s != "" {
+				return s
+			}
 		}
-		c.take("udp")
+	case nil:
+	default:
+		return text(x)
 	}
-	u := &url.URL{Scheme: typ, Host: net.JoinHostPort(strings.Trim(host, "[]"), port), Fragment: name}
+	return ""
+}
+func stringList(v any) string {
+	items := []string{}
+	switch x := v.(type) {
+	case []any:
+		for _, a := range x {
+			if s, ok := a.(string); ok && s != "" && !strings.Contains(s, ",") {
+				items = append(items, s)
+			}
+		}
+	case []string:
+		items = x
+	case string:
+		return x
+	}
+	return strings.Join(items, ",")
+}
+func headerHost(h map[string]any) string {
+	for k, v := range h {
+		if strings.EqualFold(k, "host") {
+			return first(v)
+		}
+	}
+	return ""
+}
+
+// shareURI 把 Mihomo 节点转换为 v2rayN 等客户端通用的分享链接。
+// 只要求连接必需的信息能完整表示；TFO、多路复用、UDP 开关、early data 等
+// 客户端调优参数忽略，链式代理、未知协议、未知传输和插件无法连接，跳过。
+func shareURI(m map[string]any) (string, error) {
+	typ := str(m, "type")
+	name := str(m, "name")
+	host := strings.Trim(str(m, "server"), "[]")
+	port := str(m, "port")
+	p, e := strconv.Atoi(port)
+	if e != nil || p < 1 || p > 65535 || host == "" || str(m, "dialer-proxy") != "" || m[DialerKey] != nil {
+		return "", ErrUnexportable
+	}
+	port = strconv.Itoa(p)
+	u := &url.URL{Scheme: typ, Host: net.JoinHostPort(host, port), Fragment: name}
 	q := url.Values{}
 	switch typ {
 	case "ss":
-		cipher, password := c.str("cipher"), c.str("password")
+		cipher, password := str(m, "cipher"), str(m, "password")
 		if cipher == "" || password == "" {
 			return "", ErrUnexportable
 		}
@@ -182,74 +195,53 @@ func shareURI(m map[string]any) (string, error) {
 		} else {
 			u.User = url.User(base64.RawURLEncoding.EncodeToString([]byte(cipher + ":" + password)))
 		}
-		plugin := c.str("plugin")
-		if plugin != "" {
-			if plugin != "obfs" && plugin != "v2ray-plugin" {
-				return "", ErrUnexportable
-			}
-			rawOpts := c.take("plugin-opts")
-			opts, ok := rawOpts.(map[string]any)
-			if rawOpts != nil && !ok {
-				return "", ErrUnexportable
-			}
-			encoded, e := pluginOptions(plugin, opts)
+		if plugin := str(m, "plugin"); plugin != "" {
+			encoded, e := pluginOptions(plugin, opts(m, "plugin-opts"))
 			if e != nil {
 				return "", e
 			}
 			q.Set("plugin", encoded)
 		}
 	case "vmess":
-		vm := map[string]any{"v": "2", "ps": name, "add": host, "port": port, "id": c.str("uuid"), "aid": "0", "scy": "auto", "net": "tcp", "type": "none", "host": "", "path": "", "tls": ""}
+		vm := map[string]any{"v": "2", "ps": name, "add": host, "port": port, "id": str(m, "uuid"), "aid": "0", "scy": "auto", "net": "tcp", "type": "none", "host": "", "path": "", "tls": ""}
 		if vm["id"] == "" {
 			return "", ErrUnexportable
 		}
-		if v := c.str("alterId"); v != "" {
+		if v := str(m, "alterId"); v != "" {
 			vm["aid"] = v
 		}
-		if v := c.str("cipher"); v != "" {
+		if v := str(m, "cipher"); v != "" {
 			vm["scy"] = v
 		}
-		if e = transport(c, q); e != nil {
+		if e = transport(m, q); e != nil {
 			return "", e
 		}
 		vm["net"] = q.Get("type")
-		if vm["net"] == "" {
-			vm["net"] = "tcp"
-		}
-		if q.Get("path") != "" {
-			vm["path"] = q.Get("path")
-		}
-		if q.Get("host") != "" {
-			vm["host"] = q.Get("host")
-		}
-		if q.Get("serviceName") != "" {
-			vm["path"] = q.Get("serviceName")
+		if q.Get("headerType") != "" {
+			vm["type"] = q.Get("headerType")
 		}
 		if q.Get("mode") != "" {
-			return "", ErrUnexportable
+			vm["type"] = q.Get("mode")
 		}
-		if c.flag("tls") {
+		vm["host"] = q.Get("host")
+		vm["path"] = q.Get("path")
+		if q.Get("type") == "grpc" {
+			vm["path"] = q.Get("serviceName")
+		}
+		if truthy(m["tls"]) {
 			vm["tls"] = "tls"
-		}
-		if v := c.str("servername"); v != "" {
-			vm["sni"] = v
-		}
-		if c.flag("skip-cert-verify") {
-			// VMess v2 JSON has no portable certificate-verification override.
-			return "", ErrUnexportable
-		}
-		if v := c.str("client-fingerprint"); v != "" {
-			vm["fp"] = v
-		}
-		alpn, e := stringList(c.take("alpn"))
-		if e != nil {
-			return "", e
-		}
-		if alpn != "" {
-			vm["alpn"] = alpn
-		}
-		if e = c.complete(); e != nil {
-			return "", e
+			if v := firstNonEmpty(str(m, "servername"), str(m, "sni")); v != "" {
+				vm["sni"] = v
+			}
+			if v := str(m, "client-fingerprint"); v != "" {
+				vm["fp"] = v
+			}
+			if v := stringList(m["alpn"]); v != "" {
+				vm["alpn"] = v
+			}
+			if truthy(m["skip-cert-verify"]) {
+				vm["insecure"] = "1"
+			}
 		}
 		raw, e := json.Marshal(vm)
 		if e != nil {
@@ -257,272 +249,214 @@ func shareURI(m map[string]any) (string, error) {
 		}
 		return "vmess://" + base64.StdEncoding.EncodeToString(raw), nil
 	case "vless", "trojan":
-		var secret string
+		secret := str(m, "uuid")
 		if typ == "trojan" {
-			secret = c.str("password")
-		} else {
-			secret = c.str("uuid")
+			secret = str(m, "password")
 		}
 		if secret == "" {
 			return "", ErrUnexportable
 		}
 		u.User = url.User(secret)
-		if e = transport(c, q); e != nil {
+		if e = transport(m, q); e != nil {
 			return "", e
 		}
 		if typ == "vless" {
-			q.Set("encryption", "none")
-			if v := c.str("flow"); v != "" {
+			enc := str(m, "encryption")
+			if enc == "" {
+				enc = "none"
+			}
+			q.Set("encryption", enc)
+			if v := str(m, "flow"); v != "" {
 				q.Set("flow", v)
 			}
 		}
-		tls := typ == "trojan"
-		if _, ok := m["tls"]; ok {
-			tls = c.flag("tls")
-		}
-		if typ == "trojan" && !tls {
-			return "", ErrUnexportable
-		}
-		if tls {
-			q.Set("security", "tls")
-		} else {
+		// Trojan 始终使用 TLS
+		tls := typ == "trojan" || truthy(m["tls"])
+		if !tls {
 			q.Set("security", "none")
+			break
 		}
-		if e = tlsQuery(c, q); e != nil {
-			return "", e
+		q.Set("security", "tls")
+		tlsQuery(m, q, "allowInsecure")
+		if v := str(m, "client-fingerprint"); v != "" {
+			q.Set("fp", v)
 		}
-		if opts, ok := m["reality-opts"]; ok {
-			c.take("reality-opts")
-			o, ok := opts.(map[string]any)
-			if !ok || typ != "vless" || !tls {
-				return "", ErrUnexportable
-			}
-			for k, v := range o {
-				switch k {
-				case "public-key":
-					q.Set("pbk", text(v))
-				case "short-id":
-					q.Set("sid", text(v))
-				default:
-					return "", ErrUnexportable
-				}
-			}
-			if q.Get("pbk") == "" {
+		if ro := opts(m, "reality-opts"); ro != nil && typ == "vless" {
+			if str(ro, "public-key") == "" {
 				return "", ErrUnexportable
 			}
 			q.Set("security", "reality")
+			q.Set("pbk", str(ro, "public-key"))
+			if v := str(ro, "short-id"); v != "" {
+				q.Set("sid", v)
+			}
 		}
 	case "hysteria2", "hy2":
 		u.Scheme = "hysteria2"
-		password := c.str("password")
+		password := str(m, "password")
 		if password == "" {
 			return "", ErrUnexportable
 		}
 		u.User = url.User(password)
-		if e = tlsQuery(c, q); e != nil {
-			return "", e
+		tlsQuery(m, q, "insecure")
+		if v := str(m, "fingerprint"); v != "" {
+			q.Set("pinSHA256", v)
 		}
-		if q.Get("allowInsecure") == "1" {
-			q.Del("allowInsecure")
-			q.Set("insecure", "1")
+		if v := str(m, "ports"); v != "" {
+			q.Set("mport", strings.ReplaceAll(v, ":", "-"))
 		}
-		obfs := c.str("obfs")
-		if obfs != "" {
-			if obfs != "salamander" {
+		if obfs := str(m, "obfs"); obfs != "" {
+			if obfs != "salamander" || str(m, "obfs-password") == "" {
 				return "", ErrUnexportable
 			}
 			q.Set("obfs", obfs)
-			pass := c.str("obfs-password")
-			if pass == "" {
-				return "", ErrUnexportable
-			}
-			q.Set("obfs-password", pass)
+			q.Set("obfs-password", str(m, "obfs-password"))
 		}
 	case "tuic":
-		uuid, password := c.str("uuid"), c.str("password")
+		uuid, password := str(m, "uuid"), str(m, "password")
 		if uuid == "" || password == "" {
 			return "", ErrUnexportable
 		}
 		u.User = url.UserPassword(uuid, password)
-		if e = tlsQuery(c, q); e != nil {
-			return "", e
-		}
-		if q.Get("allowInsecure") == "1" {
-			q.Del("allowInsecure")
-			q.Set("allow_insecure", "1")
-		}
+		tlsQuery(m, q, "allow_insecure")
 		for key, param := range map[string]string{"congestion-controller": "congestion_control", "udp-relay-mode": "udp_relay_mode"} {
-			if v := c.str(key); v != "" {
+			if v := str(m, key); v != "" {
 				q.Set(param, v)
 			}
 		}
-		if c.flag("reduce-rtt") {
+		if truthy(m["reduce-rtt"]) {
 			q.Set("reduce_rtt", "1")
 		}
-		if c.flag("disable-sni") {
+		if truthy(m["disable-sni"]) {
 			q.Set("disable_sni", "1")
+		}
+	case "anytls":
+		password := str(m, "password")
+		if password == "" {
+			return "", ErrUnexportable
+		}
+		u.User = url.User(password)
+		tlsQuery(m, q, "insecure")
+		if v := str(m, "client-fingerprint"); v != "" {
+			q.Set("fp", v)
 		}
 	case "http", "socks5", "socks":
 		if typ == "socks" {
 			u.Scheme = "socks5"
 		}
-		username, password := c.str("username"), c.str("password")
+		username, password := str(m, "username"), str(m, "password")
 		if username != "" || password != "" {
 			u.User = url.UserPassword(username, password)
 		}
-		if c.flag("tls") {
+		if truthy(m["tls"]) {
 			if typ != "http" {
 				return "", ErrUnexportable
 			}
-			u.Scheme = "https" // There is no portable HTTPS-proxy query for custom TLS parameters.
+			u.Scheme = "https"
 		}
 	default:
 		return "", ErrUnexportable
 	}
-	if e = c.complete(); e != nil {
-		return "", e
-	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
-func tlsQuery(c *uriConfig, q url.Values) error {
-	sni := c.str("sni")
-	if v := c.str("servername"); v != "" {
-		if sni != "" && sni != v {
-			return ErrUnexportable
-		}
-		sni = v
-	}
-	if sni != "" {
-		q.Set("sni", sni)
-	}
-	if c.flag("skip-cert-verify") {
-		q.Set("allowInsecure", "1")
-	}
-	if typ := text(c.values["type"]); typ == "vless" || typ == "trojan" {
-		if v := c.str("client-fingerprint"); v != "" {
-			q.Set("fp", v)
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
 		}
 	}
-	if typ := text(c.values["type"]); typ != "hysteria2" && typ != "hy2" {
-		alpn, e := stringList(c.take("alpn"))
-		if e != nil {
-			return e
-		}
-		if alpn != "" {
-			q.Set("alpn", alpn)
-		}
-	}
-	return nil
+	return ""
 }
-func transport(c *uriConfig, q url.Values) error {
-	network := c.str("network")
+
+// tlsQuery 写入 SNI、ALPN 和跳过证书验证；insecure 为该协议使用的参数名
+func tlsQuery(m map[string]any, q url.Values, insecure string) {
+	if v := firstNonEmpty(str(m, "servername"), str(m, "sni")); v != "" {
+		q.Set("sni", v)
+	}
+	if v := stringList(m["alpn"]); v != "" {
+		q.Set("alpn", v)
+	}
+	if truthy(m["skip-cert-verify"]) {
+		q.Set(insecure, "1")
+		if insecure == "allowInsecure" {
+			q.Set("insecure", "1")
+		}
+	}
+}
+func transport(m map[string]any, q url.Values) error {
+	network := str(m, "network")
 	if network == "" {
 		network = "tcp"
 	}
 	q.Set("type", network)
 	switch network {
 	case "tcp":
-		return nil
-	case "ws":
-		raw := c.take("ws-opts")
-		if raw == nil {
-			return nil
+	case "ws", "httpupgrade":
+		o := opts(m, "ws-opts")
+		if truthy(o["v2ray-http-upgrade"]) {
+			q.Set("type", "httpupgrade")
 		}
-		opts, ok := raw.(map[string]any)
-		if !ok {
-			return ErrUnexportable
-		}
-		for k, v := range opts {
-			switch k {
-			case "path":
-				q.Set("path", text(v))
-			case "headers":
-				headers, ok := v.(map[string]any)
-				if !ok {
-					return ErrUnexportable
-				}
-				for key, value := range headers {
-					if !strings.EqualFold(key, "host") {
-						return ErrUnexportable
-					}
-					if q.Get("host") != "" && q.Get("host") != text(value) {
-						return ErrUnexportable
-					}
-					q.Set("host", text(value))
-				}
-			default:
-				return ErrUnexportable
-			}
-		}
-		return nil
+		setNonEmpty(q, "path", str(o, "path"))
+		setNonEmpty(q, "host", headerHost(opts(o, "headers")))
 	case "grpc":
-		raw := c.take("grpc-opts")
-		if raw == nil {
-			return nil
-		}
-		opts, ok := raw.(map[string]any)
-		if !ok {
-			return ErrUnexportable
-		}
-		for k, v := range opts {
-			if k != "grpc-service-name" {
-				return ErrUnexportable
-			}
-			q.Set("serviceName", text(v))
-		}
-		return nil
+		setNonEmpty(q, "serviceName", str(opts(m, "grpc-opts"), "grpc-service-name"))
+	case "h2":
+		o := opts(m, "h2-opts")
+		q.Set("type", "http")
+		setNonEmpty(q, "path", str(o, "path"))
+		setNonEmpty(q, "host", stringList(o["host"]))
+	case "http":
+		o := opts(m, "http-opts")
+		q.Set("type", "tcp")
+		q.Set("headerType", "http")
+		setNonEmpty(q, "path", first(o["path"]))
+		setNonEmpty(q, "host", headerHost(opts(o, "headers")))
+	case "xhttp":
+		o := opts(m, "xhttp-opts")
+		setNonEmpty(q, "path", str(o, "path"))
+		setNonEmpty(q, "host", str(o, "host"))
+		setNonEmpty(q, "mode", str(o, "mode"))
 	default:
 		return ErrUnexportable
 	}
+	return nil
 }
-func pluginOptions(plugin string, opts map[string]any) (string, error) {
-	name := plugin
-	if plugin == "obfs" {
-		name = "obfs-local"
+func setNonEmpty(q url.Values, k, v string) {
+	if v != "" {
+		q.Set(k, v)
 	}
-	parts := []string{name}
-	keys := []string{}
-	for k := range opts {
-		keys = append(keys, k)
+}
+
+// pluginOptions 生成 SIP002 插件参数；只支持 obfs 和 v2ray-plugin
+func pluginOptions(plugin string, o map[string]any) (string, error) {
+	switch plugin {
+	case "obfs":
+		parts := []string{"obfs-local"}
+		if v := str(o, "mode"); v != "" {
+			parts = append(parts, "obfs="+v)
+		}
+		if v := str(o, "host"); v != "" {
+			parts = append(parts, "obfs-host="+v)
+		}
+		return strings.Join(parts, ";"), nil
+	case "v2ray-plugin":
+		parts := []string{"v2ray-plugin"}
+		for _, k := range []string{"host", "mode", "path"} {
+			if v := str(o, k); v != "" {
+				if strings.ContainsAny(v, ";=\r\n") {
+					return "", ErrUnexportable
+				}
+				parts = append(parts, k+"="+v)
+			}
+		}
+		for _, k := range []string{"skip-cert-verify", "tls"} {
+			if truthy(o[k]) {
+				parts = append(parts, k)
+			}
+		}
+		sort.Strings(parts[1:])
+		return strings.Join(parts, ";"), nil
 	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		key := k
-		if plugin == "obfs" {
-			switch k {
-			case "mode":
-				key = "obfs"
-			case "host":
-				key = "obfs-host"
-			default:
-				return "", ErrUnexportable
-			}
-		} else {
-			switch k {
-			case "mode", "host", "path", "tls", "skip-cert-verify":
-			default:
-				return "", ErrUnexportable
-			}
-		}
-		v := opts[k]
-		if b, ok := v.(bool); ok {
-			if k != "tls" && k != "skip-cert-verify" {
-				return "", ErrUnexportable
-			}
-			if b {
-				parts = append(parts, key)
-			}
-			continue
-		}
-		if k == "tls" || k == "skip-cert-verify" {
-			return "", ErrUnexportable
-		}
-		s, ok := v.(string)
-		if !ok || strings.ContainsAny(s, ";=\r\n") {
-			return "", ErrUnexportable
-		}
-		parts = append(parts, key+"="+s)
-	}
-	return strings.Join(parts, ";"), nil
+	return "", ErrUnexportable
 }

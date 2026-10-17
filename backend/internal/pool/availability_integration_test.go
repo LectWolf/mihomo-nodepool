@@ -62,6 +62,31 @@ func TestMySQLNodeAvailabilityAndCatalogStats(t *testing.T) {
 	if got[full.ID] != "full" || got[high.ID] != "level" || got[open.ID] != "" {
 		t.Fatalf("late reasons: %v", got)
 	}
+	// 检测不可用的节点排在席位已满之后
+	var down int64
+	for _, n := range lateAll.Items {
+		if n.Sources[0].ID == open.ID {
+			down = n.ID
+			break
+		}
+	}
+	if _, e = s.DB.Exec(`UPDATE np_nodes SET status='unhealthy' WHERE id=?`, down); e != nil {
+		t.Fatal(e)
+	}
+	s.InvalidateIndex()
+	for _, sort := range []string{"", "recommend", "name"} {
+		ordered, e := s.Nodes(lc, pool.Filter{Sort: sort, PageSize: 100})
+		if e != nil {
+			t.Fatal(e)
+		}
+		tail := ordered.Items[len(ordered.Items)-1]
+		if tail.ID != down || ordered.Items[len(ordered.Items)-2].Unavailable == "" {
+			t.Fatalf("sort %q: unhealthy node must follow seat-full ones", sort)
+		}
+	}
+	if _, e = s.DB.Exec(`UPDATE np_nodes SET status='unknown' WHERE id=?`, down); e != nil {
+		t.Fatal(e)
+	}
 	if only := reasons(lc, pool.Filter{Available: true}); len(only) != 1 || only[open.ID] != "" {
 		t.Fatalf("available filter: %v", only)
 	}

@@ -725,8 +725,14 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 	for _, n := range out {
 		ids = append(ids, n.ID)
 	}
-	// 多人反馈异常的节点保留但排到最后，客户端自动选择时会优先使用其它节点
-	if demoted, err := s.demotedNodes(ctx, ids); err == nil && len(demoted) > 0 {
+	// 多人反馈异常、或该用户客户端实测连不上的节点保留但排到最后，客户端自动选择时会优先使用其它节点
+	demoted, _ := s.demotedNodes(ctx, ids)
+	if failed, err := s.failedForUser(ctx, u.ID, ids); err == nil {
+		for id := range failed {
+			demoted[id] = true
+		}
+	}
+	if len(demoted) > 0 {
 		sort.SliceStable(out, func(i, j int) bool { return !demoted[out[i].ID] && demoted[out[j].ID] })
 	}
 	return out, nil

@@ -305,18 +305,30 @@ func (s *Store) ResetExposure(ctx context.Context, id int64) error {
 	return err
 }
 
+// PruneRisk 每日清理过期数据，保持表体积稳定
 func (s *Store) PruneRisk(ctx context.Context) error {
 	now := utcNow()
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM np_node_exposures WHERE last_at<?`, now.Add(-366*24*time.Hour)); err != nil {
-		return err
-	}
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM np_source_exposures WHERE last_at<?`, now.Add(-366*24*time.Hour)); err != nil {
-		return err
-	}
+	// 换绑窗口之外的曝光记录不再参与风控
+	keep := max(currentCommunity().RiskWindowDays, 30) + 7
 	day, _ := checkinDay(now.Add(-31 * 24 * time.Hour))
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM np_pull_stats WHERE day<?`, day); err != nil {
-		return err
+	for _, q := range []struct {
+		sql string
+		arg any
+	}{
+		{`DELETE FROM np_node_exposures WHERE last_at<?`, now.AddDate(0, 0, -keep)},
+		{`DELETE FROM np_source_exposures WHERE last_at<?`, now.AddDate(0, 0, -keep)},
+		{`DELETE FROM np_pull_stats WHERE day<?`, day},
+		{`DELETE FROM np_feedback WHERE created_at<?`, now.Add(-90 * 24 * time.Hour)},
+		// 成就记录用于防止重复发放，永久保留
+		{`DELETE FROM np_ledger WHERE created_at<? AND kind<>'achievement'`, now.AddDate(-1, 0, 0)},
+		{`DELETE FROM np_quota_boosts WHERE expires_at<?`, now.AddDate(0, 0, -30)},
+		{`DELETE FROM np_email_codes WHERE expires_at<?`, now.Add(-24 * time.Hour)},
+		{`DELETE FROM np_daily_jobs WHERE created_at<?`, now.AddDate(0, 0, -60)},
+		{`DELETE FROM np_source_moderation WHERE created_at<?`, now.AddDate(-1, 0, 0)},
+	} {
+		if _, err := s.DB.ExecContext(ctx, q.sql, q.arg); err != nil {
+			return err
+		}
 	}
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM np_feedback WHERE created_at<?`, now.Add(-90*24*time.Hour))
-	return err
+	return s.PruneBeacons(ctx)
 }

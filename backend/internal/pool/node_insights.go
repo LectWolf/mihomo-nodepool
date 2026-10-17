@@ -24,12 +24,11 @@ type NodeWarning struct {
 	Message  string `json:"message"`
 }
 
-// InspectNode delegates the fail-closed URI fidelity decision to the actual
-// exporter, including its nested option checks. Do not expose its error text:
-// unknown configuration keys may themselves contain secrets supplied by users.
+// InspectNode 直接用导出器判断能否转为分享链接；不暴露错误细节，
+// 未知配置项本身可能含有用户的敏感信息
 func InspectNode(n Node) NodeInsights {
 	out := NodeInsights{
-		V2RayReason: "URI导出不支持该配置或无法保真表示全部参数",
+		V2RayReason: "URI导出不支持该协议、传输方式、插件或链式代理",
 		TLS:         "unknown",
 		Warnings:    []NodeWarning{},
 	}
@@ -40,7 +39,7 @@ func InspectNode(n Node) NodeInsights {
 	}
 	if _, err := shareURI(config); err == nil {
 		out.V2RayCompatible = true
-		out.V2RayReason = "可保真导出分享URI；客户端兼容性尚未实际测试"
+		out.V2RayReason = "可导出分享URI（TFO、多路复用等客户端调优参数不保留）；客户端兼容性尚未实际测试"
 	}
 
 	typ, _ := config["type"].(string)

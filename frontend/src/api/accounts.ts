@@ -7,7 +7,7 @@ export interface User {
   node_limit: number; source_limit: number; subscription_limit: number; created_at: string
   xp: number; points: number; level: number; checkin_on: string; checkin_streak: number; subscription_expires_at: string | null
   title?: string; avatar_version?: number; risk_frozen_until?: string | null
-  email?: string; email_verified?: boolean; has_password?: boolean
+  email?: string; email_verified?: boolean; has_password?: boolean; beacon_enabled?: boolean
 }
 export interface Quota { nodes: number; sources: number; subscriptions: number }
 export interface Limits extends Quota { level: Quota; personal: Quota; boost: Quota }
@@ -39,7 +39,7 @@ export interface Subscription {
   url: string; nodes: NodeSelection[]; node_ids: number[]; source_ids: number[]; rule_profile_id?: number | null
   // 跟随整个来源：实时同步来源全部可用节点，不计节点额度
   follow_source_ids?: number[]; follow_details?: FollowSource[]; follow_node_count?: number
-  node_details?: (NodeSelection & { type: string; server: string; port: number; available: boolean; demoted?: boolean; min_level?: number })[]
+  node_details?: (NodeSelection & { type: string; server: string; port: number; available: boolean; demoted?: boolean; my_failed?: boolean; min_level?: number })[]
 }
 export interface FollowSource {
   source_id: number; name: string; node_count: number; available: boolean; min_level: number; max_users: number

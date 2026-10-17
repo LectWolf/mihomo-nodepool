@@ -162,10 +162,18 @@ func publicOrigin(r *http.Request, settings pool.Settings) string {
 func inactiveSubscription(format string) ([]byte, error) {
 	marker := map[string]any{"name": "订阅已到期 · 请到平台签到激活", "type": "socks5", "server": "127.0.0.1", "port": 9, "udp": false}
 	if format == "v2ray" {
-		return []byte(base64.StdEncoding.EncodeToString([]byte("socks5://127.0.0.1:9#" + url.PathEscape("订阅已到期 · 请到平台签到激活") + "\n"))), nil
+		return v2rayNotice("订阅已到期 · 请到平台签到激活"), nil
 	}
 	return yaml.Marshal(map[string]any{"proxies": []any{marker}, "proxy-groups": []any{map[string]any{"name": "请到平台签到激活", "type": "select", "proxies": []string{marker["name"].(string)}}}, "rules": []string{"MATCH,REJECT"}})
 }
+
+// v2rayNotice 返回只含一条提示节点的 v2ray 订阅，避免客户端只报“无效的订阅内容”
+func v2rayNotice(name string) []byte {
+	return []byte(base64.StdEncoding.EncodeToString([]byte("socks5://127.0.0.1:9#" + url.PathEscape(name) + "\n")))
+}
+
+const v2rayEmpty = "没有可转为 v2ray 链接的节点 · 请改用 Clash 或 Mihomo 客户端"
+
 func attachKeepalive(raw []byte, format string, u pool.User, origin string) ([]byte, error) {
 	if u.ProbeUUID == "" || u.SubscriptionExpiresAt == nil {
 		return raw, nil
@@ -262,6 +270,9 @@ func registerSourceLink(mux *http.ServeMux, s *pool.Store) {
 			return
 		}
 		raw, skipped, routing, usage, err := s.ExportSourceLink(ctx, r.PathValue("token"), format)
+		if format == "v2ray" && errors.Is(err, pool.ErrUnexportable) {
+			raw, err = v2rayNotice(v2rayEmpty), nil
+		}
 		if err != nil {
 			writeError(w, err)
 			return

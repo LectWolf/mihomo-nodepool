@@ -54,6 +54,7 @@
 .security-card { display: grid; gap: 12px; }
 .security-card .panel-heading { margin-bottom: 0; }
 .security-card fieldset { display: grid; gap: 12px; }
+.beacon-notes { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); }
 .security-card .form-field { margin: 0; }
 .security-card .dialog-actions { margin-top: 0; }
 .readonly-field { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 12px; border-radius: 8px; border: 1px dashed var(--control-line); background: var(--surface-subtle); color: var(--text-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }

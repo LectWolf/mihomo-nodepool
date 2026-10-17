@@ -22,7 +22,7 @@ func TestExitLookupRefreshesMissingLocationAndUsesCache(t *testing.T) {
 	if !needsExitLookup(complete, now) {
 		t.Fatal("location cache must expire after 24 hours")
 	}
-	if Period != 6*time.Hour {
-		t.Fatal("node delay interval must remain six hours")
+	if Period != 8*time.Hour {
+		t.Fatal("refresh period must be eight hours")
 	}
 }

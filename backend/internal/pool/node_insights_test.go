@@ -105,23 +105,25 @@ func TestNodeInsightsURIFidelity(t *testing.T) {
 		{"TUIC", `{"type":"tuic","uuid":"secret","password":"secret","alpn":["h3"]}`, true},
 		{"HTTPS", `{"type":"http","tls":true}`, true},
 		{"SOCKS", `{"type":"socks5"}`, true},
-		{"unknown field", `{"type":"ss","cipher":"aes-128-gcm","password":"secret","unknown":"private-value"}`, false},
-		{"unknown nested header", `{"type":"vless","uuid":"secret","network":"ws","ws-opts":{"headers":{"Authorization":"private-value"}}}`, false},
-		{"unknown grpc option", `{"type":"vless","uuid":"secret","network":"grpc","grpc-opts":{"unknown":"private-value"}}`, false},
-		{"unknown reality option", `{"type":"vless","uuid":"secret","tls":true,"reality-opts":{"public-key":"secret","unknown":"private-value"}}`, false},
-		{"VMess insecure", `{"type":"vmess","uuid":"secret","tls":true,"skip-cert-verify":true}`, false},
-		{"plugin options", `{"type":"ss","cipher":"aes-128-gcm","password":"secret","plugin":"v2ray-plugin","plugin-opts":{"mux":true}}`, false},
+		{"unknown field", `{"type":"ss","cipher":"aes-128-gcm","password":"secret","unknown":"private-value"}`, true},
+		{"unknown nested header", `{"type":"vless","uuid":"secret","network":"ws","ws-opts":{"headers":{"Authorization":"private-value"}}}`, true},
+		{"unknown grpc option", `{"type":"vless","uuid":"secret","network":"grpc","grpc-opts":{"unknown":"private-value"}}`, true},
+		{"unknown reality option", `{"type":"vless","uuid":"secret","tls":true,"reality-opts":{"public-key":"secret","unknown":"private-value"}}`, true},
+		{"VMess insecure", `{"type":"vmess","uuid":"secret","tls":true,"skip-cert-verify":true}`, true},
+		{"plugin options", `{"type":"ss","cipher":"aes-128-gcm","password":"secret","plugin":"v2ray-plugin","plugin-opts":{"mux":true}}`, true},
 		{"unknown plugin", `{"type":"ss","cipher":"aes-128-gcm","password":"secret","plugin":"private-plugin"}`, false},
-		{"invalid alpn", `{"type":"trojan","password":"secret","alpn":[1]}`, false},
-		{"conflicting SNI", `{"type":"trojan","password":"secret","sni":"one.private","servername":"two.private"}`, false},
+		{"invalid alpn", `{"type":"trojan","password":"secret","alpn":[1]}`, true},
+		{"conflicting SNI", `{"type":"trojan","password":"secret","sni":"one.private","servername":"two.private"}`, true},
 		{"SOCKS TLS", `{"type":"socks5","tls":true}`, false},
-		{"Trojan TLS false", `{"type":"trojan","password":"secret","tls":false}`, false},
-		{"TLS wrong type", `{"type":"vless","uuid":"secret","tls":"true"}`, false},
+		{"Trojan TLS false", `{"type":"trojan","password":"secret","tls":false}`, true},
+		{"TLS wrong type", `{"type":"vless","uuid":"secret","tls":"true"}`, true},
 		{"unknown transport", `{"type":"vless","uuid":"secret","network":"private-transport"}`, false},
-		{"UDP false", `{"type":"ss","cipher":"aes-128-gcm","password":"secret","udp":false}`, false},
+		{"UDP false", `{"type":"ss","cipher":"aes-128-gcm","password":"secret","udp":false}`, true},
 		{"missing password", `{"type":"ss","cipher":"aes-128-gcm"}`, false},
 		{"missing UUID", `{"type":"vmess"}`, false},
 		{"unsupported protocol", `{"type":"wireguard"}`, false},
+		{"dialer proxy", `{"type":"ss","cipher":"aes-128-gcm","password":"secret","dialer-proxy":"upstream"}`, false},
+		{"unknown hy2 obfs", `{"type":"hysteria2","password":"secret","obfs":"private"}`, false},
 		{"invalid server", `{"type":"socks5","server":""}`, false},
 		{"invalid port", `{"type":"socks5","port":65536}`, false},
 	} {
@@ -168,8 +170,8 @@ func TestNodeInsightsSafeMetadata(t *testing.T) {
 		if strings.Contains(string(encoded), "secret-") || !reflect.DeepEqual(n.Config, before) {
 			t.Fatalf("inspector leaked or mutated private input: %s", encoded)
 		}
-		if got.V2RayCompatible || got.Warnings == nil {
-			t.Fatalf("unknown fields must fail closed with nonnil warnings: %+v", got)
+		if got.Warnings == nil {
+			t.Fatalf("warnings must be non-nil: %+v", got)
 		}
 	}
 	for _, network := range []string{"tcp", "ws", "grpc", "h2", "quic", "xhttp"} {

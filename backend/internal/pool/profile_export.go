@@ -357,10 +357,22 @@ func localSourceRouting(src Source, selected map[string]string) ([]map[string]an
 // ExportSavedSubscription keeps source contents and rule ownership inside the
 // backend. Its output contains only selected proxies, safe groups and rules.
 func (s *Store) ExportSavedSubscription(ctx context.Context, token, format string) ([]byte, int, int, error) {
+	raw, skipped, routingSkipped, _, e := s.ExportSavedSubscriptionNodes(ctx, token, format)
+	return raw, skipped, routingSkipped, e
+}
+
+// ExportSavedSubscriptionNodes 同时返回导出所用的节点，供附加实测回报分组
+func (s *Store) ExportSavedSubscriptionNodes(ctx context.Context, token, format string) ([]byte, int, int, []Node, error) {
 	nodes, e := s.SubscriptionNodes(ctx, token)
 	if e != nil {
-		return nil, 0, 0, e
+		return nil, 0, 0, nil, e
 	}
+	raw, skipped, routingSkipped, e := s.exportSaved(ctx, token, format, nodes)
+	return raw, skipped, routingSkipped, nodes, e
+}
+
+func (s *Store) exportSaved(ctx context.Context, token, format string, nodes []Node) ([]byte, int, int, error) {
+	var e error
 	if format != "clash" {
 		raw, n, e := ExportSubscription(nodes, format)
 		return raw, n, 0, e

@@ -365,11 +365,21 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 	_ = json.Unmarshal(rotatedResponse.Body.Bytes(), &rotated)
 	call("GET", saved.Subscription.URL, "", nil, "", 404)
 	call("GET", rotated.URL, "", nil, "", 200)
-	_, e = s.DB.Exec(`UPDATE np_nodes SET config=JSON_SET(config,'$.smux',JSON_OBJECT('enabled',true))`)
+	// 调优参数不影响 v2ray 导出；链式代理无法转换时返回提示节点而不是错误
+	_, e = s.DB.Exec(`UPDATE np_nodes SET config=JSON_SET(config,'$.smux',JSON_OBJECT('enabled',true),'$.tfo',true)`)
 	if e != nil {
 		t.Fatal(e)
 	}
-	call("GET", rotated.URL+"?format=v2ray", "", nil, "", 422)
+	if decoded, _ := base64.StdEncoding.DecodeString(call("GET", rotated.URL+"?format=v2ray", "", nil, "", 200).Body.String()); !strings.Contains(string(decoded), "://") || strings.Contains(string(decoded), url.PathEscape("没有可转为")) {
+		t.Fatalf("tuning options must not block v2ray export: %s", decoded)
+	}
+	_, e = s.DB.Exec(`UPDATE np_nodes SET config=JSON_SET(config,'$."dialer-proxy"','upstream')`)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if decoded, _ := base64.StdEncoding.DecodeString(call("GET", rotated.URL+"?format=v2ray", "", nil, "", 200).Body.String()); !strings.Contains(string(decoded), url.PathEscape("没有可转为")) {
+		t.Fatalf("unexportable notice missing: %s", decoded)
+	}
 	call("PATCH", fmt.Sprintf("/api/v1/users/%d", alice.ID), `{"enabled":false}`, admin, "", 200)
 	call("GET", "/api/v1/me", "", ac, "", 401)
 	call("GET", rotated.URL, "", nil, "", 404)

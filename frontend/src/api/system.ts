@@ -41,6 +41,8 @@ export interface Source {
 export interface SourceTakedown { reason: string; reason_label: string; detail: string; at: string; by: string }
 // 当前用户无法选用的原因：席位已满、等级不足、被提供方移出
 export type Unavailable = '' | 'full' | 'level' | 'kicked'
+/** 统计窗口内国内用户客户端实测（按用户去重） */
+export interface FieldTest { ok: number; fail: number; days?: number; paused?: boolean }
 export interface PoolNode {
   id: number; name: string; type: string; server: string; port: number; latency_ms: number | null
   status: 'unknown' | 'healthy' | 'unhealthy'; country: string; country_code: string; exit_ip: string
@@ -48,6 +50,7 @@ export interface PoolNode {
   last_checked_at: string | null; next_check_at: string; last_error: string
   insights?: NodeInsights; server_hidden?: boolean; feedback?: FeedbackSummary | null
   unavailable?: Unavailable; fresh?: boolean; created_at?: string
+  field_test?: FieldTest | null
   sources: {
     id: number; name: string; node_name: string; owner_id?: number; provider_name?: string; min_level?: number; subscription_usage?: SubscriptionUsage | null
     provider_username?: string; provider_avatar?: number; provider_title?: string; max_users?: number; active_users?: number; feedback?: FeedbackSummary | null
@@ -62,7 +65,7 @@ export interface Options { types: string[]; countries: { code: string; name: str
 export interface Settings {
   exclude_pattern: string; test_url: string; timeout_ms: number; probe_concurrency: number
   source_concurrency: number; refresh_hours: number; check_hours: number
-  subscription_lease_days?: number; history_retention_days?: number; public_url?: string
+  subscription_lease_days?: number; history_retention_days?: number; field_test_days?: number; idle_check_days?: number; public_url?: string
   community?: CommunitySettings
   maintenance?: Maintenance
   login?: LoginSettings

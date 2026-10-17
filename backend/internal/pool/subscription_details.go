@@ -23,10 +23,12 @@ type SubscriptionNodeDetail struct {
 	MinLevel          int                `json:"min_level"`
 	SubscriptionUsage *SubscriptionUsage `json:"subscription_usage,omitempty"`
 	Demoted           bool               `json:"demoted,omitempty"`
-	ProviderID        int64              `json:"provider_id"`
-	ProviderName      string             `json:"provider_name"`
-	ProviderAvatar    int                `json:"provider_avatar"`
-	ProviderTitle     string             `json:"provider_title"`
+	// MyFailed 当前用户的客户端实测连不上，订阅中已排到末尾
+	MyFailed       bool   `json:"my_failed,omitempty"`
+	ProviderID     int64  `json:"provider_id"`
+	ProviderName   string `json:"provider_name"`
+	ProviderAvatar int    `json:"provider_avatar"`
+	ProviderTitle  string `json:"provider_title"`
 }
 
 func (s *Store) subscriptionDetails(ctx context.Context, items []Subscription) error {
@@ -43,9 +45,17 @@ func (s *Store) subscriptionDetails(ctx context.Context, items []Subscription) e
 	if err != nil {
 		return err
 	}
+	failed := map[int64]bool{}
+	if len(items) > 0 && items[0].UserID > 0 {
+		if failed, err = s.failedForUser(ctx, items[0].UserID, ids); err != nil {
+			return err
+		}
+	}
 	for i := range items {
 		for j := range items[i].NodeDetails {
-			items[i].NodeDetails[j].Demoted = demoted[items[i].NodeDetails[j].NodeID]
+			id := items[i].NodeDetails[j].NodeID
+			items[i].NodeDetails[j].Demoted = demoted[id]
+			items[i].NodeDetails[j].MyFailed = failed[id]
 		}
 	}
 	return nil
