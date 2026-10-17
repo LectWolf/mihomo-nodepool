@@ -1,0 +1,30 @@
+.page-numbers {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 100%;
+}
+.page-numbers > .page-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.page-numbers > .page-number[aria-current="page"] { font-weight: 600; }
+.page-numbers .app-icon { width: 14px; height: 14px; }
+.page-numbers > .page-ellipsis { padding-inline: 3px; color: var(--muted); user-select: none; }
+.pagination:has(.page-numbers), .compact-pagination:has(.page-numbers) { flex-wrap: wrap; }
+.pagination > .pagination-controls { flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+@media (max-width: 480px) {
+  .page-numbers { gap: 3px; }
+  .page-numbers > .page-number { min-width: 26px; min-height: 32px; padding-inline: 5px; font-size: 11px; }
+  .compact-pagination > .page-numbers { margin-left: auto; }
+}

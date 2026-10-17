@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import AppIcon from './AppIcon.vue'
-const props = withDefaults(defineProps<{ title: string; busy?: boolean; wide?: boolean; expanded?: boolean }>(), { busy: false, wide: false, expanded: false })
+import { raiseToasts } from '../toast'
+const props = withDefaults(defineProps<{ title: string; busy?: boolean; wide?: boolean; expanded?: boolean; locked?: boolean }>(), { busy: false, wide: false, expanded: false, locked: false })
 const emit = defineEmits<{ close: [] }>()
 const dialog = ref<HTMLDialogElement>()
 const titleId = useId()
@@ -21,14 +22,14 @@ function finish(event: PointerEvent) {
   backdropClick = press?.id === event.pointerId && press.outside && !press.moved && outside(event)
   press = null
 }
-function clickBackdrop() { const close = backdropClick; backdropClick = false; if (close && !props.busy) emit('close') }
-onMounted(() => { previousFocus = document.activeElement as HTMLElement; dialog.value?.showModal() })
+function clickBackdrop() { const close = backdropClick; backdropClick = false; if (close && !props.busy && !props.locked) emit('close') }
+onMounted(() => { previousFocus = document.activeElement as HTMLElement; dialog.value?.showModal(); raiseToasts() })
 onBeforeUnmount(() => { dialog.value?.close(); previousFocus?.focus() })
 </script>
 
 <template>
-  <dialog ref="dialog" :class="['dialog', { wide, expanded }]" :aria-labelledby="titleId" @cancel.prevent="!busy && emit('close')" @pointerdown.capture="start" @pointermove.capture="move" @pointerup.capture="finish" @pointercancel="press = null; backdropClick = false" @click="clickBackdrop">
-    <div class="dialog-head"><h2 :id="titleId">{{ title }}</h2><button class="icon-button" type="button" aria-label="关闭弹窗" :disabled="busy" @click="emit('close')"><AppIcon name="close" /></button></div>
+  <dialog ref="dialog" :class="['dialog', { wide, expanded }]" :aria-labelledby="titleId" @cancel.prevent="!busy && !locked && emit('close')" @pointerdown.capture="start" @pointermove.capture="move" @pointerup.capture="finish" @pointercancel="press = null; backdropClick = false" @click="clickBackdrop">
+    <div class="dialog-head"><h2 :id="titleId">{{ title }}</h2><button v-if="!locked" class="icon-button" type="button" aria-label="关闭弹窗" :disabled="busy" @click="emit('close')"><AppIcon name="close" /></button></div>
     <slot />
   </dialog>
 </template>

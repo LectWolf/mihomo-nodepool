@@ -10,7 +10,7 @@ func registerRuleProfiles(business businessRegistrar, s *pool.Store) {
 	business("GET /api/v1/rule-profiles", func(w http.ResponseWriter, r *http.Request) error {
 		items, e := s.RuleProfiles(r.Context())
 		if e == nil {
-			writeJSON(w, 200, map[string]any{"items": items})
+			writeJSON(w, 200, map[string]any{"items": items, "limit": pool.RuleProfileLimit})
 		}
 		return e
 	})

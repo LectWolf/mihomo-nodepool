@@ -238,7 +238,7 @@ func TestMySQLCommunitySourceLinkMetadataLevelAndHistory(t *testing.T) {
 func TestMySQLCommunityRetentionRestartAndConfiguredLease(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	settings := pool.Defaults()
+	settings := testDefaults()
 	settings.SubscriptionLeaseDays = 3
 	settings.HistoryRetentionDays = 2
 	if err := s.SaveSettings(ctx, settings); err != nil {

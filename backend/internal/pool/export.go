@@ -43,7 +43,7 @@ func ExportFormat(explicit, ua string) (string, error) {
 // known to have the same semantics as the URI format's default.
 func ExportSubscription(nodes []Node, format string) ([]byte, int, error) {
 	configs := []map[string]any{}
-	used := map[string]bool{"DIRECT": true, "REJECT": true, "NodePool": true}
+	used := map[string]bool{"DIRECT": true, "REJECT": true, "NodePool": true, SubscriptionDisplayName: true}
 	skipped := 0
 	for _, n := range nodes {
 		var m map[string]any
@@ -74,7 +74,8 @@ func ExportSubscription(nodes []Node, format string) ([]byte, int, error) {
 		for _, m := range configs {
 			names = append(names, text(m["name"]))
 		}
-		doc := map[string]any{"mixed-port": 7890, "allow-lan": false, "mode": "rule", "log-level": "info", "proxies": configs, "proxy-groups": []any{map[string]any{"name": "NodePool", "type": "select", "proxies": append(names, "DIRECT")}}, "rules": []string{"MATCH,NodePool"}}
+		hidden := expandDialers(configs, used)
+		doc := map[string]any{"mixed-port": 7890, "allow-lan": false, "mode": "rule", "log-level": "info", "proxies": append(append([]map[string]any{}, configs...), hidden...), "proxy-groups": []any{map[string]any{"name": SubscriptionDisplayName, "type": "select", "proxies": append(names, "DIRECT")}}, "rules": []string{"MATCH," + SubscriptionDisplayName}}
 		raw, e := yaml.Marshal(doc)
 		return raw, skipped, e
 	}

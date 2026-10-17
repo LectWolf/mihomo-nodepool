@@ -43,6 +43,13 @@ type RuleProfileInput struct {
 	Groups         []RuleGroup `json:"groups"`
 }
 
+// SubscriptionDisplayName is the client-facing profile and main group name.
+// 主策略组在存储与校验中仍为 NodePool，仅在导出时改为此名称
+const SubscriptionDisplayName = "MCII节点共享"
+
+// RuleProfileLimit 每位用户可保存的私人规则组合数量
+const RuleProfileLimit = 10
+
 var referenceGroups = []string{"NodePool", "♻️ 自动选择", "🚑 故障转移", "🌩️ Cloudflare", "🇨🇳 国内网站", "🛑 拦截广告", "🐟 漏网之鱼"}
 
 func DefaultRuleProfile() RuleProfile {
@@ -293,6 +300,13 @@ func (s *Store) SaveRuleProfile(ctx context.Context, id int64, in RuleProfileInp
 	groups, _ := json.Marshal(in.Groups)
 	now := utcNow()
 	if id == 0 {
+		var count int
+		if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_rule_profiles WHERE user_id=?`, CurrentUser(ctx).ID).Scan(&count); e != nil {
+			return RuleProfile{}, e
+		}
+		if count >= RuleProfileLimit {
+			return RuleProfile{}, fmt.Errorf("每人最多保存 %d 份规则组合，请先删除不用的组合", RuleProfileLimit)
+		}
 		res, err := tx.ExecContext(ctx, "INSERT INTO np_rule_profiles(user_id,name,routing_enabled,dns_enabled,dns_servers,rules,`groups`,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", CurrentUser(ctx).ID, in.Name, in.RoutingEnabled, in.DNSEnabled, dns, rules, groups, now, now)
 		if err != nil {
 			return RuleProfile{}, err

@@ -3,6 +3,7 @@ package pool
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -32,8 +33,6 @@ func TestRuleGroupsValidation(t *testing.T) {
 		"control":            func(g []RuleGroup) []RuleGroup { g[1].Name = "bad\nname"; return g },
 		"long name":          func(g []RuleGroup) []RuleGroup { g[1].Name = strings.Repeat("中", 101); return g },
 		"bad type":           func(g []RuleGroup) []RuleGroup { g[1].Type = "relay"; return g },
-		"negative id":        func(g []RuleGroup) []RuleGroup { g[1].NodeIDs = []int64{-1}; return g },
-		"zero id":            func(g []RuleGroup) []RuleGroup { g[1].NodeIDs = []int64{0}; return g },
 		"too many ids":       func(g []RuleGroup) []RuleGroup { g[1].NodeIDs = make([]int64, 2001); return g },
 		"too many countries": func(g []RuleGroup) []RuleGroup { g[1].Countries = make([]string, 65); return g },
 		"too many refs":      func(g []RuleGroup) []RuleGroup { g[1].Groups = make([]string, 65); return g },
@@ -102,8 +101,8 @@ func TestRuleGroupsCountryNestingIsolationAndCollisions(t *testing.T) {
 		g := v.(map[string]any)
 		groups[g["name"].(string)] = g
 	}
-	if !reflect.DeepEqual(groups["港澳台"]["proxies"], []any{"港澳台 (2)", "台湾节点", "澳门节点", "美国节点"}) {
-		t.Fatalf("country/ID union: %v", groups["港澳台"])
+	if !reflect.DeepEqual(groups["港澳台"]["proxies"], []any{"港澳台 (2)", "台湾节点", "澳门节点"}) {
+		t.Fatalf("country only, node IDs ignored: %v", groups["港澳台"])
 	}
 	if !reflect.DeepEqual(groups["中国"]["proxies"], []any{"中国节点"}) {
 		t.Fatalf("CN must not include HK/TW/MO: %v", groups["中国"])
@@ -162,7 +161,9 @@ func TestRuleGroupsLegacyNullAndOfficialOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(profileDoc(t, want)["proxy-groups"], profileDoc(t, mustMarshalGroups(t, referenceProxyGroups([]string{"one", "two"})))["proxy-groups"]) {
+	legacy := referenceProxyGroups([]string{"one", "two"}, nil)
+	displayMainGroup(legacy, nil)
+	if !reflect.DeepEqual(profileDoc(t, want)["proxy-groups"], profileDoc(t, mustMarshalGroups(t, legacy))["proxy-groups"]) {
 		t.Fatal("legacy group order changed")
 	}
 	for _, raw := range [][]byte{nil, []byte(`null`)} {
@@ -206,4 +207,61 @@ func mustMarshalGroups(t *testing.T, groups []map[string]any) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func TestAutoCountryGroups(t *testing.T) {
+	p := DefaultRuleProfile()
+	nodes := []Node{}
+	for i, code := range []string{"JP", "HK", "JP", "", "CF", "BR"} {
+		n := profileNode(int64(i+1), 1, fmt.Sprintf("节点%d", i+1))
+		n.CountryCode = code
+		nodes = append(nodes, n)
+	}
+	nodes[5].Name = "🇭🇰 香港"
+	raw, _, _, err := ExportSubscriptionWithProfile(nodes, "clash", &p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := profileDoc(t, raw)
+	assertProfileReferences(t, doc)
+	groups := map[string]map[string]any{}
+	order := []string{}
+	for _, v := range doc["proxy-groups"].([]any) {
+		g := v.(map[string]any)
+		groups[g["name"].(string)] = g
+		order = append(order, g["name"].(string))
+	}
+	main := groups[SubscriptionDisplayName]["proxies"].([]any)
+	want := []any{"♻️ 自动选择", "🚑 故障转移", "🇭🇰 香港", "🇯🇵 日本", "🇧🇷 巴西"}
+	if !reflect.DeepEqual(main[:len(want)], want) || main[len(main)-1] != "🇭🇰 香港 (2)" {
+		t.Fatalf("main group order %v", main)
+	}
+	if !reflect.DeepEqual(groups["🇯🇵 日本"]["proxies"], []any{"节点1", "节点3"}) || groups["🇯🇵 日本"]["type"] != "url-test" {
+		t.Fatalf("japan group %v", groups["🇯🇵 日本"])
+	}
+	if order[len(order)-1] != "🇧🇷 巴西" {
+		t.Fatalf("country groups must follow configured groups: %v", order)
+	}
+	// 关闭后不再生成
+	for i := range p.Groups {
+		p.Groups[i].CountryGroups = false
+	}
+	p.Groups[0].Groups = append(p.Groups[0].Groups, "🛑 拦截广告")
+	raw, _, _, err = ExportSubscriptionWithProfile(nodes, "clash", &p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = profileDoc(t, raw)
+	for _, v := range doc["proxy-groups"].([]any) {
+		g := v.(map[string]any)
+		if strings.HasPrefix(g["name"].(string), "🇯🇵") {
+			t.Fatal("country group exported while disabled")
+		}
+		if g["name"] == SubscriptionDisplayName {
+			proxies := g["proxies"].([]any)
+			if proxies[2] != "🛑 拦截广告" {
+				t.Fatalf("group references must precede nodes: %v", proxies)
+			}
+		}
+	}
 }

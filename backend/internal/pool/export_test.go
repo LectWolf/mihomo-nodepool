@@ -41,7 +41,7 @@ func TestSubscriptionFormatsAndCompleteClash(t *testing.T) {
 	}
 	names := map[string]bool{}
 	for _, n := range parsed.Nodes {
-		if names[n.Name] || n.Name == "NodePool" {
+		if names[n.Name] || n.Name == "NodePool" || n.Name == SubscriptionDisplayName {
 			t.Fatal("duplicate/reserved name")
 		}
 		names[n.Name] = true

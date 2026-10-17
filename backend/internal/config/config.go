@@ -10,9 +10,11 @@ import (
 
 // Config contains runtime configuration. Passwords must never be logged.
 type Config struct {
-	HTTPAddr string
-	DataDir  string
-	MySQL    MySQL
+	HTTPAddr       string
+	DataDir        string
+	MySQL          MySQL
+	DataKey        string
+	TrustedProxies []*net.IPNet
 }
 
 type MySQL struct {
@@ -56,6 +58,25 @@ func Load() (Config, error) {
 	case "false":
 	default:
 		return Config{}, fmt.Errorf("MYSQL_TLS 必须为 true 或 false")
+	}
+	cfg.DataKey = strings.TrimSpace(os.Getenv("NODEPOOL_DATA_KEY"))
+	for _, item := range strings.Split(os.Getenv("NODEPOOL_TRUSTED_PROXIES"), ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if !strings.Contains(item, "/") {
+			if ip := net.ParseIP(item); ip != nil && ip.To4() != nil {
+				item += "/32"
+			} else {
+				item += "/128"
+			}
+		}
+		_, network, err := net.ParseCIDR(item)
+		if err != nil {
+			return Config{}, fmt.Errorf("NODEPOOL_TRUSTED_PROXIES 须为逗号分隔的 IP 或 CIDR")
+		}
+		cfg.TrustedProxies = append(cfg.TrustedProxies, network)
 	}
 	partial := cfg.MySQL.Host != "" || cfg.MySQL.User != "" || cfg.MySQL.Database != "" || cfg.MySQL.Password != ""
 	if partial && !cfg.MySQL.Configured() {

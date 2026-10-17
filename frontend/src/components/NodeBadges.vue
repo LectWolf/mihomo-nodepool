@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { NodeInsights, SubscriptionUsage } from '../community'
 import UsageHint from './UsageHint.vue'
+import AppIcon from './AppIcon.vue'
 import '../community.css'
 const props = defineProps<{ insights?: NodeInsights; minLevel?: number; usage?: SubscriptionUsage | null; detail?: boolean }>()
 const warnings = computed(() => props.insights?.warnings ?? [])
@@ -10,8 +11,8 @@ const tlsLabels = { enabled: '已启用', disabled: '未启用', not_applicable:
 <template>
   <span v-if="!detail" class="node-insights">
     <span v-if="minLevel" class="insight-tag" :title="`来源最低等级 Lv${minLevel}`">Lv{{ minLevel }}+</span>
-    <span v-if="insights && !insights.v2ray_compatible" class="insight-tag insight-risk" :title="insights.v2ray_reason || '无法以 URI 保真导出，请使用 Clash / Mihomo 完整配置'">URI 不可导</span>
-    <span v-for="warning in warnings" :key="warning.code" class="insight-tag" :class="{ 'insight-risk': warning.severity !== 'info' }" :title="warning.message">{{ warning.message }}</span>
+    <span v-if="insights && !insights.v2ray_compatible" class="insight-tag insight-icon insight-risk" role="img" aria-label="URI 不可导" :title="`URI 不可导：${insights.v2ray_reason || '无法以 URI 保真导出，请使用 Clash / Mihomo 完整配置'}`"><AppIcon name="unlink" /></span>
+    <span v-for="warning in warnings" :key="warning.code" class="insight-tag insight-icon" :class="{ 'insight-risk': warning.severity !== 'info' }" role="img" :aria-label="warning.message" :title="warning.message"><AppIcon :name="warning.code === 'certificate_verification_disabled' ? 'shield' : warning.code === 'unencrypted_transport' ? 'unlock' : warning.severity === 'info' ? 'info' : 'alert'" /></span>
     <UsageHint :usage="usage" />
   </span>
   <section v-else class="node-insights-detail">
@@ -26,6 +27,6 @@ const tlsLabels = { enabled: '已启用', disabled: '未启用', not_applicable:
     </dl>
     <p v-else class="small muted">暂未提供配置分析。</p>
     <ul v-if="warnings.length" class="insight-warnings"><li v-for="warning in warnings" :key="warning.code" :class="{ 'danger-text': warning.severity !== 'info' }" :title="warning.message">{{ warning.message }}</li></ul>
-    <UsageHint :usage="usage" detail />
+    <UsageHint v-if="usage" :usage="usage" detail />
   </section>
 </template>

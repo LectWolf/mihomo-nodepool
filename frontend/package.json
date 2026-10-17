@@ -1,8 +1,8 @@
 {
   "name": "mihomo-nodepool-frontend",
   "private": true,
-  "version": "0.0.0",
-  "description": "Mihomo NodePool 中文节点管理控制台。",
+  "version": "0.1.0",
+  "description": "MCII节点共享控制台。",
   "type": "module",
   "engines": {
     "node": ">=24.17.0"

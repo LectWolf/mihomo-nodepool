@@ -19,6 +19,7 @@ let loggedIn = false
 let databaseDown = false
 let force401 = false
 let restartAllowed = false
+let statisticsRequests = 0
 const date = '2026-01-01T00:00:00Z'
 const admin = { id: 1, username: 'admin', display_name: '管理员', role: 'admin', enabled: true, node_limit: 200, source_limit: 3, subscription_limit: 1, created_at: date }
 const makeSource = (id, name, kind = 'url') => ({ id, name, kind, enabled: true, exclude_pattern: '', status: 'ready', node_count: 1, excluded_count: 0, last_error: '', last_refresh_at: date, next_refresh_at: date, created_at: date })
@@ -28,6 +29,7 @@ let settings = { exclude_pattern: '流量|到期', test_url: 'https://www.gstati
 const releases = { current_version: 'v1.0.0', latest_version: 'v2.0.0', update_available: true, can_update: true, can_rollback: true, need_restart: false, state: 'idle', message: '', releases: ['v2.0.0', 'v1.0.0', 'v0.9.0'].map(version => ({ version, name: `Release ${version}`, body: `真实契约测试发布说明 ${version}\n- 测试条目`, published_at: date, url: `https://github.com/example/test/releases/tag/${version}` })) }
 let targetVersion = releases.current_version
 const nodes = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, name: `节点-${index + 1}`, type: 'ss', server: 'example.test', port: 443, latency_ms: 40 + index, status: 'healthy', country: 'United States', country_code: 'US', exit_ip: '192.0.2.1', ...(index === 0 ? { region: ' 加州 ', city: '洛杉矶' } : index === 1 ? { region: '美国', city: ' 美国 ' } : {}), last_checked_at: date, next_check_at: date, last_error: '', sources: [{ id: 1, name: '主要来源', node_name: '原名 A' }, { id: 2, name: '备用来源', node_name: '原名 B' }] }))
+nodes[0].insights = { v2ray_compatible: false, v2ray_reason: '测试不兼容配置', tls: 'enabled', warnings: [{ code: 'certificate_verification_disabled', severity: 'warning', message: '节点配置关闭了TLS证书验证，存在中间人攻击风险' }] }
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
   const send = (status, data) => { if (!res.destroyed) { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)) } }
@@ -45,15 +47,27 @@ const server = createServer(async (req, res) => {
     const body = raw ? JSON.parse(raw) : undefined
     const route = url.pathname.replace('/api/v1', '')
     requests.push({ route, method: req.method, body, query: Object.fromEntries(url.searchParams) })
-    if (route === '/auth') { send(200, { authenticated: loggedIn, username: 'admin', user: loggedIn ? admin : null }); return }
+    if (route === '/auth') { const ok = loggedIn && !force401; send(200, { authenticated: ok, username: 'admin', user: ok ? admin : null, login_options: { email: true, github: true, linuxdo: false, require_email: false, email_suffixes: ['qq.com', 'gmail.com'] } }); return }
     if (route === '/auth/login') {
       if (body.password !== 'correct') { send(401, { error: '管理员密码错误' }); return }
-      loggedIn = true; send(200, { authenticated: true, user: admin }); return
+      loggedIn = true; send(200, { authenticated: true, user: admin, persistent: !!body.remember }); return
     }
+    if (route === '/auth/persist') { send(loggedIn ? 200 : 401, loggedIn ? { authenticated: true, user: admin, persistent: !!body.remember } : { error: '请先登录' }); return }
     if (route === '/auth/logout') { loggedIn = false; send(200, { authenticated: false }); return }
     if (!loggedIn || force401) { send(401, { error: '需要登录' }); return }
     if (route === '/system') { send(200, { name: 'Mihomo NodePool', version: releases.current_version, commit: 'browser-test', build_time: date, database: { configured: true, connected: !databaseDown }, core: { state: 'ready', version: 'test-core' }, tasks: { pending_sources: 0, pending_nodes: 0, active_sources: 0, active_nodes: 0 } }); return }
     if (databaseDown && !route.includes('release')) { send(503, { error: '测试数据库连接失败' }); return }
+    if (route === '/statistics') {
+      statisticsRequests++
+      send(200, {
+        sampled_at: new Date(Date.parse(date) + statisticsRequests * 1000).toISOString(),
+        overview: { sources_total: 2, sources_enabled: 2, sources_ready: 1, sources_error: 0, nodes_total: 60, nodes_visible: 60, nodes_healthy: 60, nodes_unhealthy: 0, nodes_unknown: 0, nodes_blocked: 0, users_total: 1, users_enabled: 1, providers_total: 1, subscriptions: 0, active_seats: 0 },
+        tasks: { pending_sources: 0, active_sources: 1, pending_nodes: 1, active_nodes: 0 },
+        source_tasks: [{ id: 1, name: '统计来源执行中', type: 'url', status: 'processing', lease_until: date }], node_tasks: [{ id: 1, name: '统计节点排队中', type: 'ss', status: 'queued', next_at: date }],
+        runtime: { started_at: date, uptime_seconds: statisticsRequests, heap_bytes: 1048576, goroutines: 9, source_body_bytes: 2048, source_runs: 3, source_errors: 1, probe_runs: 5, probe_errors: 2 },
+        usage: { sources_known: 1, sources_total: 2, upload_bytes: 1024, download_bytes: null, total_bytes: 4096, remaining_bytes: null, upload_sources: 1, download_sources: 0, total_sources: 1, remaining_sources: 0, overflow: false, items: [{ id: 1, name: '套餐测试来源', enabled: true, usage: { status: 'unknown', upload_bytes: 1024, download_bytes: null, total_bytes: 4096, remaining_bytes: null, expires_at: date, fetched_at: date } }, { id: 2, name: '套餐未知来源', enabled: false, usage: null }] },
+      }); return
+    }
     if (route === '/me') { send(200, { user: admin, usage: { nodes: 0, sources: 0, subscriptions: 0 }, provider_path: '/nodes?provider_id=1' }); return }
     if (route === '/subscriptions') { send(200, { items: [] }); return }
     if (route === '/rule-profiles') { send(200, { items: [{ id: 0, name: '官方默认规则', official: true, readonly: true, routing_enabled: true, dns_enabled: true, dns_servers: [], rules: ['DOMAIN-SUFFIX,example.test,DIRECT', 'MATCH,NodePool'], created_at: date, updated_at: date }] }); return }
@@ -75,6 +89,11 @@ const server = createServer(async (req, res) => {
       Object.assign(source, body); send(200, source); return
     }
     if (route === '/nodes' && req.method === 'GET') {
+      if (url.searchParams.get('q') === 'pagination') {
+        const page = Number(url.searchParams.get('page')), size = Number(url.searchParams.get('page_size'))
+        const items = Array.from({ length: size }, (_, index) => ({ ...nodes[0], id: (page - 1) * size + index + 1, name: `分页节点-${(page - 1) * size + index + 1}` }))
+        send(200, { items, total: 2950, page, page_size: size, stats: { total: 2950, healthy: 2950, unhealthy: 0, pending: 0 } }); return
+      }
       if (url.searchParams.get('q') === 'timeout') { setTimeout(() => send(200, {}), 30000).unref(); return }
       if (url.searchParams.get('q') === 'slow') await new Promise(resolve => setTimeout(resolve, 1000))
       const filtered = nodes.filter(node => !url.searchParams.get('q') || node.name.includes(url.searchParams.get('q')))
@@ -135,7 +154,7 @@ async function evaluate(expression) {
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.text + ': ' + result.result.description)
   return result.result.value
 }
-const text = () => evaluate('document.body.innerText')
+const text = () => evaluate("document.body?.innerText ?? ''")
 const hasText = value => eventually(async () => (await text()).includes(value), value)
 const visible = "element => !!element.getClientRects().length"
 async function click(label, scope = 'document') {
@@ -157,7 +176,7 @@ async function key(key) {
   await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, windowsVirtualKeyCode: codes[key] || key.toUpperCase().charCodeAt(0) })
   await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, windowsVirtualKeyCode: codes[key] || key.toUpperCase().charCodeAt(0) })
 }
-async function submit() { await evaluate('document.querySelector("dialog[open] form, .login-card").requestSubmit()') }
+async function submit() { await evaluate('document.querySelector("dialog[open] form, .login-card form").requestSubmit()') }
 const check = name => console.log(`PASS ${name}`)
 try {
   let debugPort
@@ -179,17 +198,37 @@ try {
   await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] })
   await cdp('Page.navigate', { url: appUrl })
   await hasText('用户名')
-  await input('input[type=password]', 'wrong'); await submit(); await hasText('管理员密码错误')
-  await input('input[type=password]', 'correct'); await submit(); await hasText('节点-1')
+  await hasText('邮箱验证码')
+  assert.equal(await evaluate('[...document.querySelectorAll(".oauth-button")].map(a => a.getAttribute("href")).join()'), '/api/v1/auth/oauth/github/start?mode=login', 'only enabled third-party login is offered')
+  await click('邮箱验证码')
+  await evaluate('(() => { const i = document.querySelector(".email-input input"); i.focus(); i.dispatchEvent(new FocusEvent("focus")); i.value = "224"; i.dispatchEvent(new Event("input", { bubbles: true })) })()')
+  await eventually(async () => await evaluate('[...document.querySelectorAll(".email-suggest li")].map(li => li.textContent).join()') === '224@qq.com,224@gmail.com', 'email suffix suggestions')
+  await evaluate('document.querySelector(".email-suggest li").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))')
+  assert.equal(await evaluate('document.querySelector(".email-input input").value'), '224@qq.com', 'picking a suggestion fills the address')
+  await click('密码登录')
+  check('email input suggests allowed suffixes')
+  await input('input[autocomplete=username]', 'admin'); await input('input[type=password]', 'wrong'); await submit(); await hasText('管理员密码错误')
+  await input('input[type=password]', 'correct'); await submit(); await hasText('保持登录状态')
+  await click('是'); await hasText('节点-1')
+  await hasText('欢迎来到 MCII 节点共享'); await click('下一步'); await hasText('浏览所有共享节点')
+  await click('跳过教程')
+  assert.ok(await evaluate('!!localStorage.getItem("nodepool-tour-v1:1") && !document.querySelector(".tour-layer")'), 'tour is dismissed and remembered')
+  assert.deepEqual(requests.filter(item => item.route === '/auth/persist').map(item => item.body), [{ remember: true }])
+  check('login asks to stay signed in and persists the session')
   assert.equal(await evaluate('location.search'), '', 'default node parameters stay out of URL')
+  await click('按来源'); await eventually(async () => await evaluate('document.querySelectorAll(".gallery-card").length') > 0, 'source gallery cards')
+  assert.equal(await evaluate('location.search'), '?by=sources', 'source browsing is kept in URL')
+  await click('查看节点', 'document.querySelector(".gallery-card")'); await eventually(async () => (await evaluate('location.search')).includes('source_id='), 'gallery opens node list filtered by source')
+  await evaluate('history.replaceState(null, "", "/nodes")'); await cdp('Page.navigate', { url: appUrl }); await hasText('节点-1')
+  check('source gallery switches views and filters nodes by source')
   assert.equal(await evaluate('document.querySelector(".view-switch button").getAttribute("aria-label")'), '卡片视图')
   assert.equal(await evaluate('[...document.querySelectorAll(".view-switch button")].every(button => button.textContent.trim() === "")'), true, 'view toggles are icons only')
   assert.equal(await evaluate('document.querySelector(".node-card").textContent.includes("下次检测")'), false)
   assert.equal(await evaluate('document.querySelector(".node-card").textContent.includes("最近检测")'), false)
   assert.equal(await evaluate('(() => { const center = selector => { const box = document.querySelector(selector).getBoundingClientRect(); return box.top + box.height / 2 }; return Math.abs(center(".filters .search-field svg") - center(".filters .search-field input")) < 1 })()'), true, 'search icon is vertically centered')
   assert.equal(await evaluate('!!document.querySelector(".latency-filter")'), false)
-  assert.equal(await evaluate('[...document.querySelectorAll(".filters > *")].map(e => Math.round(e.getBoundingClientRect().top)).every((v, _, values) => v === values[0])'), true, 'desktop filters use one row')
-  assert.equal(await evaluate('getComputedStyle(document.querySelector(".version-text")).borderTopWidth'), '0px', 'version is plain text')
+  assert.equal(await evaluate('[...document.querySelectorAll(".filters > *")].filter(e => e.getClientRects().length).map(e => Math.round(e.getBoundingClientRect().top)).every((v, _, values) => v === values[0])'), true, 'desktop filters use one row')
+  assert.ok((await evaluate('document.querySelector(".version-chip").textContent')).includes('版本'), 'sidebar shows version chip')
   assert.equal(await evaluate('document.body.innerText.includes("数据库已连接") || document.body.innerText.includes("自动维护")'), false)
   assert.equal(await evaluate('document.querySelector("[aria-label=刷新节点]").textContent.trim()'), '', 'refresh is an icon button')
   if (process.env.NODEPOOL_ARTIFACT_DIR) {
@@ -297,7 +336,7 @@ try {
   assert.deepEqual(requests.filter(item => item.route === '/nodes').at(-1).query, filtersBeforeView)
   assert.ok(await evaluate('document.querySelector(".node-card").getBoundingClientRect().height < 180'), 'compact node card')
   assert.equal(await evaluate('getComputedStyle(document.querySelector(".node-card .node-name")).whiteSpace'), 'nowrap')
-  await evaluate('document.querySelector(".node-card").click()'); await hasText('原始名称：原名 B')
+  await evaluate('document.querySelector(".node-card").click()'); await hasText('原名 B')
   await click('检测节点', 'document.querySelector("dialog[open]")'); await key('Escape'); await hasText('已加入检测队列')
   await cdp('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true })
   assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true)
@@ -305,7 +344,7 @@ try {
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark')
   assert.equal(await evaluate('new URL(location.href).searchParams.get("q")'), '节点-2')
   assert.equal(await evaluate('document.querySelector("[aria-label=卡片视图]").getAttribute("aria-pressed")'), 'true')
-  await click('重置筛选'); await hasText('节点-1')
+  await click('展开筛选'); await click('重置筛选'); await hasText('节点-1')
   await select('每页条数', 25); await sleep(450)
   assert.equal(requests.filter(item => item.route === '/nodes').at(-1).query.page_size, '25')
   await click('下一页'); await hasText('节点-26')
@@ -324,7 +363,7 @@ try {
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false })
   check('cards preserve filters/page, persist on reload, share detection/details, custom page size and 320px layout')
   await click('重置筛选'); await hasText('节点-1')
-  await evaluate('document.querySelector("tbody .node-name").click()'); await hasText('原始名称：原名 B')
+  await evaluate('document.querySelector("tbody .node-name").click()'); await hasText('原名 B')
   await click('检测节点', 'document.querySelector("dialog[open]")'); await key('Escape'); await hasText('已加入检测队列')
   assert.ok(requests.some(item => /^\/nodes\/\d+\/test$/.test(item.route)))
   assert.equal(await evaluate('document.querySelectorAll(".node-card-actions").length'), 0)
@@ -334,7 +373,7 @@ try {
   assert.equal(await evaluate('document.querySelector(".node-name").textContent'), '节点-2')
   await click('重置筛选'); await sleep(400)
   check('late search response cancellation and multi-country/source queries')
-  await click('来源管理')
+  await click('共享来源')
   assert.equal(await evaluate('location.pathname'), '/sources')
   await click('添加来源')
   assert.equal(await evaluate('(() => { const inputs = document.querySelectorAll("dialog .form-grid input"); return Math.abs(inputs[0].getBoundingClientRect().top - inputs[1].getBoundingClientRect().top) < 1 })()'), true, 'source name and regex inputs align')
@@ -364,37 +403,31 @@ try {
   check('source edit preserves URL, enable/disable, individual refresh and confirmed deletion')
   await click('运行设置'); await hasText('全局排除规则')
   assert.equal(await evaluate('location.pathname'), '/settings')
-  await input('.settings-main textarea', '('); await click('保存设置'); await hasText('排除正则无效')
-  await input('.settings-main textarea', 'draft-pattern')
+  await input('#settings-filter textarea', '('); await click('保存设置'); await hasText('排除正则无效')
+  await input('#settings-filter textarea', 'draft-pattern')
   await sleep(4500)
-  assert.equal(await evaluate('document.querySelector(".settings-main textarea").value'), 'draft-pattern')
+  assert.equal(await evaluate('document.querySelector("#settings-filter textarea").value'), 'draft-pattern')
   await click('节点总览'); await click('运行设置')
-  assert.equal(await evaluate('document.querySelector(".settings-main textarea").value'), 'draft-pattern')
+  assert.equal(await evaluate('document.querySelector("#settings-filter textarea").value'), 'draft-pattern')
   await click('保存设置'); await hasText('设置已保存')
-  assert.deepEqual(Object.keys(requests.filter(item => item.method === 'PUT').at(-1).body).sort(), ['exclude_pattern', 'history_retention_days', 'probe_concurrency', 'public_url', 'source_concurrency', 'subscription_lease_days', 'test_url', 'timeout_ms'])
+  assert.deepEqual(Object.keys(requests.filter(item => item.method === 'PUT').at(-1).body).sort(), ['exclude_pattern', 'history_retention_days', 'maintenance', 'probe_concurrency', 'public_url', 'source_concurrency', 'subscription_lease_days', 'test_url', 'timeout_ms'])
   check('settings validation, exact payload, and drafts retained through polling/navigation')
-  await evaluate('document.querySelector(".version-text").click()'); await hasText('Release v2.0.0')
-  await evaluate('document.querySelector("[role=combobox][aria-label=选择发布版本]").focus()')
-  await key(' ')
-  assert.equal(await evaluate('document.querySelector("dialog[open]").contains(document.querySelector("[role=listbox]"))'), true)
-  assert.equal(await evaluate('document.querySelector("[role=listbox]").matches(":popover-open")'), true)
-  assert.equal(await evaluate('(() => { const box = document.querySelector("[role=listbox]").getBoundingClientRect(); return box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight })()'), true)
-  await key('Escape')
-  assert.equal(await evaluate('!!document.querySelector("dialog[open]")'), true)
-  await select('选择发布版本', 'v0.9.0'); await hasText('真实契约测试发布说明 v0.9.0')
-  await click('回退到所选历史版'); await click('确认操作'); await hasText('程序文件已准备好')
+  await evaluate('document.querySelector(".version-chip").click()'); await hasText('Release v2.0.0')
+  assert.equal(await evaluate('document.querySelectorAll("dialog[open] .release-timeline button").length > 1'), true, 'releases render as a timeline')
+  await click('v0.9.0', 'document.querySelector("dialog[open] .release-timeline")'); await hasText('真实契约测试发布说明 v0.9.0')
+  await click('回退到此版本'); await click('确认操作'); await hasText('程序文件已准备好')
   assert.equal(requests.filter(item => item.route === '/system/rollback').at(-1).body.version, 'v0.9.0')
   await click('立即重启'); await click('确认操作'); await hasText('仅 Linux 支持立即重启')
   restartAllowed = true
   await click('立即重启'); await click('确认操作'); await hasText('正在重新连接服务')
   await eventually(async () => !(await text()).includes('正在重新连接服务'), 'restart reconnect', 15000)
-  await evaluate('document.querySelector(".version-text").click()'); await hasText('v0.9.0')
-  await click('恢复本地 backup'); await click('确认操作'); await hasText('程序文件已准备好')
+  await evaluate('document.querySelector(".version-chip").click()'); await hasText('v0.9.0')
+  await click('恢复备份'); await click('确认操作'); await hasText('程序文件已准备好')
   assert.deepEqual(requests.filter(item => item.route === '/system/rollback').at(-1).body, {})
   await click('立即重启'); await click('确认操作'); await hasText('正在重新连接服务')
   await eventually(async () => !(await text()).includes('正在重新连接服务'), 'backup restart reconnect', 15000)
-  await evaluate('document.querySelector(".version-text").click()'); await hasText('Release v2.0.0')
-  await click('安装所选版本'); await click('确认操作'); await hasText('程序文件已准备好')
+  await evaluate('document.querySelector(".version-chip").click()'); await hasText('Release v2.0.0')
+  await click('安装此版本'); await click('确认操作'); await hasText('程序文件已准备好')
   assert.equal(requests.filter(item => item.route === '/system/update').at(-1).body.version, 'v2.0.0')
   await evaluate('document.querySelector("dialog[open] .icon-button").click()')
   await sleep(150)
@@ -421,6 +454,26 @@ try {
   await click('切换到浅色模式')
   assert.equal(await evaluate('getComputedStyle(document.querySelector(".panel")).backgroundColor'), 'rgb(255, 255, 255)')
   check('direct page/filter/card URL, source/settings routes, source search history and out-of-range page normalization')
+  assert.equal(await evaluate('document.querySelector(".node-insights .insight-icon").textContent.trim()'), '')
+  assert.equal(await evaluate('document.querySelector(".node-insights .insight-icon[title*=证书验证]").querySelector("svg") !== null'), true)
+  await cdp('Page.navigate', { url: appUrl + '/nodes?q=pagination&page=8' })
+  await hasText('分页节点-351')
+  assert.deepEqual(await evaluate('Array.from(document.querySelectorAll(".pagination .page-numbers .page-number:not(.page-arrow)")).map(el => el.textContent.trim())'), ['1','6','7','8','9','10','59'])
+  assert.equal(await evaluate('document.querySelector(".pagination .page-number[aria-current=page]").textContent.trim()'), '8')
+  assert.equal(await evaluate('document.querySelectorAll(".pagination .page-ellipsis").length'), 2)
+  await click('第 1 页', 'document.querySelector(".pagination")'); await hasText('分页节点-1')
+  assert.deepEqual(await evaluate('Array.from(document.querySelectorAll(".pagination .page-numbers .page-number:not(.page-arrow)")).map(el => el.textContent.trim())'), ['1','2','3','59'])
+  await click('第 59 页', 'document.querySelector(".pagination")'); await hasText('分页节点-2901')
+  check('icon-only URI/security hints and numbered pagination first/middle/last pages')
+  await click('运行统计'); await hasText('统计来源执行中'); await hasText('套餐未知来源')
+  assert.equal(await evaluate('document.querySelector(".usage-stat-grid > div:nth-child(2) strong").textContent.trim()'), '未知')
+  const sampleBefore = await evaluate('document.querySelector(".statistics-sample").textContent')
+  await eventually(async () => await evaluate('document.querySelector(".statistics-sample").textContent') !== sampleBefore, 'statistics automatic refresh', 8000)
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true })
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true)
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+  await cdp('Page.navigate', { url: appUrl + '/nodes' }); await hasText('节点-1')
+  check('statistics route, live tasks, null usage values, automatic refresh and 320px layout')
   await click('节点总览')
   await input('.filters input[type=search]', 'timeout')
   await eventually(async () => (await text()).includes('请求超时'), 'fetch timeout guidance', 25000)
@@ -430,7 +483,10 @@ try {
   check('20-second fetch timeout, recovery and release polling cleanup after closing dialog')
   await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
   assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true)
-  assert.equal(await evaluate('!!document.querySelector(".mobile-logout").getClientRects().length'), true)
+  assert.equal(await evaluate('!!document.querySelector(".user-menu-trigger").getClientRects().length'), true)
+  await evaluate('document.querySelector(".user-menu-trigger").click()')
+  await eventually(() => evaluate('!!document.querySelector(".user-menu-item.danger")?.getClientRects().length'), 'mobile user menu logout')
+  await evaluate('document.querySelector(".user-menu-trigger").click()')
   await cdp('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true })
   assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true)
   databaseDown = true
@@ -440,7 +496,7 @@ try {
   force401 = true
   await input('.filters input[type=search]', 'auth-expired'); await hasText('登录已过期')
   assert.ok(!await evaluate('!!document.querySelector(".app-shell")'))
-  check('responsive layout, mobile logout, 503 guidance and 401 returns to login')
+  check('responsive layout, user menu logout, 503 guidance and 401 returns to login')
   await sleep(150)
   const requestsAfterLogout = requests.length
   await sleep(5500)

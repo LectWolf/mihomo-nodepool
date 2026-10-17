@@ -18,13 +18,15 @@ type RuleGroup struct {
 	NodeIDs    []int64  `json:"node_ids"`
 	Countries  []string `json:"countries"`
 	Groups     []string `json:"groups"`
-	Interval   int      `json:"interval"`
-	Tolerance  int      `json:"tolerance"`
+	// CountryGroups 在包含全部节点的手动选择组中挂载按国家自动生成的分组
+	CountryGroups bool `json:"country_groups"`
+	Interval      int  `json:"interval"`
+	Tolerance     int  `json:"tolerance"`
 }
 
 func (g *RuleGroup) UnmarshalJSON(data []byte) error {
 	type plain RuleGroup
-	v := plain{Interval: 300, Tolerance: 50}
+	v := plain{Interval: 300, Tolerance: 50, CountryGroups: true}
 	d := json.NewDecoder(strings.NewReader(string(data)))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&v); err != nil {
@@ -36,7 +38,7 @@ func (g *RuleGroup) UnmarshalJSON(data []byte) error {
 
 func defaultRuleGroups() []RuleGroup {
 	group := func(name, kind string, all bool, refs ...string) RuleGroup {
-		return RuleGroup{Name: name, Type: kind, IncludeAll: all, NodeIDs: []int64{}, Countries: []string{}, Groups: append([]string{}, refs...), Interval: 300, Tolerance: 50}
+		return RuleGroup{Name: name, Type: kind, IncludeAll: all, NodeIDs: []int64{}, Countries: []string{}, Groups: append([]string{}, refs...), CountryGroups: true, Interval: 300, Tolerance: 50}
 	}
 	return []RuleGroup{
 		group("NodePool", "select", true, referenceGroups[1], referenceGroups[2]),
@@ -58,7 +60,7 @@ func normalizeRuleGroups(groups []RuleGroup) ([]RuleGroup, error) {
 		return nil, errors.New("策略组必须为1至64组，且包含NodePool主组")
 	}
 	result := make([]RuleGroup, len(groups))
-	names := map[string]bool{"DIRECT": true, "REJECT": true, "GLOBAL": true}
+	names := map[string]bool{"DIRECT": true, "REJECT": true, "GLOBAL": true, SubscriptionDisplayName: true}
 	for i, original := range groups {
 		g := original
 		g.Name = strings.TrimSpace(g.Name)
@@ -79,12 +81,8 @@ func normalizeRuleGroups(groups []RuleGroup) ([]RuleGroup, error) {
 		if g.Interval < 60 || g.Interval > 86400 || g.Tolerance < 0 || g.Tolerance > 1000 {
 			return nil, fmt.Errorf("策略组%s检测间隔须为60至86400秒，容差须为0至1000毫秒", g.Name)
 		}
-		g.NodeIDs = append([]int64{}, g.NodeIDs...)
-		for _, id := range g.NodeIDs {
-			if id <= 0 {
-				return nil, fmt.Errorf("策略组%s节点ID必须为正整数", g.Name)
-			}
-		}
+		// 策略组不再支持指定单个节点，旧数据中的节点ID直接忽略
+		g.NodeIDs = []int64{}
 		g.Countries = append([]string{}, g.Countries...)
 		for j, code := range g.Countries {
 			code = strings.ToUpper(strings.TrimSpace(code))
@@ -140,17 +138,15 @@ func normalizeRuleGroups(groups []RuleGroup) ([]RuleGroup, error) {
 	return result, nil
 }
 
-func configuredProxyGroups(groups []RuleGroup, nodes []Node, names []string) []map[string]any {
+func configuredProxyGroups(groups []RuleGroup, nodes []Node, names []string, plan []countryGroup) []map[string]any {
+	countryRefs, countryDefs := countryProxyGroups(plan, nodes, names)
 	// Retain the historical order as well as behavior for untouched seven-group profiles.
 	if reflect.DeepEqual(groups, defaultRuleGroups()) {
-		return referenceProxyGroups(names)
+		return append(referenceProxyGroups(names, countryRefs), countryDefs...)
 	}
-	result := make([]map[string]any, 0, len(groups))
+	result := make([]map[string]any, 0, len(groups)+len(countryDefs))
 	for _, g := range groups {
-		ids, countries := map[int64]bool{}, map[string]bool{}
-		for _, id := range g.NodeIDs {
-			ids[id] = true
-		}
+		countries := map[string]bool{}
 		for _, code := range g.Countries {
 			countries[code] = true
 		}
@@ -161,14 +157,20 @@ func configuredProxyGroups(groups []RuleGroup, nodes []Node, names []string) []m
 				seen[name] = true
 			}
 		}
-		for i, n := range nodes {
-			code := strings.ToUpper(n.CountryCode)
-			if g.IncludeAll || ids[n.ID] || (code != "CF" && countries[code]) {
-				appendMember(names[i])
-			}
-		}
+		// 引用的策略组和国家分组排在节点前面，方便在客户端快速切换
 		for _, ref := range g.Groups {
 			appendMember(ref)
+		}
+		if wantsCountryGroup(g) {
+			for _, ref := range countryRefs {
+				appendMember(ref)
+			}
+		}
+		for i, n := range nodes {
+			code := strings.ToUpper(n.CountryCode)
+			if g.IncludeAll || (code != "CF" && countries[code]) {
+				appendMember(names[i])
+			}
 		}
 		if len(members) == 0 {
 			members = append(members, "DIRECT")
@@ -186,5 +188,5 @@ func configuredProxyGroups(groups []RuleGroup, nodes []Node, names []string) []m
 		}
 		result = append(result, out)
 	}
-	return result
+	return append(result, countryDefs...)
 }

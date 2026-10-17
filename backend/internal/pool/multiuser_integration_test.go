@@ -353,7 +353,7 @@ func TestMySQLAccountUnionQuotasAndLoweredSourceCapacity(t *testing.T) {
 	if _, e = s.SaveSubscription(ac, 0, pool.SubscriptionInput{Name: "over account nodes", Nodes: pairs[2:]}); !errors.Is(e, pool.ErrQuota) {
 		t.Fatalf("aggregate node quota: %v", e)
 	}
-	other, e := s.AddSource(bc, pool.SourceInput{Name: "same nodes other owner", Kind: "file", Content: src.Content})
+	other, e := s.AddSource(bc, pool.SourceInput{Name: "same nodes other owner", Kind: "file", Content: src.Content, MaxUsers: 5})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -370,6 +370,17 @@ func TestMySQLAccountUnionQuotasAndLoweredSourceCapacity(t *testing.T) {
 	}
 	if _, e = s.SaveSubscription(ac, 0, pool.SubscriptionInput{Name: "over account sources", Nodes: []pool.Selection{{NodeID: pairs[0].NodeID, SourceID: other.ID}}}); !errors.Is(e, pool.ErrQuota) {
 		t.Fatalf("aggregate source quota: %v", e)
+	}
+	// 未设置使用人数上限的来源不占来源额度
+	zero := 0
+	if _, e = s.PatchSource(bc, other.ID, pool.SourcePatch{MaxUsers: &zero}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.SaveSubscription(ac, 0, pool.SubscriptionInput{Name: "unlimited source", Nodes: []pool.Selection{{NodeID: pairs[0].NodeID, SourceID: other.ID}}}); e != nil {
+		t.Fatalf("unlimited source counted toward quota: %v", e)
+	}
+	if usage, e := s.Usage(ctx, a.ID); e != nil || usage.Sources != 1 {
+		t.Fatalf("usage should only count limited sources: %+v %v", usage, e)
 	}
 	second, e := s.SaveSubscription(bc, 0, pool.SubscriptionInput{Name: "second claimant", Nodes: pairs[:1]})
 	if e != nil {

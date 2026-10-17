@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sort"
 	"time"
 )
@@ -85,6 +86,11 @@ func claimSeat(ctx context.Context, tx *sql.Tx, u User, sourceID int64, until ti
 		if err := recordSeatEvent(ctx, tx, sourceID, u.ID, "claimed", now); err != nil {
 			return err
 		}
+		if u.ID != owner {
+			if err := achievement(ctx, tx, owner, "first_user", "成就：第一次有人使用你的来源"); err != nil {
+				return err
+			}
+		}
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO np_source_seats(source_id,user_id,state,claimed_at,expires_at,last_renewed_at) VALUES(?,?,'active',?,?,?) ON DUPLICATE KEY UPDATE state='active',expires_at=VALUES(expires_at),ended_at=NULL`, sourceID, u.ID, now, until, now)
 	if err != nil {
@@ -151,6 +157,10 @@ func (s *Store) CheckIn(ctx context.Context, confirmPartial bool) (CheckinResult
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	until := now.Add(time.Duration(settings.SubscriptionLeaseDays) * 24 * time.Hour)
+	// 请假延期后的到期时间可能更晚，签到不缩短
+	if u.SubscriptionExpiresAt != nil && u.SubscriptionExpiresAt.After(until) {
+		until = *u.SubscriptionExpiresAt
+	}
 	excluded := map[int64]bool{}
 	// Lock all referenced sources in stable order before acquiring any seat.
 	for _, id := range ids {
@@ -233,6 +243,15 @@ func (s *Store) CheckIn(ctx context.Context, confirmPartial bool) (CheckinResult
 	if err = releaseUnusedSeats(ctx, tx, u.ID); err != nil {
 		return out, err
 	}
+	if out.Awarded {
+		note := "每日签到"
+		if u.CheckinStreak%7 == 0 {
+			note = fmt.Sprintf("每日签到 · 连续 %d 天奖励", u.CheckinStreak)
+		}
+		if err = logLedger(ctx, tx, u.ID, "checkin", int(out.XPAdded), int(out.PointsAdded), note, fmt.Sprintf("checkin:%s:%d", today, u.ID)); err != nil {
+			return out, err
+		}
+	}
 	u.SubscriptionExpiresAt = &until
 	u.ProbeUUID = probe
 	out.User = u
@@ -256,6 +275,15 @@ func removeSubscriptionSources(ctx context.Context, tx *sql.Tx, userID int64, ex
 			kept = append(kept, node)
 			sources[node.SourceID] = true
 		}
+		follows := []int64{}
+		for _, sid := range item.FollowIDs {
+			if excluded[sid] {
+				changed = true
+				continue
+			}
+			follows = append(follows, sid)
+			sources[sid] = true
+		}
 		if !changed {
 			continue
 		}
@@ -267,7 +295,7 @@ func removeSubscriptionSources(ctx context.Context, tx *sql.Tx, userID int64, ex
 			ids = append(ids, id)
 		}
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-		if err = updateSubscriptionSelection(ctx, tx, item.ID, kept, ids); err != nil {
+		if err = updateSubscriptionSelection(ctx, tx, item.ID, kept, ids, follows); err != nil {
 			return err
 		}
 	}
@@ -376,6 +404,12 @@ func (s *Store) RenewByProbe(ctx context.Context, uuid string) error {
 	if _, err = tx.ExecContext(ctx, `UPDATE np_source_seats SET expires_at=?,last_renewed_at=?,renew_method='probe' WHERE user_id=? AND state='active' AND expires_at>?`, until, now, u.ID, now); err != nil {
 		return err
 	}
+	if xp := settings.Community.ProbeXP; xp > 0 {
+		today, _ := checkinDay(now)
+		if _, err = award(ctx, tx, u.ID, "probe", xp, 0, 0, "客户端自动续期", fmt.Sprintf("probe:%s:%d", today, u.ID)); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -456,5 +490,5 @@ func (s *Store) LevelDistribution(ctx context.Context) (map[string]any, error) {
 		counts[LevelForXP(xp)] += count
 		total += count
 	}
-	return map[string]any{"total": total, "counts": counts, "thresholds": LevelThresholds, "names": LevelNames}, rows.Err()
+	return map[string]any{"total": total, "counts": counts, "thresholds": LevelThresholds, "names": LevelNames, "quotas": currentCommunity().LevelQuotas}, rows.Err()
 }

@@ -22,7 +22,15 @@ import (
 type session struct {
 	Expires         time.Time
 	UserID, Version int64
+	Persistent      bool
 }
+
+const (
+	sessionTTL    = 12 * time.Hour
+	persistentTTL = 30 * 24 * time.Hour
+	cookieName    = "nodepool_session"
+)
+
 type Manager struct {
 	mu           sync.Mutex
 	digest       [32]byte
@@ -95,42 +103,93 @@ func (m *Manager) user(ctx context.Context, id int64) (pool.User, error) {
 	return m.store.User(ctx, id)
 }
 func (m *Manager) Identity(r *http.Request) (pool.User, bool) {
-	cookie, e := r.Cookie("nodepool_session")
+	u, _, _, ok := m.identify(r)
+	return u, ok
+}
+
+// identify 先查内存缓存，未命中时读取数据库中的持久会话
+func (m *Manager) identify(r *http.Request) (pool.User, [32]byte, session, bool) {
+	var key [32]byte
+	cookie, e := r.Cookie(cookieName)
 	if e != nil {
-		return pool.User{}, false
+		return pool.User{}, key, session{}, false
 	}
-	key := sha256.Sum256([]byte(cookie.Value))
+	key = sha256.Sum256([]byte(cookie.Value))
 	m.mu.Lock()
 	v, ok := m.sessions[key]
 	m.mu.Unlock()
+	if !ok && m.store != nil {
+		if rec, e := m.store.LoadSession(r.Context(), key); e == nil {
+			v, ok = session{rec.Expires, rec.UserID, rec.Version, rec.Persistent}, true
+			m.cache(key, v)
+		}
+	}
 	if !ok {
-		return pool.User{}, false
+		return pool.User{}, key, v, false
 	}
 	if time.Now().Before(v.Expires) {
 		u, e := m.user(r.Context(), v.UserID)
 		if e == nil && u.Enabled && u.AuthVersion == v.Version {
-			return u, true
+			return u, key, v, true
 		}
 	}
+	m.forget(r.Context(), key)
+	return pool.User{}, key, v, false
+}
+func (m *Manager) cache(key [32]byte, v session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.sessions) >= 10000 {
+		for k, s := range m.sessions {
+			if time.Now().After(s.Expires) {
+				delete(m.sessions, k)
+			}
+		}
+		if len(m.sessions) >= 10000 && m.store != nil {
+			// 数据库仍保存会话，缓存满时直接清空重建
+			m.sessions = map[[32]byte]session{}
+		}
+	}
+	m.sessions[key] = v
+}
+func (m *Manager) forget(ctx context.Context, key [32]byte) {
 	m.mu.Lock()
 	delete(m.sessions, key)
 	m.mu.Unlock()
-	return pool.User{}, false
+	if m.store != nil {
+		_ = m.store.DeleteSession(context.WithoutCancel(ctx), key)
+	}
+}
+func (m *Manager) persist(ctx context.Context, key [32]byte, v session) error {
+	if m.store != nil {
+		if e := m.store.SaveSession(ctx, key, pool.SessionRecord{UserID: v.UserID, Version: v.Version, Expires: v.Expires, Persistent: v.Persistent}); e != nil {
+			return e
+		}
+	}
+	m.cache(key, v)
+	return nil
+}
+func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, persistent bool) {
+	c := &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https", SameSite: http.SameSiteStrictMode}
+	if persistent {
+		c.MaxAge = int(persistentTTL / time.Second)
+	}
+	http.SetCookie(w, c)
 }
 func (m *Manager) Authenticated(r *http.Request) bool { _, ok := m.Identity(r); return ok }
 
 // Keep the current browser signed in after its own password change. The database
 // version invalidates every other session, including sessions in another process.
 func (m *Manager) KeepSession(r *http.Request, u pool.User) {
-	if c, e := r.Cookie("nodepool_session"); e == nil {
+	if c, e := r.Cookie(cookieName); e == nil {
 		key := sha256.Sum256([]byte(c.Value))
 		m.mu.Lock()
 		v, ok := m.sessions[key]
+		m.mu.Unlock()
 		if ok && v.UserID == u.ID {
 			v.Version = u.AuthVersion
-			m.sessions[key] = v
+			_ = m.persist(r.Context(), key, v)
 		}
-		m.mu.Unlock()
 	}
 }
 func reply(w http.ResponseWriter, code int, v any) {
@@ -139,17 +198,55 @@ func reply(w http.ResponseWriter, code int, v any) {
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }
-func authReply(w http.ResponseWriter, u pool.User, ok bool) {
-	var user any
-	name := ""
+
+// authReply 附带登录方式开关，前端据此显示邮箱和第三方登录入口
+func (m *Manager) authReply(w http.ResponseWriter, r *http.Request, u pool.User, ok bool, persistent ...bool) {
+	out := map[string]any{"authenticated": ok, "username": "", "user": nil, "persistent": len(persistent) > 0 && persistent[0]}
 	if ok {
-		user = u
-		name = u.Username
+		out["user"], out["username"] = u, u.Username
 	}
-	reply(w, 200, map[string]any{"authenticated": ok, "username": name, "user": user})
+	if m.store != nil && m.store.DB != nil {
+		c, l := m.store.CommunityNow(r.Context()), m.store.LoginNow(r.Context())
+		out["guest_browse"], out["registration"] = c.GuestBrowse, c.RegistrationEnabled
+		out["login_options"] = map[string]any{"email": l.SMTP.Ready(), "github": l.GitHub.Ready(), "linuxdo": l.LinuxDo.Ready(), "require_email": l.RequireEmail && l.SMTP.Ready(), "email_suffixes": l.EmailSuffixes}
+		out["email_required"] = ok && l.EmailRequired(u)
+	}
+	reply(w, 200, out)
 }
 func (m *Manager) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/auth", func(w http.ResponseWriter, r *http.Request) { u, ok := m.Identity(r); authReply(w, u, ok) })
+	mux.HandleFunc("GET /api/v1/auth", func(w http.ResponseWriter, r *http.Request) {
+		u, _, v, ok := m.identify(r)
+		m.authReply(w, r, u, ok, ok && v.Persistent)
+	})
+	// 类似“保持登录状态”：登录后再确认，把当前会话延长为 30 天
+	mux.HandleFunc("POST /api/v1/auth/persist", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Remember bool `json:"remember"`
+		}
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		if d.Decode(&in) != nil || d.Decode(&struct{}{}) != io.EOF {
+			reply(w, 400, map[string]string{"error": "请求格式无效"})
+			return
+		}
+		u, key, v, ok := m.identify(r)
+		if !ok {
+			reply(w, 401, map[string]string{"error": "请先登录"})
+			return
+		}
+		c, _ := r.Cookie(cookieName)
+		v.Persistent = in.Remember
+		if in.Remember {
+			v.Expires = time.Now().Add(persistentTTL)
+		} else if time.Until(v.Expires) > sessionTTL {
+			v.Expires = time.Now().Add(sessionTTL)
+		}
+		if e := m.persist(r.Context(), key, v); e != nil {
+			reply(w, 503, map[string]string{"error": "无法保存登录状态"})
+			return
+		}
+		setSessionCookie(w, r, c.Value, v.Persistent)
+		m.authReply(w, r, u, true, v.Persistent)
+	})
 	mux.HandleFunc("POST /api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		if time.Since(m.window) > time.Minute {
@@ -165,6 +262,7 @@ func (m *Manager) Register(mux *http.ServeMux) {
 		var in struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
+			Remember bool   `json:"remember"`
 		}
 		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
 		if d.Decode(&in) != nil || d.Decode(&struct{}{}) != io.EOF {
@@ -180,7 +278,7 @@ func (m *Manager) Register(mux *http.ServeMux) {
 			return
 		}
 		if m.store != nil {
-			u, e = m.store.UserByName(r.Context(), in.Username)
+			u, e = m.store.UserByLogin(r.Context(), in.Username)
 		} else if in.Username != "admin" {
 			e = pool.ErrNotFound
 		}
@@ -194,43 +292,77 @@ func (m *Manager) Register(mux *http.ServeMux) {
 			m.mu.Lock()
 			m.failures++
 			m.mu.Unlock()
-			reply(w, 401, map[string]string{"error": "用户名或密码不正确，或账号已停用"})
+			reply(w, 401, map[string]string{"error": "账号或密码不正确，或账号已停用"})
 			return
 		}
-		token, e := random()
-		if e != nil {
-			reply(w, 500, map[string]string{"error": "无法创建登录会话"})
-			return
-		}
-		key := sha256.Sum256([]byte(token))
 		m.mu.Lock()
-		for k, v := range m.sessions {
-			if time.Now().After(v.Expires) {
-				delete(m.sessions, k)
-			}
-		}
-		if len(m.sessions) >= 10000 {
-			m.mu.Unlock()
-			reply(w, 503, map[string]string{"error": "登录会话已满"})
-			return
-		}
-		m.sessions[key] = session{time.Now().Add(12 * time.Hour), u.ID, u.AuthVersion}
 		m.failures = 0
 		m.mu.Unlock()
-		http.SetCookie(w, &http.Cookie{Name: "nodepool_session", Value: token, Path: "/", MaxAge: 43200, HttpOnly: true, Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https", SameSite: http.SameSiteStrictMode})
-		authReply(w, u, true)
+		m.StartSession(w, r, u, in.Remember)
 	})
 	mux.HandleFunc("POST /api/v1/auth/logout", func(w http.ResponseWriter, r *http.Request) {
-		if c, e := r.Cookie("nodepool_session"); e == nil {
-			key := sha256.Sum256([]byte(c.Value))
-			m.mu.Lock()
-			delete(m.sessions, key)
-			m.mu.Unlock()
+		if c, e := r.Cookie(cookieName); e == nil {
+			m.forget(r.Context(), sha256.Sum256([]byte(c.Value)))
 		}
-		http.SetCookie(w, &http.Cookie{Name: "nodepool_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-		authReply(w, pool.User{}, false)
+		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		m.authReply(w, r, pool.User{}, false)
 	})
 }
+
+// StartSession 为已验证的用户创建会话并写入 Cookie，登录和注册共用
+func (m *Manager) StartSession(w http.ResponseWriter, r *http.Request, u pool.User, remember bool) {
+	if e := m.Issue(w, r, u, remember); e != nil {
+		reply(w, 503, map[string]string{"error": e.Error()})
+		return
+	}
+	m.authReply(w, r, u, true, remember)
+}
+
+// Issue 只写入会话 Cookie，供 OAuth 回调等需要自行跳转的场景使用
+func (m *Manager) Issue(w http.ResponseWriter, r *http.Request, u pool.User, remember bool) error {
+	token, e := random()
+	if e != nil {
+		return errors.New("无法创建登录会话")
+	}
+	key := sha256.Sum256([]byte(token))
+	m.mu.Lock()
+	for k, v := range m.sessions {
+		if time.Now().After(v.Expires) {
+			delete(m.sessions, k)
+		}
+	}
+	full := len(m.sessions) >= 10000 && m.store == nil
+	m.mu.Unlock()
+	if full {
+		return errors.New("登录会话已满")
+	}
+	v := session{time.Now().Add(sessionTTL), u.ID, u.AuthVersion, remember}
+	if remember {
+		v.Expires = time.Now().Add(persistentTTL)
+	}
+	if e := m.persist(r.Context(), key, v); e != nil {
+		return errors.New("无法创建登录会话")
+	}
+	setSessionCookie(w, r, token, remember)
+	return nil
+}
+
+// guestPaths 未登录访客可以只读访问的接口
+func guestPath(p string) bool {
+	switch p {
+	case "/api/v1/nodes", "/api/v1/options", "/api/v1/sources/catalog", "/api/v1/providers", "/api/v1/levels", "/api/v1/titles", "/api/v1/system", "/api/v1/rule-profiles/default", "/api/v1/statistics":
+		return true
+	}
+	return strings.HasPrefix(p, "/api/v1/avatars/")
+}
+
+func (m *Manager) guestAllowed(r *http.Request) bool {
+	if m.store == nil || (r.Method != "GET" && r.Method != "HEAD") || !guestPath(r.URL.Path) {
+		return false
+	}
+	return m.store.CommunityNow(r.Context()).GuestBrowse
+}
+
 func (m *Manager) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -245,11 +377,25 @@ func (m *Manager) Wrap(next http.Handler) http.Handler {
 				}
 			}
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/v1/auth" && r.URL.Path != "/api/v1/auth/login" && r.URL.Path != "/api/v1/auth/logout" {
-			u, ok := m.Identity(r)
+		// /api/v1/auth 下的接口自行识别会话
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/v1/auth" && !strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
+			u, key, v, ok := m.identify(r)
+			if !ok && m.guestAllowed(r) {
+				next.ServeHTTP(w, r.WithContext(pool.WithUser(r.Context(), pool.GuestUser)))
+				return
+			}
 			if !ok {
 				reply(w, 401, map[string]string{"error": "请先登录"})
 				return
+			}
+			// 持久会话滑动续期：剩余不足 29 天时延长并刷新 Cookie
+			if v.Persistent && time.Until(v.Expires) < persistentTTL-24*time.Hour {
+				v.Expires = time.Now().Add(persistentTTL)
+				if m.persist(r.Context(), key, v) == nil {
+					if c, e := r.Cookie(cookieName); e == nil {
+						setSessionCookie(w, r, c.Value, true)
+					}
+				}
 			}
 			r = r.WithContext(pool.WithUser(r.Context(), u))
 		}

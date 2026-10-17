@@ -44,12 +44,19 @@ func ExportSubscriptionWithProfile(nodes []Node, format string, profile *RulePro
 	names := []string{}
 	exportedNodes := []Node{}
 	selected := map[int64]map[string]string{}
-	reserved := map[string]bool{"DIRECT": true, "REJECT": true, "GLOBAL": true}
+	reserved := map[string]bool{"DIRECT": true, "REJECT": true, "GLOBAL": true, SubscriptionDisplayName: true}
 	for _, name := range referenceGroups {
 		reserved[name] = true
 	}
 	for _, g := range configured {
 		reserved[g.Name] = true
+	}
+	var countryPlan []countryGroup
+	for _, g := range configured {
+		if wantsCountryGroup(g) {
+			countryPlan = planCountryGroups(nodes, reserved)
+			break
+		}
 	}
 	for _, n := range nodes {
 		var m map[string]any
@@ -112,12 +119,13 @@ func ExportSubscriptionWithProfile(nodes []Node, format string, profile *RulePro
 	if !validDialerGraph(configs) {
 		return nil, skipped, 0, fmt.Errorf("%w：节点dialer-proxy存在循环依赖", ErrUnexportable)
 	}
-	doc["proxies"] = configs
+	// 内嵌前置代理展开为隐藏节点，不进入策略组
+	doc["proxies"] = append(append([]map[string]any{}, configs...), expandDialers(configs, reserved)...)
 	groups := []map[string]any{{"name": "NodePool", "type": "select", "proxies": append(append([]string{}, names...), "DIRECT")}}
 	rules := []string{}
 	warnings := 0
 	if profile.RoutingEnabled {
-		groups = configuredProxyGroups(configured, exportedNodes, names)
+		groups = configuredProxyGroups(configured, exportedNodes, names, countryPlan)
 		rules = append(rules, profile.Rules...)
 	} else {
 		sources = append([]Source(nil), sources...)
@@ -148,6 +156,7 @@ func ExportSubscriptionWithProfile(nodes []Node, format string, profile *RulePro
 	if len(rules) == 0 || !strings.HasPrefix(rules[len(rules)-1], "MATCH,") {
 		rules = append(rules, "MATCH,NodePool")
 	}
+	displayMainGroup(groups, rules)
 	doc["proxy-groups"] = groups
 	doc["rules"] = rules
 	doc["unified-delay"] = true
@@ -170,13 +179,43 @@ func ExportSubscriptionWithProfile(nodes []Node, format string, profile *RulePro
 	raw, e := yaml.Marshal(doc)
 	return raw, skipped, warnings, e
 }
-func referenceProxyGroups(names []string) []map[string]any {
+
+// displayMainGroup renames the internal NodePool group for clients.
+// 节点名已避开 NodePool 与显示名称，因此只会改到主组本身及其引用
+func displayMainGroup(groups []map[string]any, rules []string) {
+	rename := func(name string) string {
+		if name == "NodePool" {
+			return SubscriptionDisplayName
+		}
+		return name
+	}
+	for _, g := range groups {
+		if name, ok := g["name"].(string); ok {
+			g["name"] = rename(name)
+		}
+		if proxies, ok := g["proxies"].([]string); ok {
+			renamed := make([]string, len(proxies))
+			for i, p := range proxies {
+				renamed[i] = rename(p)
+			}
+			g["proxies"] = renamed
+		}
+	}
+	for i, rule := range rules {
+		if parts, target, err := splitLocalRule(rule); err == nil && parts[target] == "NodePool" {
+			parts[target] = SubscriptionDisplayName
+			rules[i] = strings.Join(parts, ",")
+		}
+	}
+}
+
+func referenceProxyGroups(names, countries []string) []map[string]any {
 	auto, fall := referenceGroups[1], referenceGroups[2]
 	selectGroup := func(name string, proxies []string) map[string]any {
 		return map[string]any{"name": name, "type": "select", "proxies": proxies}
 	}
 	return []map[string]any{
-		selectGroup("NodePool", append([]string{auto, fall}, names...)),
+		selectGroup("NodePool", append(append([]string{auto, fall}, countries...), names...)),
 		{"name": auto, "type": "url-test", "url": "https://www.gstatic.com/generate_204", "interval": 300, "tolerance": 50, "proxies": names},
 		{"name": fall, "type": "fallback", "url": "https://www.gstatic.com/generate_204", "interval": 300, "proxies": names},
 		selectGroup(referenceGroups[3], []string{"NodePool", "DIRECT"}), selectGroup(referenceGroups[4], []string{"DIRECT", "NodePool"}),
@@ -359,6 +398,9 @@ func (s *Store) ExportSavedSubscription(ctx context.Context, token, format strin
 		for _, id := range order {
 			src := Source{ID: id}
 			if e = s.DB.QueryRowContext(ctx, `SELECT content FROM np_sources WHERE id=?`, id).Scan(&src.Content); e != nil {
+				return nil, 0, 0, e
+			}
+			if src.Content, e = unseal(purposeSourceContent, src.Content); e != nil {
 				return nil, 0, 0, e
 			}
 			sources = append(sources, src)

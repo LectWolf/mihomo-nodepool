@@ -362,8 +362,8 @@ button.remove-selection:hover:not(:disabled) { color: var(--danger); background:
 .draft-state.dirty { color: var(--green-deep); }
 .rule-workbench-body { display: grid; grid-template-columns: 180px minmax(0, 1fr); border-block: 1px solid var(--line); }
 .rule-workbench-nav { padding: 16px 12px; border-right: 1px solid var(--line); background: var(--surface-subtle); }
-.rule-workbench-nav > button { display: flex; align-items: flex-start; justify-content: flex-start; width: 100%; gap: 9px; padding: 12px 9px; text-align: left; border-color: transparent; background: transparent; margin-bottom: 6px; font-size: 12px; }
-.rule-workbench-nav > button[aria-pressed="true"] { background: var(--green-soft); color: var(--green-deep); border-color: var(--green); }
+.rule-nav-sticky > button { display: flex; align-items: flex-start; justify-content: flex-start; width: 100%; gap: 9px; padding: 12px 9px; text-align: left; border-color: transparent; background: transparent; margin-bottom: 6px; font-size: 12px; }
+.rule-nav-sticky > button[aria-pressed="true"] { background: var(--green-soft); color: var(--green-deep); border-color: var(--green); }
 .rule-workbench-nav button small { display: block; margin-top: 5px; font-size: 10px; font-weight: 400; color: var(--muted); }
 .rule-workbench-nav .app-icon { flex-shrink: 0; width: 16px; height: 16px; }
 .rule-order-note { display: flex; gap: 7px; padding: 12px 8px; color: var(--muted); font-size: 11px; line-height: 1.7; }
@@ -424,7 +424,7 @@ button.remove-selection:hover:not(:disabled) { color: var(--danger); background:
   .rule-workbench-header > .form-field { width: 100%; }
   .rule-workbench-body { grid-template-columns: minmax(0, 1fr); }
   .rule-workbench-nav { display: flex; padding: 10px; gap: 8px; border-right: 0; border-bottom: 1px solid var(--line); }
-  .rule-workbench-nav > button { margin: 0; flex: 1; }
+  .rule-nav-sticky > button { margin: 0; flex: 1; }
   .rule-order-note { display: none; }
   .rule-workbench-content { padding: 14px; }
   .rule-list-toolbar { flex-wrap: wrap; gap: 8px; }

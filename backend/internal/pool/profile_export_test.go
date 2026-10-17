@@ -99,7 +99,7 @@ func TestDefaultProfileCompleteRulesDNSAndReservedNames(t *testing.T) {
 	if _, ok := doc["dns"]; ok {
 		t.Fatal("disabled DNS emitted")
 	}
-	if !reflect.DeepEqual(doc["rules"], []any{"MATCH,NodePool"}) {
+	if !reflect.DeepEqual(doc["rules"], []any{"MATCH," + SubscriptionDisplayName}) {
 		t.Fatal("empty rules missing fallback")
 	}
 	p.DNSEnabled = true
@@ -165,7 +165,7 @@ rules:
 	if e != nil {
 		t.Fatal(e)
 	}
-	if !reflect.DeepEqual(profileDoc(t, raw)["rules"], []any{"MATCH,NodePool"}) {
+	if !reflect.DeepEqual(profileDoc(t, raw)["rules"], []any{"MATCH," + SubscriptionDisplayName}) {
 		t.Fatal("source fallback missing")
 	}
 }

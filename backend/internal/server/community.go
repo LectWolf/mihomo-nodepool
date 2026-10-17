@@ -30,6 +30,26 @@ func registerCommunity(business businessRegistrar, s *pool.Store) {
 		}
 		return err
 	})
+	business("POST /api/v1/subscriptions/archives/{id}/restore", func(w http.ResponseWriter, r *http.Request) error {
+		id, err := idOf(r)
+		if err != nil {
+			return err
+		}
+		var in struct {
+			SubscriptionID int64 `json:"subscription_id"`
+		}
+		if err = decode(w, r, &in); err != nil {
+			return err
+		}
+		if in.SubscriptionID < 0 {
+			return pool.ErrNotFound
+		}
+		v, err := s.RestoreSubscriptionArchive(r.Context(), id, in.SubscriptionID)
+		if err == nil {
+			writeJSON(w, 200, v)
+		}
+		return err
+	})
 	business("POST /api/v1/me/checkin", func(w http.ResponseWriter, r *http.Request) error {
 		var in struct {
 			ConfirmPartial bool `json:"confirm_partial"`
@@ -40,6 +60,28 @@ func registerCommunity(business businessRegistrar, s *pool.Store) {
 		v, err := s.CheckIn(r.Context(), in.ConfirmPartial)
 		if err == nil {
 			writeJSON(w, 200, v)
+		}
+		return err
+	})
+	business("GET /api/v1/titles", func(w http.ResponseWriter, r *http.Request) error {
+		v, err := s.Settings(r.Context())
+		if err == nil {
+			items := make([]map[string]string, 0, len(v.Community.Titles))
+			for _, t := range v.Community.Titles {
+				items = append(items, map[string]string{"name": t.Name, "color": t.Color})
+			}
+			writeJSON(w, 200, map[string]any{"items": items})
+		}
+		return err
+	})
+	business("GET /api/v1/me/provider-trend", func(w http.ResponseWriter, r *http.Request) error {
+		days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+		if days < 7 || days > 30 {
+			days = 30
+		}
+		v, err := s.ProviderTrend(r.Context(), pool.CurrentUser(r.Context()).ID, days)
+		if err == nil {
+			writeJSON(w, 200, map[string]any{"days": v})
 		}
 		return err
 	})
@@ -195,8 +237,16 @@ func attachKeepalive(raw []byte, format string, u pool.User, origin string) ([]b
 	return yaml.Marshal(doc)
 }
 
+// setProfileName gives clients a fixed profile name instead of the URL token.
+// filename* 供 Clash 系客户端识别中文名，Profile-Title 供 Mihomo Party、Hiddify 等使用
+func setProfileName(w http.ResponseWriter) {
+	name := pool.SubscriptionDisplayName
+	w.Header().Set("Content-Disposition", `attachment; filename="MCII"; filename*=UTF-8''`+url.PathEscape(name))
+	w.Header().Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(name)))
+}
+
 func registerSourceLink(mux *http.ServeMux, s *pool.Store) {
-	mux.HandleFunc("GET /link/{token}", func(w http.ResponseWriter, r *http.Request) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store, private, max-age=0")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Vary", "User-Agent")
@@ -216,6 +266,7 @@ func registerSourceLink(mux *http.ServeMux, s *pool.Store) {
 			writeError(w, err)
 			return
 		}
+		setProfileName(w)
 		w.Header().Set("X-Subscription-Skipped", strconv.Itoa(skipped))
 		w.Header().Set("X-Subscription-Routing-Skipped", strconv.Itoa(routing))
 		w.Header().Set("X-Subscription-Format", format)
@@ -244,7 +295,11 @@ func registerSourceLink(mux *http.ServeMux, s *pool.Store) {
 		}
 		w.WriteHeader(200)
 		_, _ = w.Write(raw)
-	})
+	}
+	// /l/ 与 /give/ 为旧版直链路径
+	for _, prefix := range []string{"/link/", "/l/", "/give/"} {
+		mux.HandleFunc("GET "+prefix+"{token}", handler)
+	}
 }
 
 // This implements only a VLESS/WS request to the fixed HTTP 204 target. It never

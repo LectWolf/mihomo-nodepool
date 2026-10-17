@@ -38,12 +38,12 @@ func testStore(t *testing.T) *pool.Store {
 	if e = store.Ensure(context.Background()); e != nil {
 		t.Fatal(e)
 	}
-	for _, q := range []string{`DELETE FROM np_subscriptions`, `DELETE FROM np_subscription_archives`, `DELETE FROM np_source_events`, `DELETE FROM np_source_nodes`, `DELETE FROM np_sources`, `DELETE FROM np_nodes`} {
+	for _, q := range []string{`DELETE FROM np_sessions`, `DELETE FROM np_source_hourly`, `DELETE FROM np_feedback`, `DELETE FROM np_node_exposures`, `DELETE FROM np_source_exposures`, `DELETE FROM np_ledger`, `DELETE FROM np_quota_boosts`, `DELETE FROM np_daily_jobs`, `DELETE FROM np_pull_stats`, `UPDATE np_users SET risk_frozen_until=NULL,title=''`, `DELETE FROM np_subscriptions`, `DELETE FROM np_subscription_archives`, `DELETE FROM np_source_events`, `DELETE FROM np_source_nodes`, `DELETE FROM np_sources`, `DELETE FROM np_nodes`} {
 		if _, e = db.Exec(q); e != nil {
 			t.Fatal(e)
 		}
 	}
-	if e = store.SaveSettings(context.Background(), pool.Defaults()); e != nil {
+	if e = store.SaveSettings(context.Background(), testDefaults()); e != nil {
 		t.Fatal(e)
 	}
 	return store
@@ -147,7 +147,7 @@ func TestMySQLImportDedupExclusionAndRecovery(t *testing.T) {
 	if _, e = s.ClaimNode(ctx); e != nil {
 		t.Fatal("expired lease not recovered")
 	}
-	settings := pool.Defaults()
+	settings := testDefaults()
 	settings.ExcludePattern = ".*"
 	if e = s.SaveSettings(ctx, settings); e != nil {
 		t.Fatal(e)
@@ -202,4 +202,16 @@ func TestMySQLCapacityPagination(t *testing.T) {
 		t.Fatalf("capacity lost rows: total %d items %d", page.Total, len(page.Items))
 	}
 	t.Logf("500 sources / 10000 nodes: import=%s page_query=%s", queryStart.Sub(start), time.Since(queryStart))
+}
+
+// testDefaults 让旧测试只按账号额度判断，经济奖励和风控由专门测试开启
+func testDefaults() pool.Settings {
+	v := pool.Defaults()
+	for i := range v.Community.LevelQuotas {
+		v.Community.LevelQuotas[i] = pool.LevelQuota{Nodes: 1, Sources: 1, Subscriptions: 1}
+	}
+	v.Community.AchievementXP = 0
+	v.Community.ProbeXP = 0
+	v.Community.RiskEnabled = false
+	return v
 }

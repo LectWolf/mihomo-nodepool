@@ -23,6 +23,8 @@
 .insight-tag, .usage-hint { display: inline-block; max-width: 100%; padding: 2px 5px; background: var(--surface-subtle); color: var(--muted); border: 1px solid var(--line); border-radius: 4px; font-size: 10px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 .insight-tag { max-width: 190px; }
 .insight-risk { color: var(--danger); }
+.insight-tag.insight-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 3px; flex: 0 0 auto; }
+.insight-icon .app-icon { width: 15px; height: 15px; }
 .insight-warnings { padding-left: 18px; font-size: 12px; }
 .insight-warnings li { margin-bottom: 7px; }
 .node-insights-detail, .usage-detail { margin-top: 16px; }
