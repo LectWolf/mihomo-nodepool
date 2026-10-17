@@ -1,5 +1,63 @@
 # 验证记录
 
+## 2026-10-17 旧站迁移、跟随整个来源、链式代理与 32 位令牌
+
+- 隔离 MariaDB 全量 `go test ./... -count=1 -p 1`、`go vet`、gofmt 通过。新增：`TestParseResolvesDialerProxy`（前置为节点／代理组／DIRECT／缺失／循环）、`TestParseCoercesBoolsPortsAndControlChars`、`TestExportExpandsHiddenDialers`（隐藏前置去重、不进策略组、v2ray 跳过）、`TestProbeTraversesEmbeddedDialer`（真实 Mihomo 经两级 HTTP CONNECT 代理检测）、`TestMySQLFollowSourceSyncsWithoutNodeQuota`（不计节点额度、来源额度、上游增减同步、踢出存档与恢复、停用后不输出）、`TestMySQLFollowSourceRisk`（每日新增、窗口上限、重复跟随不算新增、风控摘要与重置）、`TestMySQLProviderSourceCap`、`TestMySQLLegacyImport`（夹具旧库：试运行不写入、错误密钥拒绝、清空现有数据、管理员 id=1、用户管理员、按 ID 生成用户名、密码不迁移、重复绑定保留最近一次、流水、来源解密与重新加密、草稿／下架停用、无地址来源转本地文件、旧令牌导出含链式节点、`clash_wrap=0` 导出纯节点、席位事件、关注、登录设置加密保存），服务端用例覆盖 32 位令牌与 `/l/`、`/give/` 直链。
+- 用真实旧库副本（accounts 6033 用户、proxy 492 个未删除来源）在隔离库执行：试运行约 7 秒；正式导入约 1 分钟，结果为用户 6033（管理员 1、用户管理员 2、停用 2、生成用户名 401）、第三方绑定 5797、流水 55700 条（另 313 条零经验成就标记，经验与积分合计与旧库一致）、来源 492（启用 266）、节点 32133（去重后）、订阅与席位 1055、席位事件 23200、关注 799。抽查旧令牌：3565 个节点的跟随订阅完整导出（超出 200 节点额度），链式来源 156 个节点导出；下次拉取时间分散在 6 小时内排队。
+- `vue-tsc`、`vite build`、`scripts/browser-smoke.mjs` 通过；模拟数据截图检查跟随来源的订阅卡片与详情（深浅色）。
+- `e2e/smoke.mjs` 按当前界面更新（访客首页登录弹窗、保持登录确认、账号菜单退出、跟随整个来源、32 位令牌、多国组合组、账号页分区等）并在隔离 MariaDB 上通过；失败时保存 `failure.png` 与页面文字。Go 集成测试另在 MySQL 8.4.7 上通过。
+- 待补：生产库上执行迁移（需停机）、真实上游首次拉取结果、头像下载（`-avatars` 需要访问 GitHub／LINUX DO CDN）。
+
+## 2026-10-17 HTML 邮件、来源下架、用户详情与公开统计
+
+- 隔离 MariaDB 全量 `go test ./... -count=1 -p 1`、`go vet`、gofmt 通过；新增 `TestMySQLSourceTakedownAndUserDetail` 覆盖：管理员代设／清空／重复邮箱与按邮箱搜索；普通用户不能下架、用户管理员不能下架管理员来源、原因校验；下架后来源停用并离开目录、提供方可见原因、提供方与管理员都不能 PATCH 启用；管理列表的权限范围与已下架计数；处理记录权限；下架与恢复邮件为 HTML；恢复后可正常停用／启用；用户详情统计与第三方解绑（含权限与 404）；访客可读运行统计且隐藏进程信息。验证码测试改为校验 HTML 邮件与主题。
+- `vue-tsc`、`vite build`、`scripts/browser-smoke.mjs` 通过（新增邮箱后缀推荐与选择）。
+- 模拟数据截图检查：邮箱后缀标签输入、注册邮箱推荐、用户列表邮箱与详情弹窗、编辑邮箱、来源管理与下架弹窗、共享来源下架提示、普通用户与访客的运行统计、“只看可选”对齐；三类 HTML 邮件在 620px 宽度下渲染。
+- 待补：真实邮箱客户端（QQ 邮箱、Gmail、Outlook）里的 HTML 渲染，与真实 SMTP 发信。
+
+## 2026-10-17 邮箱与第三方登录、节点可用性、按来源浏览
+
+- 隔离 MariaDB 的全量 `go test ./... -count=1 -p 1`、`go vet ./...`、gofmt 通过；新增用例覆盖：SMTP／OAuth 密钥不回显且留空沿用、测试邮件、邮箱后缀与冷却、注册验证码与用户名规则、邮箱密码登录、验证码登录、找回密码撤销会话、旧账号补齐邮箱前写操作被拦截、换绑占用检查、GitHub 首次登录建号／再次登录／绑定他人账号失败／绑定解绑／伪造 state；节点不可选原因（席位已满、等级不足、提供方本人）、不可选排在最后、`available=1`、推荐排序与新上架标记、来源目录健康概况与可用性；不限人数来源不占来源额度；趋势 `sampled`；GIF 头像转静态首帧。
+- `vue-tsc`、`vite build` 通过；`scripts/browser-smoke.mjs` 通过（新增登录方式入口、按来源视图与“查看节点”跳转）。
+- 模拟数据下 1440px／375px 深浅色截图检查：登录与注册（邮箱验证码、第三方按钮）、补齐邮箱弹窗、我的账号三分区与资料安全页、运行设置“登录与邮件”、节点不可选标签与新上架来源、按来源视图、本地文件拖放区、提供方页标题。
+- 待补：真实 SMTP 发信、GitHub／LINUX DO 真实 OAuth 应用回调、用户本机 `node scripts/build.mjs` 与真实 Edge＋应用＋隔离库 E2E。
+
+## 2026-10-17 访客浏览、注册、国家分组与历史组合恢复
+
+- 隔离 MariaDB 的全量 `go test ./... -count=1 -p 1`、`go vet ./...`、gofmt 通过；新增用例覆盖访客只读白名单与 401、注册限频／重名／关闭／维护、用户筛选（角色／状态／风控／额度）、拉取风控默认 120、订阅下载文件名、历史组合恢复与每人 10 份、规则组合 10 份上限、自动国家分组与成员顺序、编辑来源未改地址不刷新、孤立节点 7 天清理、访客遮蔽服务器地址。
+- `npm run typecheck`、`vite build` 通过；`scripts/browser-smoke.mjs` 通过（新增登录后新手引导跳过与记忆、版本时间线、手机筛选折叠）。
+- 模拟数据下 1440px／768px／375px 深浅色截图检查：订阅链接卡片与二维码弹窗、历史组合恢复、席位记录、版本弹窗与侧栏版本标识、用户筛选、规则策略组说明、整来源进度条、弹窗上方的提示、引导教程、访客模式与登录注册、手机底部导航与“更多”、平板图标侧栏。
+- 本机 Windows：gofmt、`go vet ./...`、`go test ./... -count=1`（未设 `MYSQL_TEST_DSN`，数据库用例跳过）、`npm run typecheck`、`git diff --check` 通过。
+- 待补：用户本机 `node scripts/build.mjs` 与真实 Edge＋应用＋隔离库 E2E。
+
+## 2026-10-17 角色、维护模式、持久登录与流量趋势
+
+- 隔离 MariaDB 的全量 `go test ./... -count=1 -p 1`、`go vet ./...`、gofmt 通过；新增用例覆盖用户管理员权限边界、角色校验、额度 0 跟随等级、维护模式 503 与放行路径、“保持登录”30 天 Cookie 与重启后从数据库恢复会话、反馈确认奖励只发一次、整点快照的流量差值（含套餐重置）与提供方趋势隔离。
+- 节点检测改为持续工作池，出口地区查询名额已满时先保存延迟结果；从未成功的节点首次失败即标记不可用。
+- `npm run typecheck`、`vite build` 通过；`scripts/browser-smoke.mjs` 通过（179 次 API 请求，新增“保持登录状态”确认与账号菜单退出）。
+- 模拟数据下 1440px 深浅色与 375px 截图检查：用户管理、编辑用户、账号菜单、我的订阅与按提供方分组的节点、运行统计流量柱状图、共享趋势、维护模式横幅与设置、称号颜色、规则编辑器固定导航、保持登录确认。
+- 本机 Windows：gofmt、`go vet ./...`、`go test ./... -count=1`（未设 `MYSQL_TEST_DSN`，数据库用例跳过）、`npm run typecheck`、`git diff --check` 通过。
+- 待补：用户本机 `node scripts/build.mjs` 与真实 Edge＋应用＋隔离库 E2E。
+
+## 2026-10-17 积分、风控、反馈与数据加密
+
+- 隔离 MariaDB 的全量 `go test ./... -count=1 -p 1`、`go vet ./...`、gofmt 通过，新增加密迁移／错误密钥拒绝、积分兑换与扣费、共享结算、风控窗口与拉取限频、反馈权限、头像接口用例。
+- `npm run typecheck`、`vite build` 通过；Linux Chromium 跑 `scripts/browser-smoke.mjs` 全部通过（159 次 API 请求，无未捕获异常与外部请求）。
+- 模拟数据下 1440px 深浅色与 375px 截图检查来源卡片、节点详情、我的账号、运行设置、用户管理、提供方与推荐客户端。
+- 待补：用户本机 `node scripts/build.mjs` 与真实 Edge＋应用＋隔离库 E2E。
+
+## 2026-10-16 运行统计、构建标识与页码
+
+- 隔离 MariaDB 的全量 `go test ./... -count=1` 通过，含统计单元／集成测试及 `/api/v1/statistics` 普通用户 403 回归。
+- `npm run typecheck --prefix frontend`、`node scripts/build.mjs`（构建标识为基线提交加 `-dirty`）、`git diff --check` 通过；`scripts/start.ps1` BOM 仍为 `EF-BB-BF`。
+- Edge 控制台契约回归 19 组、154 次 API 请求通过，无未捕获异常或外部资源请求；覆盖图标提示、1／8／59 页窗口与跳转、统计路由、执行／排队、`null` 用量、自动采样和 320px 布局。分页独立检查覆盖末页、禁用、`aria-current`、不提交表单，筛选同一行在 1440–1024px 保持一行、900–375px 换行无溢出。
+- 集中审查确认统计队列 SQL 与 `ClaimSource`／`ClaimNode` 一致；修正运行计数采样顺序（失败数先于次数读取，避免成功次数为负）、分页组件 `label` 属性，图标样式移回 `community.css`。
+- 修正后 `go vet ./...`、gofmt、`go test ./... -count=1`（未设 `MYSQL_TEST_DSN`，数据库用例跳过）、`npm run typecheck --prefix frontend`、`git diff --check` 通过。
+- 统计页视觉调整（概览色块图标、节点健康分段条、任务状态点、套餐剩余进度条、运行成功率条）后，模拟数据下的 1440px 深浅色与 390／320px 截图检查无横向溢出，类型检查通过。
+- 全局视觉层 `frontend/src/design.css`（色调变量、侧栏激活指示、半透明吸顶顶栏、卡片层次、节点状态色边与延迟分级、来源状态色边、等级与登录页细节）上线后，Linux Chromium 跑 `scripts/browser-smoke.mjs` 19 组、155 次 API 请求通过；模拟数据下 9 个页面在 1440／1024／375／320px 及深浅色截图检查无横向溢出。测试脚本 `text()` 改为允许页面重载瞬间 `document.body` 为空。
+- 订阅名称与玩法说明：Clash 导出主组显示为「MCII节点共享」（主组、组引用、规则目标、同名节点避让、普通导出），`/sub/` 与 `/link/` 增加 `Content-Disposition`／`Profile-Title`；新增 `TestExportShowsMainGroupDisplayName`、`TestRuleGroupsRejectDisplayName`、`TestSetProfileName`，更新旧兜底断言。本地 gofmt、`go vet ./...`、`go test ./... -count=1`（无数据库）、类型检查、`git diff --check` 通过；Linux Chromium 契约回归 19 组／155 次请求通过；共享来源、我的订阅、策略组放弃确认在 1440／375／320px 深浅色截图检查无溢出。
+- 待补：修正后的 `node scripts/build.mjs` 与真实 Edge＋应用＋隔离库 E2E。完成后在此更新结果。
+
 ## 2026-10-16 社区席位、策略组与节点披露
 
 - 隔离 MariaDB 11.4.5 的全量 `go test ./... -count=1` 通过，覆盖签到幂等与7日奖励、等级门槛、14天租期、到期释放、过期保活拒绝、探测跨到期锁、部分激活预览／确认、来源踢出禁领／解除、整源直链与轮换、套餐元数据、静态风险与URI兼容、组合历史快照和30天可调清理。

@@ -12,6 +12,11 @@ import (
 
 // Open returns nil when MySQL is not configured. Network checks use PingContext.
 func Open(cfg config.MySQL) (*sql.DB, error) {
+	return OpenTimeout(cfg, 5*time.Second)
+}
+
+// OpenTimeout 供迁移等长时间批量操作使用更长的读写超时
+func OpenTimeout(cfg config.MySQL, io time.Duration) (*sql.DB, error) {
 	if !cfg.Configured() {
 		return nil, nil
 	}
@@ -24,8 +29,8 @@ func Open(cfg config.MySQL) (*sql.DB, error) {
 	driverConfig.ParseTime = true
 	driverConfig.Loc = time.UTC
 	driverConfig.Timeout = 5 * time.Second
-	driverConfig.ReadTimeout = 5 * time.Second
-	driverConfig.WriteTimeout = 5 * time.Second
+	driverConfig.ReadTimeout = io
+	driverConfig.WriteTimeout = io
 	if cfg.TLS {
 		driverConfig.TLSConfig = "true"
 	}

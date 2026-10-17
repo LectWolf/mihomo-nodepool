@@ -12,13 +12,14 @@ import (
 )
 
 type Service struct {
-	Store  *Store
-	Prober Prober
-	Client *http.Client
+	Store   *Store
+	Prober  Prober
+	Client  *http.Client
+	metrics serviceMetrics
 }
 
 func NewService(store *Store, prober Prober) *Service {
-	return &Service{Store: store, Prober: prober, Client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+	return &Service{Store: store, Prober: prober, metrics: serviceMetrics{startedAt: utcNow()}, Client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("重定向次数过多")
 		}
@@ -39,6 +40,12 @@ func (s *Service) Run(ctx context.Context) {
 			if s.ready(ctx) {
 				if err := s.Store.SweepCommunity(ctx); err != nil {
 					log.Print("订阅席位维护失败，将自动重试")
+				}
+				if err := s.Store.AwardDaily(ctx); err != nil {
+					log.Print("每日共享奖励发放失败，将自动重试")
+				}
+				if err := s.hourly(ctx); err != nil {
+					log.Print("每小时流量快照失败，将在下个整点重试")
 				}
 			}
 			if !wait(ctx, time.Minute) {
@@ -98,10 +105,12 @@ func (s *Service) sourceLoop(ctx context.Context) {
 	}
 }
 func (s *Service) Refresh(parent context.Context, src Source) {
+	s.metrics.sourceRuns.Add(1)
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	body := src.Content
 	fail := func(message string) {
+		s.metrics.sourceErrors.Add(1)
 		c, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
 		if e := s.Store.FailSource(c, src, message); e != nil {
@@ -123,6 +132,7 @@ func (s *Service) Refresh(parent context.Context, src Source) {
 		}
 		b, e := io.ReadAll(io.LimitReader(resp.Body, (16<<20)+1))
 		resp.Body.Close()
+		s.metrics.sourceBytes.Add(int64(len(b)))
 		if e != nil || resp.StatusCode != http.StatusOK || len(b) > 16<<20 {
 			fail("订阅返回异常或超过 16 MiB，保留上次节点")
 			return
@@ -143,59 +153,72 @@ func (s *Service) Refresh(parent context.Context, src Source) {
 		fail("节点保存失败，保留上次节点")
 	}
 }
+
+// nodeLoop 维持持续的检测工作池：任一节点完成即领取下一个，不再整批等待最慢节点
 func (s *Service) nodeLoop(ctx context.Context) {
+	done := make(chan struct{}, 64) // 并发上限为 64，缓冲足够，退出时不会阻塞
+	active := 0
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	for ctx.Err() == nil {
-		if !s.ready(ctx) {
-			if !wait(ctx, 5*time.Second) {
-				return
+		idle := 5 * time.Second
+		if s.ready(ctx) {
+			if settings, e := s.Store.Settings(ctx); e == nil {
+				idle = 2 * time.Second
+				for active < settings.ProbeConcurrency {
+					n, e := s.Store.ClaimNode(ctx)
+					if e != nil {
+						if !errors.Is(e, sql.ErrNoRows) && ctx.Err() == nil {
+							log.Print("节点任务领取失败，将自动重试")
+						}
+						break
+					}
+					active++
+					wg.Add(1)
+					go func(n Node) {
+						defer wg.Done()
+						s.probeOne(ctx, n, settings)
+						done <- struct{}{}
+					}(n)
+				}
 			}
-			continue
 		}
-		settings, e := s.Store.Settings(ctx)
-		if e != nil {
-			if !wait(ctx, 5*time.Second) {
-				return
+		timer := time.NewTimer(idle)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+		case <-done:
+			timer.Stop()
+			active--
+		drain:
+			for {
+				select {
+				case <-done:
+					active--
+				default:
+					break drain
+				}
 			}
-			continue
+		case <-timer.C:
 		}
-		nodes := []Node{}
-		for i := 0; i < settings.ProbeConcurrency; i++ {
-			n, e := s.Store.ClaimNode(ctx)
-			if errors.Is(e, sql.ErrNoRows) {
-				break
-			}
-			if e != nil {
-				log.Print("节点任务领取失败，将自动重试")
-				break
-			}
-			nodes = append(nodes, n)
-		}
-		results := make([]ProbeResult, len(nodes))
-		var wg sync.WaitGroup
-		for i, n := range nodes {
-			wg.Add(1)
-			go func(i int, n Node) {
-				defer wg.Done()
-				jobCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-				defer cancel()
-				exit := needsExitLookup(n, time.Now())
-				results[i] = s.Prober.Probe(jobCtx, n, settings, exit)
-			}(i, n)
-		}
-		wg.Wait()
-		if ctx.Err() != nil {
-			return
-		}
-		for i, n := range nodes {
-			saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			if e := s.Store.SaveProbe(saveCtx, n, results[i]); e != nil {
-				log.Print("节点检测结果保存失败，将在租约过期后重试")
-			}
-			cancel()
-		}
-		if !wait(ctx, time.Second) {
-			return
-		}
+	}
+}
+
+func (s *Service) probeOne(ctx context.Context, n Node, settings Settings) {
+	jobCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	result := s.Prober.Probe(jobCtx, n, settings, needsExitLookup(n, time.Now()))
+	s.metrics.probeRuns.Add(1)
+	if result.LatencyMS == nil {
+		s.metrics.probeErrors.Add(1)
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	saveCtx, cancelSave := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelSave()
+	if e := s.Store.SaveProbe(saveCtx, n, result); e != nil {
+		log.Print("节点检测结果保存失败，将在租约过期后重试")
 	}
 }
 

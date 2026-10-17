@@ -27,7 +27,10 @@ cpSync(join(frontend, 'dist'), generated, { recursive: true })
 mkdirSync(join(root, 'build'), { recursive: true })
 
 const version = process.env.NODEPOOL_VERSION || 'dev'
-const commit = process.env.NODEPOOL_COMMIT || 'unknown'
+const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' })
+const changes = spawnSync('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: root, encoding: 'utf8' })
+const gitCommit = revision.status === 0 && /^[a-f0-9]{40,64}$/.test(revision.stdout.trim()) ? revision.stdout.trim() + (changes.status === 0 && changes.stdout.trim() ? '-dirty' : '') : 'unknown'
+const commit = process.env.NODEPOOL_COMMIT || gitCommit
 const builtAt = process.env.NODEPOOL_BUILD_TIME || new Date().toISOString()
 for (const value of [version, commit, builtAt]) {
   if (!/^[a-zA-Z0-9._:+-]+$/.test(value)) throw new Error('Invalid build metadata')

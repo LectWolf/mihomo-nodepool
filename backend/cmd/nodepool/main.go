@@ -45,7 +45,13 @@ func run() error {
 		if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
 			return healthcheck(cfg.HTTPAddr)
 		}
-		return fmt.Errorf("用法：nodepool [healthcheck]")
+		if os.Args[1] == "migrate-legacy" {
+			return migrateLegacy(cfg, os.Args[2:])
+		}
+		return fmt.Errorf("用法：nodepool [healthcheck | migrate-legacy]")
+	}
+	if e = pool.SetDataKey(cfg.DataKey); e != nil {
+		return e
 	}
 	if e = os.MkdirAll(cfg.DataDir, 0700); e != nil {
 		return fmt.Errorf("无法创建数据目录：%w", e)
@@ -73,7 +79,7 @@ func run() error {
 	defer stop()
 	workerDone := make(chan struct{})
 	go func() { defer close(workerDone); service.Run(ctx) }()
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: server.New(server.Options{Service: service, Auth: admin, Updates: updater}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second}
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: server.New(server.Options{Service: service, Auth: admin, Updates: updater, TrustedProxies: cfg.TrustedProxies}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second}
 	errorsCh := make(chan error, 1)
 	go func() { errorsCh <- srv.ListenAndServe() }()
 	log.Printf("Mihomo NodePool %s 正在监听 %s", buildinfo.Version, cfg.HTTPAddr)

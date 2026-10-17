@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -17,11 +19,16 @@ type businessRegistrar func(string, func(http.ResponseWriter, *http.Request) err
 func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manager) {
 	registerRuleProfiles(business, s)
 	registerCommunity(business, s)
+	registerEconomy(business, s)
 	business("GET /api/v1/me", func(w http.ResponseWriter, r *http.Request) error {
 		u := pool.CurrentUser(r.Context())
 		usage, e := s.Usage(r.Context(), u.ID)
+		if e != nil {
+			return e
+		}
+		limits, e := s.EffectiveLimits(r.Context(), u)
 		if e == nil {
-			writeJSON(w, 200, map[string]any{"user": u, "usage": usage, "provider_path": pool.ProviderPath(u.ID)})
+			writeJSON(w, 200, map[string]any{"user": u, "usage": usage, "limits": limits, "provider_path": pool.ProviderPath(u.ID)})
 		}
 		return e
 	})
@@ -42,11 +49,46 @@ func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manage
 	})
 	business("GET /api/v1/users", func(w http.ResponseWriter, r *http.Request) error {
 		f := catalogFilter(r)
-		v, e := s.Users(r.Context(), f.Q, f.Page, f.PageSize)
-		if e == nil {
-			writeJSON(w, 200, v)
+		q := r.URL.Query()
+		uf := pool.UserFilter{Q: f.Q, Role: q.Get("role"), Status: q.Get("status"), Quota: q.Get("quota")}
+		// 风控标记需要实时计算，先算出命中的用户再分页
+		if risk := q.Get("risk"); risk == "flagged" || risk == "frozen" || risk == "clean" {
+			all, e := s.UserIDs(r.Context(), uf)
+			if e != nil {
+				return e
+			}
+			summaries, e := s.RiskSummaries(r.Context(), all)
+			if e != nil {
+				return e
+			}
+			uf.IDs = []int64{}
+			for _, id := range all {
+				flags := summaries[id].Flags
+				if (risk == "flagged" && len(flags) > 0) || (risk == "frozen" && slices.Contains(flags, "frozen")) || (risk == "clean" && len(flags) == 0) {
+					uf.IDs = append(uf.IDs, id)
+				}
+			}
 		}
-		return e
+		v, e := s.Users(r.Context(), uf, f.Page, f.PageSize)
+		if e != nil {
+			return e
+		}
+		items, _ := v["items"].([]pool.User)
+		ids := []int64{}
+		limits := map[int64]pool.EffectiveLimits{}
+		for _, u := range items {
+			ids = append(ids, u.ID)
+			if limits[u.ID], e = s.EffectiveLimits(r.Context(), u); e != nil {
+				return e
+			}
+		}
+		risks, e := s.RiskSummaries(r.Context(), ids)
+		if e != nil {
+			return e
+		}
+		v["limits"], v["risk"] = limits, risks
+		writeJSON(w, 200, v)
+		return nil
 	})
 	business("POST /api/v1/users", func(w http.ResponseWriter, r *http.Request) error {
 		var in pool.UserInput
@@ -191,9 +233,9 @@ func catalogFilter(r *http.Request) pool.CatalogFilter {
 	page, _ := strconv.Atoi(q.Get("page"))
 	size, _ := strconv.Atoi(q.Get("page_size"))
 	provider, _ := strconv.ParseInt(q.Get("provider_id"), 10, 64)
-	return pool.CatalogFilter{Q: q.Get("q"), ProviderID: provider, Following: q.Get("following") == "1", Page: page, PageSize: size}
+	return pool.CatalogFilter{Q: q.Get("q"), ProviderID: provider, Following: q.Get("following") == "1", Sort: q.Get("sort"), Available: q.Get("available") == "1", Page: page, PageSize: size}
 }
-func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store) {
+func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*net.IPNet) {
 	mux.HandleFunc("GET /sub/{token}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store, private, max-age=0")
 		w.Header().Set("Vary", "User-Agent")
@@ -201,6 +243,11 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		if e := s.Ensure(ctx); e != nil {
+			writeError(w, e)
+			return
+		}
+		if e := s.RecordPull(ctx, r.PathValue("token"), clientIP(r, trusted)); errors.Is(e, pool.ErrRateLimited) {
+			w.Header().Set("Retry-After", "600")
 			writeError(w, e)
 			return
 		}
@@ -221,6 +268,7 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store) {
 			return
 		}
 		origin := publicOrigin(r, settings)
+		setProfileName(w)
 		w.Header().Set("Profile-Web-Page-Url", origin+"/subscriptions")
 		if user.SubscriptionExpiresAt != nil {
 			w.Header().Set("Subscription-Userinfo", "expire="+strconv.FormatInt(user.SubscriptionExpiresAt.Unix(), 10))
@@ -242,15 +290,12 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store) {
 			writeError(w, e)
 			return
 		}
-		filename := "subscription.yaml"
 		contentType := "application/yaml; charset=utf-8"
 		if format == "v2ray" {
-			filename = "subscription.txt"
 			contentType = "text/plain; charset=utf-8"
 			w.Header().Set("X-Subscription-Compatibility", "v2ray-compatible URI import only")
 		}
 		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Content-Disposition", `inline; filename="`+filename+`"`)
 		w.WriteHeader(200)
 		_, _ = w.Write(raw)
 	})

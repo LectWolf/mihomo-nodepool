@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { toastRef } from '../toast'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { currentUser, loadProfile } from '../api/accounts'
 import { errorText, formatDate, isCancelled, json, useApi } from '../api/system'
@@ -13,7 +14,7 @@ const api = useApi()
 const scope = useAccountScope(() => !!props.paused)
 const busy = ref(false)
 const error = ref('')
-const message = ref('')
+const message = toastRef()
 const pending = ref<CheckinResult | null>(null)
 const now = ref(Date.now())
 const timer = setInterval(() => { now.value = Date.now() }, 60000)
@@ -57,7 +58,7 @@ async function checkin(confirmPartial = false) {
     <div class="lease-status"><span :class="active ? 'green-text' : 'danger-text'">{{ active ? `订阅有效至 ${formatDate(user.subscription_expires_at)}` : '订阅待激活或已到期，请在网页签到激活' }}</span><small class="muted">北京时间每日 +5 XP / +2 积分，每连续 7 天额外 +20 XP / +8 积分</small></div>
     <p class="small muted">默认租期 14 天（以站点设置为准）。到期拉取会提示回网页激活；有效探测可续期，浏览页面和普通下载不会续期。今日已签到仍可点击激活。</p>
     <details class="level-thresholds"><summary class="small">等级门槛</summary><div class="level-steps"><div v-for="(name, index) in levelNames" :key="index" :class="{ reached: user.level >= index }"><strong>Lv{{ index }} {{ name }}</strong><small>{{ levelThresholds[index].toLocaleString() }} XP</small></div></div></details>
-    <p v-if="message" class="notice success small" role="status">{{ message }}</p>
+
     <p v-if="error && !pending" class="notice error small" role="alert">{{ error }}</p>
     <Modal v-if="pending && !paused" title="确认部分激活" :busy="busy" @close="pending = null">
       <p>以下来源当前无法激活。本次尚未提交签到，是否从你的所有组合中移除这些来源，再激活其余来源？</p>

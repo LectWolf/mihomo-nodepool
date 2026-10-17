@@ -19,10 +19,11 @@ func newProbeUUID() (string, error) {
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
-func updateSubscriptionSelection(ctx context.Context, tx *sql.Tx, id int64, nodes []Selection, sources []int64) error {
+func updateSubscriptionSelection(ctx context.Context, tx *sql.Tx, id int64, nodes []Selection, sources, follows []int64) error {
 	raw, _ := json.Marshal(nodes)
 	src, _ := json.Marshal(sources)
-	_, err := tx.ExecContext(ctx, `UPDATE np_subscriptions SET nodes=?,source_ids=?,updated_at=? WHERE id=?`, raw, src, utcNow(), id)
+	fol, _ := json.Marshal(follows)
+	_, err := tx.ExecContext(ctx, `UPDATE np_subscriptions SET nodes=?,source_ids=?,follow_ids=?,updated_at=? WHERE id=?`, raw, src, fol, utcNow(), id)
 	return err
 }
 
@@ -30,6 +31,8 @@ type SourceSubscriber struct {
 	UserID            int64      `json:"user_id"`
 	Username          string     `json:"username"`
 	DisplayName       string     `json:"display_name"`
+	AvatarVersion     int        `json:"avatar_version"`
+	Title             string     `json:"title"`
 	Level             int        `json:"level"`
 	XP                int64      `json:"xp"`
 	Enabled           bool       `json:"enabled"`
@@ -64,14 +67,14 @@ func (s *Store) SourceSubscribers(ctx context.Context, id int64, state string, p
 	if err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_source_seats st WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, err
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT st.user_id,u.username,u.display_name,u.xp,u.enabled,st.state,st.claimed_at,st.expires_at,st.last_pull_at,st.last_renewed_at,st.renew_method,st.ended_at FROM np_source_seats st JOIN np_users u ON u.id=st.user_id WHERE `+where+` ORDER BY st.claimed_at DESC,st.user_id LIMIT ? OFFSET ?`, append(args, size, (page-1)*size)...)
+	rows, err := s.DB.QueryContext(ctx, `SELECT st.user_id,u.username,u.display_name,u.avatar_version,u.title,u.xp,u.enabled,st.state,st.claimed_at,st.expires_at,st.last_pull_at,st.last_renewed_at,st.renew_method,st.ended_at FROM np_source_seats st JOIN np_users u ON u.id=st.user_id WHERE `+where+` ORDER BY st.claimed_at DESC,st.user_id LIMIT ? OFFSET ?`, append(args, size, (page-1)*size)...)
 	if err != nil {
 		return nil, err
 	}
 	items := []SourceSubscriber{}
 	for rows.Next() {
 		var v SourceSubscriber
-		if err = rows.Scan(&v.UserID, &v.Username, &v.DisplayName, &v.XP, &v.Enabled, &v.State, &v.ClaimedAt, &v.ExpiresAt, &v.LastPullAt, &v.LastRenewedAt, &v.RenewMethod, &v.EndedAt); err != nil {
+		if err = rows.Scan(&v.UserID, &v.Username, &v.DisplayName, &v.AvatarVersion, &v.Title, &v.XP, &v.Enabled, &v.State, &v.ClaimedAt, &v.ExpiresAt, &v.LastPullAt, &v.LastRenewedAt, &v.RenewMethod, &v.EndedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -167,7 +170,7 @@ func (s *Store) RotateSourceLink(ctx context.Context, id int64) (string, error) 
 	return "/link/" + token, err
 }
 func (s *Store) ExportSourceLink(ctx context.Context, token, format string) ([]byte, int, int, *SubscriptionUsage, error) {
-	if len(token) != 64 {
+	if !validLinkToken(token) {
 		return nil, 0, 0, nil, ErrNotFound
 	}
 	src, err := scanSource(s.DB.QueryRowContext(ctx, `SELECT `+sourceColumns+` FROM np_sources WHERE share_token=? AND enabled=1 AND EXISTS(SELECT 1 FROM np_users u WHERE u.id=np_sources.owner_id AND u.enabled=1)`, token))

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -97,7 +98,7 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 	if e = json.Unmarshal(create.Body.Bytes(), &alice); e != nil {
 		t.Fatal(e)
 	}
-	if alice.Role != "user" || alice.NodeLimit != 200 || alice.SourceLimit != 3 || alice.SubscriptionLimit != 1 {
+	if alice.Role != "user" || alice.NodeLimit != 0 || alice.SourceLimit != 0 || alice.SubscriptionLimit != 0 {
 		t.Fatalf("default user contract: %+v", alice)
 	}
 	call("POST", "/api/v1/users", `{"username":"bob","password":"bob-password","display_name":"Bob"}`, admin, "", 201)
@@ -111,6 +112,13 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 	me := call("GET", "/api/v1/me", "", ac, "", 200)
 	if !strings.Contains(me.Body.String(), `"provider_path":"/nodes?provider_id=`) || !strings.Contains(me.Body.String(), `"subscriptions":0`) {
 		t.Fatal("me contract")
+	}
+	if pub := call("GET", "/api/v1/statistics", "", ac, "", 200).Body.String(); !strings.Contains(pub, `"heap_bytes":0`) {
+		t.Fatal("public statistics should hide process internals")
+	}
+	stats := call("GET", "/api/v1/statistics", "", admin, "", 200)
+	if !strings.Contains(stats.Body.String(), `"runtime"`) || !strings.Contains(stats.Body.String(), `"sampled_at"`) {
+		t.Fatal("statistics response contract")
 	}
 	for _, route := range []struct{ method, path string }{{"GET", "/api/v1/settings"}, {"PUT", "/api/v1/settings"}, {"GET", "/api/v1/users"}, {"POST", "/api/v1/users"}, {"PATCH", "/api/v1/users/1"}, {"POST", "/api/v1/nodes/test"}, {"GET", "/api/v1/releases"}, {"POST", "/api/v1/system/update"}, {"POST", "/api/v1/system/rollback"}, {"POST", "/api/v1/system/restart"}} {
 		call(route.method, route.path, `{}`, ac, "", 403)
@@ -250,6 +258,19 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 	call("PUT", profilePath, profileBody, bc, "", 404)
 	call("DELETE", profilePath, "", bc, "", 404)
 	call("POST", "/api/v1/rule-profiles", `{"name":"bad","rules":["MATCH,unsafe"]}`, ac, "", 400)
+	// 每人最多 10 份规则组合
+	extras := []int64{}
+	for i := 2; i <= pool.RuleProfileLimit; i++ {
+		var extra pool.RuleProfile
+		_ = json.Unmarshal(call("POST", "/api/v1/rule-profiles", fmt.Sprintf(`{"name":"extra %d","rules":["MATCH,NodePool"]}`, i), ac, "", 201).Body.Bytes(), &extra)
+		extras = append(extras, extra.ID)
+	}
+	if limited := call("POST", "/api/v1/rule-profiles", `{"name":"too many","rules":["MATCH,NodePool"]}`, ac, "", 400); !strings.Contains(limited.Body.String(), "最多保存 10 份") {
+		t.Fatalf("rule profile limit: %s", limited.Body.String())
+	}
+	for _, id := range extras {
+		call("DELETE", fmt.Sprintf("/api/v1/rule-profiles/%d", id), "", ac, "", 200)
+	}
 	foreignBind := fmt.Sprintf(`{"name":"foreign","source_ids":[%d],"rule_profile_id":%d}`, src.ID, profile.ID)
 	call("POST", "/api/v1/subscriptions", foreignBind, bc, "", 404)
 	bindBody := fmt.Sprintf(`{"name":"bound","source_ids":[%d],"rule_profile_id":%d}`, src.ID, profile.ID)
@@ -264,6 +285,33 @@ func TestMySQLMultiuserHTTPContractAndPermissions(t *testing.T) {
 		t.Fatal("legacy edit lost profile")
 	}
 	boundDownload := call("GET", saved.Subscription.URL+"?format=clash", "", nil, "", 200)
+	if cd := boundDownload.Header().Get("Content-Disposition"); !strings.Contains(cd, "filename*=UTF-8''"+url.PathEscape(pool.SubscriptionDisplayName)) || strings.Contains(cd, "subscription.yaml") {
+		t.Fatalf("profile filename: %s", cd)
+	}
+	// 历史组合可以恢复到原订阅
+	var archives struct {
+		Items []struct {
+			ID int64 `json:"id"`
+		} `json:"items"`
+	}
+	if e = json.Unmarshal(call("GET", "/api/v1/subscriptions/archives", "", ac, "", 200).Body.Bytes(), &archives); e != nil || len(archives.Items) == 0 {
+		t.Fatalf("archives: %v", e)
+	}
+	restored := call("POST", fmt.Sprintf("/api/v1/subscriptions/archives/%d/restore", archives.Items[0].ID), fmt.Sprintf(`{"subscription_id":%d}`, saved.Subscription.ID), ac, "", 200)
+	if !strings.Contains(restored.Body.String(), `"skipped":0`) {
+		t.Fatalf("restore: %s", restored.Body.String())
+	}
+	call("POST", fmt.Sprintf("/api/v1/subscriptions/archives/%d/restore", archives.Items[0].ID), `{}`, bc, "", 404)
+	call("PUT", path, subBody, ac, "", 200)
+	for i := 0; i < pool.SubscriptionArchiveKeep+2; i++ {
+		call("PUT", path, subBody, ac, "", 200)
+	}
+	var kept struct {
+		Total int `json:"total"`
+	}
+	if _ = json.Unmarshal(call("GET", "/api/v1/subscriptions/archives", "", ac, "", 200).Body.Bytes(), &kept); kept.Total != pool.SubscriptionArchiveKeep {
+		t.Fatalf("archives kept: %d", kept.Total)
+	}
 	if !strings.Contains(boundDownload.Body.String(), "223.5.5.5") || boundDownload.Header().Get("X-Subscription-Routing-Skipped") != "0" {
 		t.Fatal("bound profile export contract")
 	}

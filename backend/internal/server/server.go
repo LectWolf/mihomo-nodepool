@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/auth"
@@ -23,6 +25,8 @@ type Options struct {
 	Service *pool.Service
 	Auth    *auth.Manager
 	Updates Registrar
+	// 只信任这些代理传入的 X-Forwarded-For
+	TrustedProxies []*net.IPNet
 }
 type databaseStatus struct {
 	Configured bool `json:"configured"`
@@ -47,17 +51,24 @@ func New(o Options) http.Handler {
 	})
 	mux.HandleFunc("GET /api/v1/system", func(w http.ResponseWriter, r *http.Request) {
 		if pool.CurrentUser(r.Context()).Role != "admin" {
-			writeJSON(w, 200, map[string]any{"name": "Mihomo NodePool", "version": buildinfo.Version})
+			writeJSON(w, 200, map[string]any{"name": "MCII节点共享", "version": buildinfo.Version, "maintenance": pool.CurrentMaintenance()})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 		connected := store.Ensure(ctx) == nil
 		tasks := pool.Tasks{}
+		tasksError := ""
 		if connected {
-			tasks, _ = store.TaskStatus(ctx)
+			var err error
+			tasks, err = store.TaskStatus(ctx)
+			if err != nil {
+				tasksError = "任务状态暂时无法读取"
+			}
+		} else {
+			tasksError = "数据库暂不可用"
 		}
-		writeJSON(w, 200, map[string]any{"name": "Mihomo NodePool", "version": buildinfo.Version, "commit": buildinfo.Commit, "build_time": buildinfo.BuildTime, "database": databaseStatus{store.DB != nil, connected}, "core": map[string]string{"state": "ready", "version": o.Service.Prober.Version()}, "tasks": tasks})
+		writeJSON(w, 200, map[string]any{"name": "MCII节点共享", "version": buildinfo.Version, "commit": buildinfo.Commit, "build_time": buildinfo.BuildTime, "sampled_at": time.Now().UTC(), "database": databaseStatus{store.DB != nil, connected}, "core": map[string]string{"state": "ready", "version": o.Service.Prober.Version()}, "tasks": tasks, "tasks_error": tasksError, "data_encryption": pool.DataEncryptionEnabled(), "trusted_proxies": len(o.TrustedProxies), "maintenance": pool.CurrentMaintenance()})
 	})
 	business := func(pattern string, fn func(http.ResponseWriter, *http.Request) error) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +76,11 @@ func New(o Options) http.Handler {
 			defer cancel()
 			r = r.WithContext(ctx)
 			if e := store.Ensure(ctx); e != nil {
-				writeJSON(w, 503, map[string]string{"error": "MySQL 尚未配置、不可达或没有建表权限"})
+				message := "MySQL 尚未配置、不可达或没有建表权限"
+				if errors.Is(e, pool.ErrDataKey) {
+					message = e.Error()
+				}
+				writeJSON(w, 503, map[string]string{"error": message})
 				return
 			}
 			if e := fn(w, r); e != nil {
@@ -79,6 +94,32 @@ func New(o Options) http.Handler {
 			writeJSON(w, 200, map[string]any{"items": v})
 		}
 		return e
+	})
+	business("GET /api/v1/statistics", func(w http.ResponseWriter, r *http.Request) error {
+		admin := pool.CurrentUser(r.Context()).Role == "admin"
+		if !admin {
+			if body, ok := publicStats.get(); ok {
+				writeJSON(w, 200, body)
+				return nil
+			}
+		}
+		v, e := store.Statistics(r.Context())
+		if e != nil {
+			return e
+		}
+		rt := o.Service.RuntimeStatistics()
+		if !admin {
+			v, rt = v.Public(), rt.Public()
+		}
+		body := struct {
+			pool.Statistics
+			Runtime pool.RuntimeStatistics `json:"runtime"`
+		}{v, rt}
+		if !admin {
+			publicStats.set(body)
+		}
+		writeJSON(w, 200, body)
+		return nil
 	})
 	business("POST /api/v1/sources", func(w http.ResponseWriter, r *http.Request) error {
 		var in pool.SourceInput
@@ -150,7 +191,7 @@ func New(o Options) http.Handler {
 			}
 			minLevel = &v
 		}
-		v, e := store.Nodes(r.Context(), pool.Filter{Page: page, PageSize: size, Q: q.Get("q"), Type: q.Get("type"), Country: q.Get("country"), Countries: countries, ProviderID: provider, Following: q.Get("following") == "1", UserID: pool.CurrentUser(r.Context()).ID, Status: q.Get("status"), SourceID: source, Sort: q.Get("sort"), MaxLatency: max, MinLevel: minLevel})
+		v, e := store.Nodes(r.Context(), pool.Filter{Page: page, PageSize: size, Q: q.Get("q"), Type: q.Get("type"), Country: q.Get("country"), Countries: countries, ProviderID: provider, Following: q.Get("following") == "1", UserID: pool.CurrentUser(r.Context()).ID, Status: q.Get("status"), SourceID: source, Sort: q.Get("sort"), MaxLatency: max, MinLevel: minLevel, Available: q.Get("available") == "1"})
 		if e == nil {
 			writeJSON(w, 200, v)
 		}
@@ -195,6 +236,7 @@ func New(o Options) http.Handler {
 	business("GET /api/v1/settings", func(w http.ResponseWriter, r *http.Request) error {
 		v, e := store.Settings(r.Context())
 		if e == nil {
+			v.Login = v.Login.Masked()
 			writeJSON(w, 200, v)
 		}
 		return e
@@ -207,14 +249,22 @@ func New(o Options) http.Handler {
 		if e := store.SaveSettings(r.Context(), in); e != nil {
 			return e
 		}
-		in.RefreshHours, in.CheckHours = 6, 6
-		writeJSON(w, 200, in)
+		v, e := store.Settings(r.Context())
+		if e != nil {
+			return e
+		}
+		v.Login = v.Login.Masked()
+		writeJSON(w, 200, v)
 		return nil
 	})
 	registerMultiuser(business, store, o.Auth)
-	registerSubscriptionDownload(mux, store)
+	registerAccountSecurity(business, store, o.TrustedProxies)
+	registerModeration(business, store)
+	registerSubscriptionDownload(mux, store, o.TrustedProxies)
 	registerSourceLink(mux, store)
 	registerLeaseProbe(mux, store)
+	registerSignup(mux, store, o.Auth, o.TrustedProxies)
+	registerOAuth(mux, store, o.Auth)
 	o.Auth.Register(mux)
 	updatesMux := http.NewServeMux()
 	if o.Updates != nil {
@@ -226,8 +276,21 @@ func New(o Options) http.Handler {
 	mux.Handle("/", web.Handler())
 	return o.Auth.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		adminOnly := p == "/api/v1/settings" || strings.HasPrefix(p, "/api/v1/users") || p == "/api/v1/nodes/test" || (strings.HasPrefix(p, "/api/v1/nodes/") && strings.HasSuffix(p, "/test")) || strings.HasPrefix(p, "/api/v1/releases") || strings.HasPrefix(p, "/api/v1/system/") || strings.HasPrefix(p, "/api/v1/updates")
-		if adminOnly && pool.CurrentUser(r.Context()).Role != "admin" {
+		actor := pool.CurrentUser(r.Context())
+		if (strings.HasPrefix(p, "/api/v1/users") || strings.HasPrefix(p, "/api/v1/moderation/")) && !pool.CanManageUsers(actor) {
+			writeError(w, pool.ErrForbidden)
+			return
+		}
+		if blocked, message := maintenanceBlocks(r, actor); blocked {
+			writeJSON(w, 503, map[string]any{"error": message, "maintenance": true})
+			return
+		}
+		if emailGate(r, store, actor) {
+			writeJSON(w, 403, map[string]any{"error": "请先绑定并验证邮箱", "email_required": true})
+			return
+		}
+		adminOnly := p == "/api/v1/settings" || strings.HasPrefix(p, "/api/v1/settings/") || p == "/api/v1/nodes/test" || (strings.HasPrefix(p, "/api/v1/nodes/") && strings.HasSuffix(p, "/test")) || strings.HasPrefix(p, "/api/v1/releases") || strings.HasPrefix(p, "/api/v1/system/") || strings.HasPrefix(p, "/api/v1/updates")
+		if adminOnly && actor.Role != "admin" {
 			writeError(w, pool.ErrForbidden)
 			return
 		}
@@ -265,8 +328,12 @@ func writeError(w http.ResponseWriter, e error) {
 	switch {
 	case errors.Is(e, pool.ErrForbidden):
 		code = 403
-	case errors.Is(e, pool.ErrQuota), errors.Is(e, pool.ErrProfileInUse):
+	case errors.Is(e, pool.ErrQuota), errors.Is(e, pool.ErrProfileInUse), errors.Is(e, pool.ErrPoints), errors.Is(e, pool.ErrEmailTaken), errors.Is(e, pool.ErrIdentityTaken):
 		code = 409
+	case errors.Is(e, pool.ErrRiskLimit), errors.Is(e, pool.ErrRateLimited), errors.Is(e, pool.ErrCodeCooldown):
+		code = 429
+	case errors.Is(e, pool.ErrDataKey):
+		code = 503
 	case errors.Is(e, pool.ErrUnexportable):
 		code = 422
 	case errors.Is(e, pool.ErrNotFound), errors.Is(e, sql.ErrNoRows):
@@ -286,4 +353,42 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// 维护模式下仅放行读取、登录与续期，管理员不受限
+func maintenanceBlocks(r *http.Request, u pool.User) (bool, string) {
+	m := pool.CurrentMaintenance()
+	if !m.Enabled || u.Role == "admin" || r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return false, ""
+	}
+	p := r.URL.Path
+	if !strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/api/v1/auth") || p == "/api/v1/me/checkin" {
+		return false, ""
+	}
+	message := "系统维护中，暂时只能查看和拉取订阅"
+	if m.Message != "" {
+		message += "：" + m.Message
+	}
+	return true, message
+}
+
+// publicStats 普通用户与访客共享 5 秒内的统计结果，避免频繁轮询压垮数据库
+var publicStats statsCache
+
+type statsCache struct {
+	mu   sync.Mutex
+	at   time.Time
+	body any
+}
+
+func (c *statsCache) get() (any, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.body, c.body != nil && time.Since(c.at) < 5*time.Second
+}
+
+func (c *statsCache) set(body any) {
+	c.mu.Lock()
+	c.body, c.at = body, time.Now()
+	c.mu.Unlock()
 }

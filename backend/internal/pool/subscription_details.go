@@ -22,10 +22,33 @@ type SubscriptionNodeDetail struct {
 	Insights          NodeInsights       `json:"insights"`
 	MinLevel          int                `json:"min_level"`
 	SubscriptionUsage *SubscriptionUsage `json:"subscription_usage,omitempty"`
+	Demoted           bool               `json:"demoted,omitempty"`
+	ProviderID        int64              `json:"provider_id"`
+	ProviderName      string             `json:"provider_name"`
+	ProviderAvatar    int                `json:"provider_avatar"`
+	ProviderTitle     string             `json:"provider_title"`
 }
 
 func (s *Store) subscriptionDetails(ctx context.Context, items []Subscription) error {
-	return subscriptionDetailsFrom(ctx, s.DB, items)
+	if err := subscriptionDetailsFrom(ctx, s.DB, items); err != nil {
+		return err
+	}
+	ids := []int64{}
+	for _, item := range items {
+		for _, d := range item.NodeDetails {
+			ids = append(ids, d.NodeID)
+		}
+	}
+	demoted, err := s.demotedNodes(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		for j := range items[i].NodeDetails {
+			items[i].NodeDetails[j].Demoted = demoted[items[i].NodeDetails[j].NodeID]
+		}
+	}
+	return nil
 }
 
 func subscriptionDetailsFrom(ctx context.Context, db interface {
@@ -50,14 +73,21 @@ func subscriptionDetailsFrom(ctx context.Context, db interface {
 			placeholders = append(placeholders, "(?,?)")
 			args = append(args, pair.NodeID, pair.SourceID)
 		}
-		rows, err := db.QueryContext(ctx, `SELECT n.id,s.id,sn.node_name,s.name,n.type,n.server,n.port,(sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND u.enabled=1),n.config,s.min_level,s.subscription_usage FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE (sn.node_id,sn.source_id) IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		rows, err := db.QueryContext(ctx, `SELECT n.id,s.id,sn.node_name,s.name,n.type,n.server,n.port,(sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND u.enabled=1),n.config,s.min_level,s.subscription_usage,u.id,COALESCE(NULLIF(u.display_name,''),u.username),u.avatar_version,u.title FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE (sn.node_id,sn.source_id) IN (`+strings.Join(placeholders, ",")+`)`, args...)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var detail SubscriptionNodeDetail
 			var config, usage []byte
-			if err = rows.Scan(&detail.NodeID, &detail.SourceID, &detail.Name, &detail.SourceName, &detail.Type, &detail.Server, &detail.Port, &detail.Available, &config, &detail.MinLevel, &usage); err != nil {
+			if err = rows.Scan(&detail.NodeID, &detail.SourceID, &detail.Name, &detail.SourceName, &detail.Type, &detail.Server, &detail.Port, &detail.Available, &config, &detail.MinLevel, &usage, &detail.ProviderID, &detail.ProviderName, &detail.ProviderAvatar, &detail.ProviderTitle); err != nil {
+				rows.Close()
+				return err
+			}
+			if detail.Server, err = unseal(purposeNodeServer, detail.Server); err == nil {
+				config, err = unsealConfig(config)
+			}
+			if err != nil {
 				rows.Close()
 				return err
 			}
@@ -87,5 +117,5 @@ func subscriptionDetailsFrom(ctx context.Context, db interface {
 			items[i].NodeDetails = append(items[i].NodeDetails, detail)
 		}
 	}
-	return nil
+	return followDetailsFrom(ctx, db, items)
 }

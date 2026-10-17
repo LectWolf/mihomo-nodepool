@@ -1,0 +1,100 @@
+/* 页头：采样状态与刷新按钮 */
+.statistics-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.statistics-actions > button { font-size: 12px; min-height: 40px; padding: 9px 17px; }
+.statistics-sample { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.statistics-sample .live-dot { --dot: var(--tone-green); }
+.statistics-sample.stale .live-dot { --dot: var(--tone-amber); animation: none; }
+
+.live-dot { position: relative; display: inline-block; flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--dot, var(--muted)); }
+.live-dot::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid var(--dot, var(--muted)); opacity: 0; }
+.statistics-sample .live-dot::after, .stat-card.running .live-dot::after, .statistics-task-list li.processing .live-dot::after { animation: stat-ping 1.8s ease-out infinite; }
+@keyframes stat-ping { 0% { transform: scale(.6); opacity: .7; } 100% { transform: scale(1.7); opacity: 0; } }
+
+/* 概览卡片 */
+.statistics-page .stat-card { min-width: 0; display: flex; flex-direction: column; }
+.statistics-page .stat-card small { display: block; line-height: 1.7; }
+.statistics-overview .stat-card.metric { padding-top: 18px; }
+.statistics-page .stat-card > span { color: var(--text-secondary); font-weight: 500; }
+.statistics-overview .stat-card > strong { margin-block: 10px 6px; }
+.segment-bar { display: flex; gap: 2px; height: 6px; margin: 4px 0 8px; border-radius: 999px; overflow: hidden; background: var(--tone-track); }
+.segment-bar i { display: block; min-width: 3px; flex-basis: 0; }
+.segment-bar .healthy, .legend .healthy::before { background: var(--tone-green); }
+.segment-bar .unhealthy, .legend .unhealthy::before { background: var(--tone-red); }
+.segment-bar .unknown, .legend .unknown::before { background: var(--muted); opacity: .55; }
+.statistics-page .stat-card small.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.legend span::before { content: ""; width: 7px; height: 7px; border-radius: 2px; }
+
+/* 任务与状态卡片 */
+.statistics-secondary { margin-block: 12px 24px; }
+.stat-card.pulse { background: var(--surface-subtle); }
+.stat-card.pulse > strong { display: flex; align-items: baseline; gap: 8px; font-size: 26px; margin-block: 6px 6px; }
+.stat-card.pulse > strong em { font-style: normal; font-size: 12px; font-weight: 500; letter-spacing: 0; color: var(--muted); }
+.stat-card.pulse .live-dot { --dot: var(--muted); opacity: .5; margin-right: 2px; }
+.stat-card.pulse.running .live-dot { --dot: var(--tone-green); opacity: 1; }
+.stat-card.pulse.running > strong { color: var(--tone-green); }
+.statistics-page .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--nav-active); color: var(--nav-text); font-weight: 500; font-variant-numeric: tabular-nums; }
+.statistics-page .pill.danger { background: var(--tone-red-soft); color: var(--tone-red); }
+
+/* 任务列表 */
+.task-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.task-column { min-width: 0; padding: 16px 16px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-subtle); }
+.task-columns h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.task-columns h3 .count { margin-left: auto; }
+.statistics-task-list { list-style: none; margin: 0; padding: 0; max-height: 430px; overflow: auto; }
+.statistics-task-list li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 11px 4px; border-bottom: 1px solid var(--line); }
+.statistics-task-list li:last-child { border-bottom: 0; }
+.statistics-task-list li .live-dot { margin-top: 6px; --dot: var(--tone-amber); }
+.statistics-task-list li.processing .live-dot { --dot: var(--tone-green); }
+.statistics-task-list li > span:nth-child(2) { min-width: 0; }
+.statistics-task-list strong, .statistics-usage-table td:first-child strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statistics-task-list small { display: block; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.statistics-task-list code { font-size: 10.5px; }
+.statistics-task-list small.danger-text { color: var(--danger); }
+.task-empty { margin: 4px 0 10px; padding: 18px 0; text-align: center; border: 1px dashed var(--line); border-radius: 8px; }
+.statistics-page .badge.running { background: var(--tone-green-soft); color: var(--tone-green); }
+.statistics-page .badge.queued { background: var(--tone-amber-soft); color: var(--tone-amber); }
+.statistics-page .badge.ready { background: var(--tone-green-soft); color: var(--tone-green); }
+.statistics-page .badge.error { background: var(--tone-red-soft); color: var(--tone-red); }
+.statistics-page .badge.unknown { background: var(--nav-active); color: var(--muted); }
+
+/* 汇总小卡片 */
+.usage-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-block: 18px; }
+.usage-stat-grid > div { position: relative; display: flex; flex-direction: column; min-width: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-subtle); overflow: hidden; }
+.usage-stat-grid > div[class*="tone-"] { background: linear-gradient(135deg, var(--tone-soft), var(--surface-subtle) 70%); }
+.usage-stat-grid > div[class*="tone-"]::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--tone); }
+.usage-stat-grid :is(span, small) { color: var(--muted); font-size: 11px; }
+.usage-stat-grid > div > span { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-weight: 500; }
+.usage-stat-grid > div > span .app-icon { width: 14px; height: 14px; color: var(--tone, var(--muted)); }
+.usage-stat-grid strong { margin-block: 8px; font-size: 21px; font-weight: 600; letter-spacing: -.3px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.runtime-stat-grid strong { font-size: 18px; }
+.runtime-stat-grid small { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.runtime-stat-grid small b { margin-left: auto; color: var(--text-secondary); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* 进度条 */
+.meter { --fill: var(--muted); height: 6px; border-radius: 999px; background: var(--tone-track); overflow: hidden; }
+.meter i { display: block; height: 100%; border-radius: inherit; background: var(--fill); transition: width .4s ease; }
+.meter.ready { --fill: var(--tone-green); }
+.meter.queued { --fill: var(--tone-amber); }
+.meter.error { --fill: var(--tone-red); }
+.meter.rate { margin: 0 0 8px; }
+
+/* 套餐表 */
+.statistics-usage-table td:first-child { max-width: 240px; }
+.statistics-usage-table tr.disabled td:first-child strong { color: var(--muted); }
+.statistics-usage-table td { font-variant-numeric: tabular-nums; }
+.traffic { display: inline-flex; align-items: center; gap: 4px; }
+.traffic::before { font-size: 10px; line-height: 1; }
+.traffic.up::before { content: "↑"; color: var(--tone-blue); }
+.traffic.down::before { content: "↓"; color: var(--tone-violet); }
+.quota { min-width: 130px; max-width: 200px; }
+.quota-text { display: flex; align-items: baseline; gap: 4px; margin-bottom: 6px; white-space: nowrap; }
+.quota-text small { color: var(--muted); font-size: 11px; }
+
+.statistics-page .compact-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+
+@media (prefers-reduced-motion: reduce) { .live-dot::after { animation: none !important; } .meter i { transition: none; } }
+@media (max-width: 1050px) { .usage-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 960px) { .statistics-actions > button { font-size: 11px; padding-inline: 12px; } }
+@media (max-width: 760px) { .task-columns { grid-template-columns: minmax(0, 1fr); } .statistics-actions { justify-content: flex-start; } }
+@media (max-width: 480px) { .statistics-actions { flex-direction: column-reverse; align-items: flex-end; gap: 8px; } .statistics-actions > button { min-height: 34px; padding: 7px 10px; font-size: 10px; } .statistics-sample { min-height: 26px; padding: 0 9px; font-size: 10px; } .usage-stat-grid { gap: 8px; } .usage-stat-grid > div { padding: 10px 12px; } .usage-stat-grid strong { font-size: 16px; } .task-column { padding: 12px 12px 4px; } .stat-card.pulse > strong { font-size: 22px; } .metric-icon { width: 24px; height: 24px; } }

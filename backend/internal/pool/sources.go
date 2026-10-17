@@ -30,7 +30,33 @@ func (s *Store) AddSource(ctx context.Context, in SourceInput) (Source, error) {
 	if e != nil {
 		return Source{}, e
 	}
-	result, e := s.DB.ExecContext(ctx, `INSERT INTO np_sources(owner_id,max_users,min_level,share_token,name,kind,url,url_hash,content,exclude_pattern,last_error,created_at,next_refresh_at) VALUES(?,?,?,?,?,?,?,?,?,?,'',?,?)`, CurrentUser(ctx).ID, in.MaxUsers, in.MinLevel, token, cleanName(in.Name), in.Kind, strings.TrimSpace(in.URL), urlHash(in.URL), in.Content, in.ExcludePattern, now, now)
+	sealedURL, e := seal(purposeSourceURL, strings.TrimSpace(in.URL))
+	if e != nil {
+		return Source{}, e
+	}
+	sealedContent, e := seal(purposeSourceContent, in.Content)
+	if e != nil {
+		return Source{}, e
+	}
+	u := CurrentUser(ctx)
+	tx, e := s.DB.BeginTx(ctx, nil)
+	if e != nil {
+		return Source{}, e
+	}
+	defer tx.Rollback()
+	if u.Role != "admin" {
+		var owned int
+		if e = tx.QueryRowContext(ctx, `SELECT id FROM np_users WHERE id=? FOR UPDATE`, u.ID).Scan(new(int64)); e != nil {
+			return Source{}, e
+		}
+		if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_sources WHERE owner_id=?`, u.ID).Scan(&owned); e != nil {
+			return Source{}, e
+		}
+		if owned >= MaxOwnedSources {
+			return Source{}, fmt.Errorf("每个账号最多提供 %d 个来源", MaxOwnedSources)
+		}
+	}
+	result, e := tx.ExecContext(ctx, `INSERT INTO np_sources(owner_id,max_users,min_level,share_token,name,kind,url,url_hash,content,exclude_pattern,last_error,created_at,next_refresh_at) VALUES(?,?,?,?,?,?,?,?,?,?,'',?,?)`, u.ID, in.MaxUsers, in.MinLevel, token, cleanName(in.Name), in.Kind, sealedURL, urlHash(in.URL), sealedContent, in.ExcludePattern, now, now)
 	if e != nil {
 		var me *mysql.MySQLError
 		if errors.As(e, &me) && me.Number == 1062 {
@@ -42,8 +68,15 @@ func (s *Store) AddSource(ctx context.Context, in SourceInput) (Source, error) {
 	if e != nil {
 		return Source{}, e
 	}
+	if e = tx.Commit(); e != nil {
+		return Source{}, e
+	}
 	return s.Source(ctx, id)
 }
+
+// MaxOwnedSources 单个账号可提供的来源数上限（管理员不限）
+const MaxOwnedSources = 100
+
 func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Source, error) {
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
@@ -78,15 +111,17 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 	if v.Name == "" || len(v.Name) > 200 {
 		return v, errors.New("来源名称不能为空且最多 200 字节")
 	}
+	// 只有排除规则、内容、链接真正变化或重新启用时才重新解析，改名称和人数等不触发更新
+	reparse := false
 	if p.ExcludePattern != nil {
 		if _, e := Pattern(*p.ExcludePattern); e != nil {
 			return v, e
 		}
+		reparse = v.ExcludePattern != *p.ExcludePattern
 		v.ExcludePattern = *p.ExcludePattern
 	}
-	reparse := p.ExcludePattern != nil
 	fetch := false
-	if p.URL != nil && strings.TrimSpace(*p.URL) != "" {
+	if p.URL != nil && strings.TrimSpace(*p.URL) != "" && strings.TrimSpace(*p.URL) != v.URL {
 		if v.Kind != "url" {
 			return v, errors.New("只有订阅来源可以修改 URL")
 		}
@@ -96,18 +131,41 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 		}
 		fetch = true
 	}
+	if p.Content != nil {
+		if v.Kind == "url" {
+			return v, errors.New("订阅来源请修改 URL，不能直接替换内容")
+		}
+		if e := checkSource(SourceInput{Name: v.Name, Kind: v.Kind, Content: *p.Content}); e != nil {
+			return v, e
+		}
+		content, e := seal(purposeSourceContent, *p.Content)
+		if e != nil {
+			return v, e
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE np_sources SET content=? WHERE id=?`, content, id); e != nil {
+			return v, e
+		}
+		reparse = true
+	}
 	if p.Enabled != nil {
-		v.Enabled = *p.Enabled
-		if v.Enabled {
+		if *p.Enabled && v.Takedown != nil {
+			return v, fmt.Errorf("%w（%s），请联系管理员恢复", ErrTakenDown, v.Takedown.ReasonLabel)
+		}
+		if *p.Enabled && !v.Enabled {
 			reparse = true
 		}
+		v.Enabled = *p.Enabled
+	}
+	sealedURL, e := seal(purposeSourceURL, v.URL)
+	if e != nil {
+		return v, e
 	}
 	if _, e = tx.ExecContext(ctx, `UPDATE np_sources SET max_users=?,min_level=? WHERE id=?`, v.MaxUsers, v.MinLevel, id); e != nil {
 		return v, e
 	}
 	// Evaluate cached before pending: queued/in-flight network work and due refreshes
 	// take priority over reparsing old content. MySQL SET assignments run left to right.
-	_, e = tx.ExecContext(ctx, `UPDATE np_sources SET name=?,enabled=?,exclude_pattern=?,url=?,url_hash=?,revision=revision+1,cached=IF(?,0,IF(?,IF(kind='url' AND ((cached=0 AND (pending=1 OR lease_until IS NOT NULL)) OR next_refresh_at<=UTC_TIMESTAMP(6)),0,1),cached)),pending=IF(? OR ?,1,pending),status=IF(? OR ?,'queued',status) WHERE id=?`, v.Name, v.Enabled, v.ExcludePattern, v.URL, urlHash(v.URL), fetch, reparse, reparse, fetch, reparse, fetch, id)
+	_, e = tx.ExecContext(ctx, `UPDATE np_sources SET name=?,enabled=?,exclude_pattern=?,url=?,url_hash=?,revision=revision+1,cached=IF(?,0,IF(?,IF(kind='url' AND ((cached=0 AND (pending=1 OR lease_until IS NOT NULL)) OR next_refresh_at<=UTC_TIMESTAMP(6)),0,1),cached)),pending=IF(? OR ?,1,pending),status=IF(? OR ?,'queued',status) WHERE id=?`, v.Name, v.Enabled, v.ExcludePattern, sealedURL, urlHash(v.URL), fetch, reparse, reparse, fetch, reparse, fetch, id)
 	if e != nil {
 		return v, e
 	}
@@ -198,7 +256,15 @@ func (s *Store) ApplySource(ctx context.Context, src Source, body string, parsed
 	seen := map[string]bool{}
 	for _, node := range parsed.Nodes {
 		excluded := (global != nil && global.MatchString(node.Name)) || (local != nil && local.MatchString(node.Name))
-		r, e := insert.ExecContext(ctx, node.Hash, node.Name, node.Type, node.Server, node.Port, []byte(node.Config), now, InitialRun(node.Hash, now))
+		server, e := seal(purposeNodeServer, node.Server)
+		if e != nil {
+			return e
+		}
+		config, e := sealConfig([]byte(node.Config))
+		if e != nil {
+			return e
+		}
+		r, e := insert.ExecContext(ctx, node.Hash, node.Name, node.Type, server, node.Port, config, now, InitialRun(node.Hash, now))
 		if e != nil {
 			return e
 		}
@@ -233,9 +299,18 @@ func (s *Store) ApplySource(ctx context.Context, src Source, body string, parsed
 	if e != nil {
 		return e
 	}
-	_, e = tx.ExecContext(ctx, `UPDATE np_sources SET content=?,subscription_usage=?,node_count=?,excluded_count=?,last_refresh_at=?,next_refresh_at=?,last_error=?,status=IF(pending=1,'queued','ready'),attempts=0,lease_until=NULL WHERE id=?`, body, usage, active, excluded, now, nextAt, warning, src.ID)
+	sealedBody, e := seal(purposeSourceContent, body)
 	if e != nil {
 		return e
+	}
+	_, e = tx.ExecContext(ctx, `UPDATE np_sources SET content=?,subscription_usage=?,node_count=?,excluded_count=?,last_refresh_at=?,next_refresh_at=?,last_error=?,status=IF(pending=1,'queued','ready'),attempts=0,lease_until=NULL WHERE id=?`, sealedBody, usage, active, excluded, now, nextAt, warning, src.ID)
+	if e != nil {
+		return e
+	}
+	if active > 0 && src.OwnerID > 0 {
+		if e = achievement(ctx, tx, src.OwnerID, "first_source", "成就：第一次成功共享来源"); e != nil {
+			return e
+		}
 	}
 	return tx.Commit()
 }

@@ -1,9 +1,9 @@
 import { reactive, readonly, shallowRef } from 'vue'
 
-export type Section = 'nodes' | 'sources' | 'settings' | 'providers' | 'subscriptions' | 'rules' | 'users' | 'account'
+export type Section = 'nodes' | 'sources' | 'settings' | 'statistics' | 'providers' | 'subscriptions' | 'rules' | 'users' | 'account'
 interface AppRoute { section: Section; path: string; query: string }
-const paths: Record<Section, string> = { nodes: '/nodes', sources: '/sources', settings: '/settings', providers: '/providers', subscriptions: '/subscriptions', rules: '/rules', users: '/users', account: '/account' }
-const titles: Record<Section, string> = { nodes: '节点总览', sources: '我的来源', settings: '运行设置', providers: '提供方', subscriptions: '我的订阅', rules: '规则组合', users: '用户管理', account: '我的账号' }
+const paths: Record<Section, string> = { nodes: '/nodes', sources: '/sources', settings: '/settings', statistics: '/statistics', providers: '/providers', subscriptions: '/subscriptions', rules: '/rules', users: '/users', account: '/account' }
+const titles: Record<Section, string> = { nodes: '节点总览', sources: '共享来源', settings: '运行设置', statistics: '运行统计', providers: '提供方', subscriptions: '我的订阅', rules: '规则组合', users: '用户管理', account: '我的账号' }
 const remembered = reactive(new Map<Section, string>())
 function readLocation(): AppRoute {
   const path = location.pathname.replace(/\/+$/, '')
@@ -16,7 +16,7 @@ function currentURL(value: AppRoute) { return value.path + (value.query ? `?${va
 function publish(value: AppRoute) {
   remembered.set(value.section, currentURL(value))
   state.value = value
-  document.title = `${titles[value.section]} · NodePool`
+  document.title = `${titles[value.section]} · MCII节点共享`
 }
 function normalizeLocation(value: AppRoute) {
   const normalized = currentURL(value)

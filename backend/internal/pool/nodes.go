@@ -17,6 +17,12 @@ func scanNode(row scanner) (Node, error) {
 	n.Sources = []Origin{}
 	e := row.Scan(&n.ID, &n.Name, &n.Type, &n.Server, &n.Port, &n.LatencyMS, &n.Status, &n.Country, &n.CountryCode, &n.Region, &n.City, &n.ExitIP, &n.LastCheckedAt, &n.LastSuccessAt, &n.ExitCheckedAt, &n.NextCheckAt, &n.LastError, &n.Config, &n.CreatedAt, &n.Failures, &n.Successes, &n.Blocked)
 	if e == nil {
+		n.Server, e = unseal(purposeNodeServer, n.Server)
+	}
+	if e == nil {
+		n.Config, e = unsealConfig(n.Config)
+	}
+	if e == nil {
 		n.Insights = InspectNode(n)
 	}
 	return n, e
@@ -87,13 +93,26 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		}
 		where += `)`
 	}
+	viewer := CurrentUser(ctx)
+	usable, usableArgs := usableSQL(viewer)
+	if f.Available && viewer.Role != "admin" {
+		where += " AND " + usable
+		args = append(args, usableArgs...)
+	}
 	if f.MaxLatency > 0 {
 		where += " AND n.latency_ms<=?"
 		args = append(args, f.MaxLatency)
 	}
 	if f.Q != "" {
-		where += ` AND (n.server LIKE ? OR EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id WHERE sn.node_id=n.id AND s.enabled=1 AND sn.excluded=0 AND sn.node_name LIKE ?))`
-		args = append(args, "%"+f.Q+"%", "%"+f.Q+"%")
+		nameMatch := `EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id WHERE sn.node_id=n.id AND s.enabled=1 AND sn.excluded=0 AND sn.node_name LIKE ?)`
+		// 服务器地址只允许管理员在未加密时搜索
+		if CurrentUser(ctx).Role == "admin" && !DataEncryptionEnabled() {
+			where += ` AND (n.server LIKE ? OR ` + nameMatch + `)`
+			args = append(args, "%"+f.Q+"%", "%"+f.Q+"%")
+		} else {
+			where += ` AND ` + nameMatch
+			args = append(args, "%"+f.Q+"%")
+		}
 	}
 	if e = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_nodes n WHERE `+where, args...).Scan(&out.Total); e != nil {
 		return out, e
@@ -104,8 +123,20 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		order = "n.latency_ms IS NULL,n.latency_ms,n.id"
 	case "name":
 		order = "n.name,n.id"
+	case "recommend":
+		// 新上架且健康的节点优先曝光，其余按健康与延迟排序
+		order = "(n.status='healthy' AND n.created_at>=?) DESC,n.status='healthy' DESC,n.latency_ms IS NULL,n.latency_ms,n.id"
 	}
-	queryArgs := append(append([]any{}, args...), f.PageSize, (f.Page-1)*f.PageSize)
+	orderArgs := []any{}
+	if f.Sort == "recommend" {
+		orderArgs = append(orderArgs, utcNow().Add(-FreshWindow))
+	}
+	// 普通用户看不可选的节点排在后面
+	if viewer.Role != "admin" {
+		order = usable + " DESC," + order
+		orderArgs = append(append([]any{}, usableArgs...), orderArgs...)
+	}
+	queryArgs := append(append(append([]any{}, args...), orderArgs...), f.PageSize, (f.Page-1)*f.PageSize)
 	rows, e := s.DB.QueryContext(ctx, `SELECT `+nodeColumns+` FROM np_nodes n WHERE `+where+` ORDER BY `+order+` LIMIT ? OFFSET ?`, queryArgs...)
 	if e != nil {
 		return out, e
@@ -134,7 +165,7 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		originArgs[i] = n.ID
 		index[n.ID] = i
 	}
-	origins, e := s.DB.QueryContext(ctx, `SELECT sn.node_id,s.id,s.name,sn.node_name,s.owner_id,u.display_name,s.min_level,s.subscription_usage FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE u.enabled=1 AND s.enabled=1 AND sn.excluded=0 AND sn.node_id IN (`+strings.Join(marks, ",")+`) ORDER BY s.id`, originArgs...)
+	origins, e := s.DB.QueryContext(ctx, `SELECT sn.node_id,s.id,s.name,sn.node_name,s.owner_id,u.display_name,s.min_level,s.subscription_usage,u.username,u.avatar_version,u.title,s.max_users,(SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=s.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6)),COALESCE((SELECT IF(me.state='kicked','kicked',IF(me.state='active' AND me.expires_at>UTC_TIMESTAMP(6),'active','')) FROM np_source_seats me WHERE me.source_id=s.id AND me.user_id=?),'') FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE u.enabled=1 AND s.enabled=1 AND sn.excluded=0 AND sn.node_id IN (`+strings.Join(marks, ",")+`) ORDER BY s.id`, append([]any{viewer.ID}, originArgs...)...)
 	if e != nil {
 		return out, e
 	}
@@ -143,9 +174,12 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 		var id int64
 		var v Origin
 		var usage []byte
-		if e = origins.Scan(&id, &v.ID, &v.Name, &v.NodeName, &v.OwnerID, &v.ProviderName, &v.MinLevel, &usage); e != nil {
+		var seat string
+		if e = origins.Scan(&id, &v.ID, &v.Name, &v.NodeName, &v.OwnerID, &v.ProviderName, &v.MinLevel, &usage, &v.ProviderUsername, &v.ProviderAvatar, &v.ProviderTitle, &v.MaxUsers, &v.ActiveUsers, &seat); e != nil {
 			return out, e
 		}
+		v.Seated = seat == "active"
+		v.Unavailable = originBlock(viewer, v, seat)
 		if len(usage) > 0 {
 			if e = json.Unmarshal(usage, &v.SubscriptionUsage); e != nil {
 				return out, e
@@ -158,7 +192,51 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 			out.Items[i].Name = v.NodeName
 		}
 	}
-	return out, origins.Err()
+	if e = origins.Err(); e != nil {
+		return out, e
+	}
+	fresh := utcNow().Add(-FreshWindow)
+	for i := range out.Items {
+		n := &out.Items[i]
+		n.Fresh = n.CreatedAt.After(fresh)
+		n.Unavailable = nodeBlock(n.Sources)
+	}
+	maskServers(viewer, out.Items)
+	return out, s.attachNodeFeedback(ctx, out.Items)
+}
+
+// FreshWindow 内首次入池的节点视为新上架
+const FreshWindow = 72 * time.Hour
+
+// usableSQL 判断当前用户能否通过任一来源选用节点，规则与 claimSeat 一致
+func usableSQL(u User) (string, []any) {
+	return `EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1 AND u.enabled=1 AND (s.owner_id=? OR ?='admin' OR s.min_level<=?) AND NOT EXISTS(SELECT 1 FROM np_source_seats k WHERE k.source_id=s.id AND k.user_id=? AND k.state='kicked') AND (s.max_users=0 OR EXISTS(SELECT 1 FROM np_source_seats me WHERE me.source_id=s.id AND me.user_id=? AND me.state='active' AND me.expires_at>UTC_TIMESTAMP(6)) OR (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=s.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))<s.max_users))`, []any{u.ID, u.Role, u.Level, u.ID, u.ID}
+}
+
+func originBlock(u User, o Origin, seat string) string {
+	switch {
+	case seat == "kicked":
+		return "kicked"
+	case o.OwnerID != u.ID && u.Role != "admin" && u.Level < o.MinLevel:
+		return "level"
+	case o.MaxUsers > 0 && seat != "active" && o.ActiveUsers >= o.MaxUsers:
+		return "full"
+	}
+	return ""
+}
+
+// nodeBlock 任一来源可用即可选；否则优先返回席位已满，便于提示等待
+func nodeBlock(origins []Origin) string {
+	reason := ""
+	for _, o := range origins {
+		if o.Unavailable == "" {
+			return ""
+		}
+		if reason == "" || o.Unavailable == "full" {
+			reason = o.Unavailable
+		}
+	}
+	return reason
 }
 
 func (s *Store) QueueNodes(ctx context.Context, ids []int64) error {
@@ -273,7 +351,8 @@ func (s *Store) SaveProbe(ctx context.Context, n Node, r ProbeResult) error {
 	} else {
 		failures++
 		successes = 0
-		if failures >= 3 {
+		// 从未成功过的节点首次失败即标记异常，避免长期停留在“待检测”
+		if failures >= 3 || status == "unknown" {
 			status = "unhealthy"
 		}
 		base := n.CreatedAt
@@ -317,10 +396,10 @@ func (s *Store) SaveProbe(ctx context.Context, n Node, r ProbeResult) error {
 
 func (s *Store) TaskStatus(ctx context.Context) (Tasks, error) {
 	var t Tasks
-	e := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(enabled=1 AND (pending=1 OR next_refresh_at<=UTC_TIMESTAMP(6))),0),COALESCE(SUM(lease_until>UTC_TIMESTAMP(6)),0) FROM np_sources`).Scan(&t.PendingSources, &t.ActiveSources)
+	e := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(`+sourceWork+` AND (lease_until IS NULL OR lease_until<UTC_TIMESTAMP(6))),0),COALESCE(SUM(lease_until>=UTC_TIMESTAMP(6)),0) FROM np_sources WHERE enabled=1`).Scan(&t.PendingSources, &t.ActiveSources)
 	if e != nil {
 		return t, e
 	}
-	e = s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(pending=1 OR next_check_at<=UTC_TIMESTAMP(6)),0),COALESCE(SUM(lease_until>UTC_TIMESTAMP(6)),0) FROM np_nodes n WHERE `+visible).Scan(&t.PendingNodes, &t.ActiveNodes)
+	e = s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(`+nodeWork+` AND (n.lease_until IS NULL OR n.lease_until<UTC_TIMESTAMP(6))),0),COALESCE(SUM(n.lease_until>=UTC_TIMESTAMP(6)),0) FROM np_nodes n WHERE `+nodeWorkEligible).Scan(&t.PendingNodes, &t.ActiveNodes)
 	return t, e
 }

@@ -124,6 +124,17 @@ func TestMySQLCommunityDeliveryAndRealMihomoKeepalive(t *testing.T) {
 	if strings.Contains(string(raw), "/ws/lease/") {
 		t.Fatal("source bearer link contains account probe")
 	}
+	// 新令牌为 32 位，旧站的 /l/ 与 /give/ 路径同样可用
+	token := strings.TrimPrefix(link, "/link/")
+	if len(token) != 32 || len(saved.Subscription.Token) != 32 {
+		t.Fatalf("token length: %q %q", token, saved.Subscription.Token)
+	}
+	for _, alias := range []string{"/l/", "/give/"} {
+		if alias, _ := get(alias+token+"?format=clash", 200); string(alias) != string(raw) {
+			t.Fatal("legacy link alias differs")
+		}
+	}
+	get("/l/"+strings.Repeat("z", 32), 404)
 	expired := time.Now().UTC().Add(-time.Hour)
 	if _, err = s.DB.Exec(`UPDATE np_users SET subscription_expires_at=? WHERE id=?`, expired, u.ID); err != nil {
 		t.Fatal(err)

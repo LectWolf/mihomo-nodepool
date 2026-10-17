@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { abortRequests, apiEvents, errorText, isCancelled, json, useApi, type Source, type SystemInfo } from './api/system'
-import { clearAccount, currentUser, isAdmin, loadProfile, type AuthResponse } from './api/accounts'
+import { authOptions, authPrompt, canManageUsers, accountTab, clearAccount, currentUser, emailRequired, isAdmin, isGuest, loadProfile, type AuthResponse } from './api/accounts'
+import { providerNames } from './api/identity'
 import { usePolling } from './polling'
 import NodesView from './components/NodesView.vue'
 import SourcesView from './components/SourcesView.vue'
@@ -11,38 +12,54 @@ import SubscriptionsView from './components/SubscriptionsView.vue'
 import RulesView from './components/RulesView.vue'
 import UsersView from './components/UsersView.vue'
 import AccountView from './components/AccountView.vue'
+import StatisticsView from './components/StatisticsView.vue'
 import VersionsDialog from './components/VersionsDialog.vue'
 import Modal from './components/Modal.vue'
 import AppIcon from './components/AppIcon.vue'
 import ThemeSelect from './components/ThemeSelect.vue'
+import ToastHost from './components/ToastHost.vue'
+import UserMenu from './components/UserMenu.vue'
+import AuthPanel from './components/AuthPanel.vue'
+import EmailBindForm from './components/EmailBindForm.vue'
+import OnboardingTour, { type TourStep } from './components/OnboardingTour.vue'
+import { toast } from './toast'
+import { loadTitles } from './titles'
 import { navigate, route, sectionHref, type Section } from './router'
 const api = useApi()
 const authenticated = ref(false)
 const booting = ref(true)
-const username = ref('admin')
-const password = ref('')
-const loginBusy = ref(false)
 const loginError = ref('')
+const viewKey = ref(0)
 const logoutBusy = ref(false)
 const section = computed(() => route.value.section)
 const visited = reactive(new Set<Section>([section.value]))
 const allSections = [
   { id: 'nodes', label: '节点总览', icon: 'nodes', admin: false },
-  { id: 'sources', label: '来源管理', icon: 'sources', admin: false },
+  { id: 'sources', label: '共享来源', icon: 'sources', admin: false },
   { id: 'providers', label: '提供方', icon: 'users', admin: false },
   { id: 'subscriptions', label: '我的订阅', icon: 'link', admin: false },
   { id: 'rules', label: '规则组合', icon: 'settings', admin: false },
   { id: 'account', label: '我的账号', icon: 'user', admin: false },
-  { id: 'users', label: '用户管理', icon: 'users', admin: true },
+  { id: 'statistics', label: '运行统计', icon: 'chart', admin: false },
+  { id: 'users', label: '用户管理', icon: 'users', admin: 'manage' },
   { id: 'settings', label: '运行设置', icon: 'settings', admin: true },
 ] as const
-const sections = computed(() => allSections.filter(item => !item.admin || isAdmin.value))
+// 访客只能浏览节点、提供方和运行统计
+const guestSections: Section[] = ['nodes', 'providers', 'statistics']
+const sections = computed(() => isGuest.value ? allSections.filter(item => guestSections.includes(item.id)) : allSections.filter(item => !item.admin || isAdmin.value || (item.admin === 'manage' && canManageUsers.value)))
 const currentTitle = computed(() => sections.value.find(item => item.id === section.value)?.label)
-const displayName = computed(() => currentUser.value?.display_name || currentUser.value?.username || '')
-watch([section, authenticated, isAdmin], ([id, loggedIn, admin]) => {
-  if (loggedIn && !admin && (id === 'users' || id === 'settings')) { navigate('nodes'); return }
+watch([section, authenticated, isAdmin, canManageUsers, isGuest], ([id, loggedIn, admin, manager, guest]) => {
+  if (guest && !guestSections.includes(id)) { const label = allSections.find(item => item.id === id)?.label; navigate('nodes'); authPrompt.value = { mode: 'login', reason: label ? `登录后即可使用「${label}」。` : undefined }; return }
+  if (loggedIn && ((!admin && id === 'settings') || (!manager && id === 'users'))) { navigate('nodes'); return }
   visited.add(id)
 }, { flush: 'sync' })
+// 手机底部导航：页面较多时保留常用 4 项，其余放进“更多”
+const mobileMore = ref(false)
+const mobilePrimary: Section[] = ['nodes', 'subscriptions', 'sources', 'account']
+const mobileTabs = computed(() => sections.value.length <= 5 ? sections.value : sections.value.filter(item => mobilePrimary.includes(item.id)))
+const mobileOverflow = computed(() => sections.value.filter(item => !mobileTabs.value.includes(item)))
+const moreActive = computed(() => mobileOverflow.value.some(item => item.id === section.value))
+function mobileGo(event: MouseEvent, id: Section) { mobileMore.value = false; navigateLink(event, id) }
 function navigateLink(event: MouseEvent, id: Section) {
   if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return
   event.preventDefault(); navigate(id)
@@ -67,25 +84,45 @@ function removeSource(id: number) { sourcesRevision++; sources.value = sources.v
 function clearSession() {
   sessionRevision++; abortRequests(); authenticated.value = false; clearAccount()
   system.value = null; sources.value = []; sourcesError.value = ''; systemError.value = ''
-  versionsOpen.value = false; password.value = ''; reconnecting.value = false; reconnectError.value = ''
-  databaseUnavailable.value = false; sourcesRevision++; visited.clear(); visited.add(section.value)
+  versionsOpen.value = false; reconnecting.value = false; reconnectError.value = ''; isGuest.value = false; tourOpen.value = false; emailRequired.value = false
+  databaseUnavailable.value = false; sourcesRevision++; visited.clear(); visited.add(section.value); viewKey.value++
 }
 function unauthorized() {
+  if (isGuest.value) { authPrompt.value ??= { mode: 'login' }; return }
   if (authenticated.value) loginError.value = '登录已过期或账号已停用，请重新登录。'
+  const expired = authenticated.value
   clearSession()
+  void loadAuth().then(() => { if (expired && isGuest.value) authPrompt.value = { mode: 'login' } })
 }
 function unavailable() { databaseUnavailable.value = true }
+function needEmail() { if (authenticated.value) emailRequired.value = true }
+// OAuth 回调通过查询参数带回结果，提示后清理地址栏
+function readOAuthResult() {
+  const q = new URLSearchParams(location.search)
+  const failed = q.get('oauth_error'), bound = q.get('bound'), via = q.get('oauth')
+  if (!failed && !bound && !via) return
+  if (bound || (failed && location.pathname === '/account')) accountTab.value = 'security'
+  if (failed) toast(failed, 'error')
+  else if (bound) toast(`已绑定 ${providerNames[bound] ?? bound}`)
+  else if (q.get('welcome')) toast(`已通过 ${providerNames[via ?? ''] ?? '第三方账号'} 注册，欢迎加入`)
+  for (const key of ['oauth_error', 'bound', 'oauth', 'welcome']) q.delete(key)
+  history.replaceState(history.state, '', `${location.pathname}${q.size ? `?${q}` : ''}${location.hash}`)
+}
+async function emailBound() { emailRequired.value = false; await loadProfile().catch(() => undefined) }
+function maintenance() { void loadSystem() }
+function settingsSaved() { void loadSystem(); void loadTitles(true) }
+const maintenanceOn = computed(() => !!system.value?.maintenance?.enabled)
 async function loadSystem() {
-  if (!authenticated.value || systemLoading) return
+  if ((!authenticated.value && !isGuest.value) || systemLoading) return
   systemLoading = true
   const revision = sessionRevision
   try {
     const value = await api<SystemInfo>('/system')
-    if (!authenticated.value || revision !== sessionRevision) return
+    if ((!authenticated.value && !isGuest.value) || revision !== sessionRevision) return
     system.value = value
     if (value.database) databaseUnavailable.value = !value.database.connected
     systemError.value = ''
-  } catch (error) { if (!isCancelled(error) && authenticated.value && revision === sessionRevision) systemError.value = errorText(error) }
+  } catch (error) { if (!isCancelled(error) && (authenticated.value || isGuest.value) && revision === sessionRevision) systemError.value = errorText(error) }
   finally { systemLoading = false }
 }
 async function loadSources() {
@@ -102,24 +139,62 @@ async function loadSources() {
   }
 }
 async function refreshOverview() { await Promise.all([loadSystem(), loadSources()]) }
+function applyOptions(auth: AuthResponse) {
+  authOptions.guestBrowse = !!auth.guest_browse; authOptions.registration = !!auth.registration
+  if (auth.login_options) authOptions.login = { ...auth.login_options, email_suffixes: auth.login_options.email_suffixes ?? [] }
+}
 async function establishSession(auth: AuthResponse) {
-  if (!auth.authenticated || !auth.user) { clearSession(); return }
+  applyOptions(auth)
+  if (!auth.authenticated || !auth.user) { applyGuest(auth); return }
+  emailRequired.value = !!auth.email_required
+  const wasGuest = isGuest.value
+  if (wasGuest) { sessionRevision++; abortRequests(); visited.clear(); visited.add(section.value); viewKey.value++ }
+  isGuest.value = false; authPrompt.value = null; loginError.value = ''
   currentUser.value = auth.user; authenticated.value = true
   await Promise.all([refreshOverview(), loadProfile().catch(error => { if (!isCancelled(error) && authenticated.value) systemError.value = errorText(error) })])
+  maybeStartTour()
 }
-async function login() {
-  if (!username.value.trim() || !password.value || loginBusy.value) return
-  loginBusy.value = true; loginError.value = ''
-  try {
-    const auth = await api<AuthResponse>('/auth/login', json('POST', { username: username.value.trim(), password: password.value }))
-    password.value = ''; await establishSession(auth)
-  } catch (error) { if (!isCancelled(error)) loginError.value = errorText(error) }
-  finally { loginBusy.value = false }
+// 未登录：允许访客浏览时进入只读模式，否则显示登录页
+function applyGuest(auth: AuthResponse) {
+  if (authenticated.value) clearSession()
+  applyOptions(auth)
+  isGuest.value = authOptions.guestBrowse
+  if (isGuest.value) { void loadSystem(); void loadTitles(true) }
 }
+async function loadAuth() {
+  try { await establishSession(await api<AuthResponse>('/auth')) }
+  catch (error) { if (!isCancelled(error)) loginError.value = errorText(error) }
+}
+function openAuth(mode: 'login' | 'register') { authPrompt.value = { mode } }
+async function authenticatedFromPanel(auth: AuthResponse) { authPrompt.value = null; await establishSession(auth) }
+function authMode(mode: 'login' | 'register') { if (authPrompt.value) authPrompt.value = { ...authPrompt.value, mode } }
+// 新手引导：每个账号首次登录自动显示一次，可在账号菜单重新查看
+const tourOpen = ref(false)
+const tourKey = () => `nodepool-tour-v1:${currentUser.value?.id ?? 0}`
+function maybeStartTour() {
+  let seen = true
+  try { seen = !!localStorage.getItem(tourKey()) } catch { /* 隐私模式下不自动弹出 */ }
+  if (!seen) startTour()
+}
+function startTour() { if (section.value !== 'nodes') navigate('nodes'); tourOpen.value = true }
+function closeTour() { tourOpen.value = false; try { localStorage.setItem(tourKey(), new Date().toISOString()) } catch { /* 忽略 */ } }
+const tourSteps = computed<TourStep[]>(() => {
+  const steps: TourStep[] = [
+    { title: '欢迎来到 MCII 节点共享', icon: 'compass', body: '这里汇集大家共享的机场订阅，自动去重并持续检测延迟。你可以挑选节点组合成自己的订阅，导入 Clash 等客户端使用。花一分钟认识一下各个页面吧。' },
+    { target: '[data-tour="nav-nodes"]', icon: 'nodes', title: '节点总览', body: '浏览所有共享节点的延迟、地区和来源，支持按国家、协议、提供方筛选。', before: () => navigate('nodes') },
+    { target: '[data-tour="select-nodes"]', icon: 'plus', title: '挑选节点组合订阅', body: '点「选择节点」进入选择模式，点击卡片勾选节点，也可以跟随整个来源（自动同步节点），最后保存为一条订阅。', before: () => navigate('nodes') },
+    { target: '[data-tour="nav-subscriptions"]', icon: 'link', title: '我的订阅', body: '保存的组合会生成订阅链接：选择 Clash / Mihomo 格式后复制、一键导入或扫码。修改前的组合会保留在「历史组合」里，可随时恢复。' },
+    { target: '[data-tour="nav-sources"]', icon: 'sources', title: '共享来源', body: '把自己的机场订阅共享出来，供大家使用；被使用会获得经验和积分，也能看到使用人数和流量趋势。' },
+    { target: '[data-tour="nav-rules"]', icon: 'settings', title: '规则组合', body: '控制分流规则和策略组。官方规则开箱即用，会按订阅里的国家自动生成分组；也可以复制一份自己调整。' },
+    { target: '[data-tour="nav-account"]', icon: 'user', title: '我的账号', body: '每天签到续期订阅、积累经验升级，等级越高可用的节点和来源额度越多。' },
+    { target: '[data-tour="user-menu"]', icon: 'compass', title: '账号菜单', body: '右上角可以查看等级与积分、切换页面、退出登录；想再看一遍这个教程，也在这里点「新手教程」。' },
+  ]
+  return steps
+})
 async function logout() {
   if (logoutBusy.value) return
   logoutBusy.value = true
-  try { await api('/auth/logout', json('POST')); clearSession() }
+  try { await api('/auth/logout', json('POST')); clearSession(); toast('已退出登录', 'info'); await loadAuth() }
   catch (error) { if (!isCancelled(error)) systemError.value = errorText(error) }
   finally { logoutBusy.value = false }
 }
@@ -130,7 +205,7 @@ async function reconnect() {
   connecting = true
   try {
     const auth = await api<AuthResponse>('/auth')
-    if (!auth.authenticated) { clearSession(); loginError.value = '服务已恢复，请重新登录。'; return }
+    if (!auth.authenticated) { clearSession(); applyGuest(auth); loginError.value = '服务已恢复，请重新登录。'; return }
     reconnecting.value = false; reconnectError.value = ''; versionKey.value++
     await establishSession(auth)
   } catch (error) { if (!isCancelled(error)) reconnectError.value = '正在等待服务恢复，稍后会自动重连…' }
@@ -139,45 +214,47 @@ async function reconnect() {
 usePolling(async () => {
   if (reconnecting.value) await reconnect()
   else if (authenticated.value && !reconnectError.value) await refreshOverview()
+  else if (isGuest.value) await loadSystem()
 }, 4000, false)
 onMounted(async () => {
   apiEvents.addEventListener('unauthorized', unauthorized)
   apiEvents.addEventListener('database-unavailable', unavailable)
-  try { await establishSession(await api<AuthResponse>('/auth')) }
-  catch (error) { if (!isCancelled(error)) loginError.value = errorText(error) }
+  apiEvents.addEventListener('maintenance', maintenance)
+  apiEvents.addEventListener('email-required', needEmail)
+  readOAuthResult()
+  try { await loadAuth() }
   finally { booting.value = false }
 })
 onBeforeUnmount(() => {
   apiEvents.removeEventListener('unauthorized', unauthorized)
   apiEvents.removeEventListener('database-unavailable', unavailable)
+  apiEvents.removeEventListener('maintenance', maintenance)
+  apiEvents.removeEventListener('email-required', needEmail)
 })
+watch(authenticated, on => { if (on) void loadTitles(true) })
 </script>
 
 <template>
-  <ThemeSelect v-if="!authenticated" class="guest-theme" />
-  <div v-if="booting" class="boot-screen" role="status"><span class="brand-symbol">N</span><span class="spinner"></span>正在连接 NodePool…</div>
-  <main v-else-if="!authenticated" class="login-screen">
-    <div class="login-intro"><span class="brand-symbol">N</span><span class="eyebrow">MIHOMO NODEPOOL</span><h1>每一个连接，<br>清晰可见。</h1><p>汇集来源，去重管理。<br>让节点状态与连接质量，一目了然。</p><div class="login-orbit" aria-hidden="true"><span></span><span></span><span></span><b><AppIcon name="nodes" /></b></div></div>
-    <form class="login-card" @submit.prevent="login">
-      <p class="eyebrow">NODEPOOL</p><h2>欢迎回来</h2><p class="muted">登录账号，管理来源与个人订阅。</p>
-      <label class="form-field"><span class="field-label">用户名</span><input v-model="username" autocomplete="username" required autofocus :disabled="loginBusy" placeholder="请输入用户名" /></label>
-      <label class="form-field"><span class="field-label">密码</span><input v-model="password" type="password" autocomplete="current-password" required :disabled="loginBusy" placeholder="请输入密码" /></label>
-      <p v-if="loginError" class="notice error" role="alert">{{ loginError }}</p>
-      <button class="primary full" :disabled="loginBusy || !username.trim() || !password" type="submit"><span v-if="loginBusy" class="spinner"></span>{{ loginBusy ? '正在登录' : '登录控制台' }}<AppIcon v-if="!loginBusy" name="right" /></button>
-      <p class="small muted">账号由管理员创建</p>
-    </form>
+  <ThemeSelect v-if="!authenticated && !isGuest" class="guest-theme" />
+  <ToastHost />
+  <div v-if="booting" class="boot-screen" role="status"><span class="brand-symbol">M</span><span class="spinner"></span>正在连接 MCII节点共享…</div>
+  <main v-else-if="!authenticated && !isGuest" class="login-screen">
+    <div class="login-intro"><span class="brand-symbol">M</span><span class="eyebrow">MCII 节点共享</span><h1>每一个连接，<br>清晰可见。</h1><p>汇集来源，去重管理。<br>让节点状态与连接质量，一目了然。</p><div class="login-orbit" aria-hidden="true"><span></span><span></span><span></span><b><AppIcon name="nodes" /></b></div></div>
+    <AuthPanel class="login-card" :registration="authOptions.registration" :notice="loginError" @authenticated="authenticatedFromPanel" />
   </main>
   <div v-else class="app-shell">
     <aside class="sidebar">
-      <div class="brand"><span class="brand-symbol">N</span><div><strong>NodePool</strong><span>MIHOMO 控制台</span></div></div>
-      <button class="version-text text-button" aria-label="打开版本信息" @click="versionsOpen = true">{{ system?.version || '版本信息' }}</button>
+      <div class="brand"><span class="brand-symbol">M</span><div><strong>MCII节点共享</strong><span>MIHOMO 订阅共享</span></div></div>
+      <button type="button" class="version-chip" aria-label="打开版本信息" title="版本信息" @click="versionsOpen = true"><span class="version-dot"></span><span class="version-label">版本</span><b>{{ system?.version || '读取中' }}</b><AppIcon name="right" /></button>
       <p class="nav-caption">工作空间</p>
-      <nav aria-label="主要导航"><a v-for="item in sections" :key="item.id" :href="sectionHref(item.id)" :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="navigateLink($event, item.id)"><AppIcon :name="item.icon" /><span>{{ item.label }}</span><span v-if="item.id === 'sources' && sources.length" class="nav-count">{{ sources.length }}</span></a></nav>
-      <div class="sidebar-bottom"><button class="logout" :disabled="logoutBusy" @click="logout"><AppIcon name="logout" />{{ logoutBusy ? '正在退出…' : '退出登录' }}</button></div>
+      <nav aria-label="主要导航"><a v-for="item in sections" :key="item.id" :href="sectionHref(item.id)" :data-tour="`nav-${item.id}`" :title="item.label" :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="navigateLink($event, item.id)"><AppIcon :name="item.icon" /><span>{{ item.label }}</span><span v-if="item.id === 'sources' && sources.length" class="nav-count">{{ sources.length }}</span></a></nav>
     </aside>
+    <nav class="mobile-tabbar" aria-label="手机导航"><a v-for="item in mobileTabs" :key="item.id" :href="sectionHref(item.id)" :data-tour="`nav-${item.id}`" :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="mobileGo($event, item.id)"><AppIcon :name="item.icon" /><span>{{ item.label.replace('我的', '') }}</span></a><button v-if="mobileOverflow.length" type="button" :class="{ active: moreActive }" data-tour="nav-more" @click="mobileMore = true"><AppIcon name="menu" /><span>更多</span></button><button v-if="isGuest" type="button" @click="openAuth('login')"><AppIcon name="login" /><span>登录</span></button></nav>
     <div class="workspace">
-      <header class="topbar"><span>工作空间 <span class="muted">/</span> <strong>{{ currentTitle }}</strong></span><div class="topbar-status"><ThemeSelect /><span class="admin-avatar">{{ displayName.slice(0, 1).toUpperCase() }}</span><span class="admin-name">{{ displayName }}</span><button class="mobile-logout text-button" :disabled="logoutBusy" @click="logout">退出</button></div></header>
-      <main class="main-content">
+      <header class="topbar"><span>工作空间 <span class="muted">/</span> <strong>{{ currentTitle }}</strong></span><div class="topbar-status"><span v-if="maintenanceOn" class="maintenance-pill" title="维护模式已开启"><AppIcon name="lock" />维护中</span><ThemeSelect /><UserMenu v-if="authenticated" data-tour="user-menu" :busy="logoutBusy" @logout="logout" @tour="startTour" /><div v-else class="guest-actions"><button type="button" class="compact" @click="openAuth('login')"><AppIcon name="login" />登录</button><button v-if="authOptions.registration" type="button" class="primary compact" @click="openAuth('register')">注册</button></div></div></header>
+      <main :key="viewKey" class="main-content">
+        <div v-if="isGuest" class="guest-banner"><AppIcon name="info" /><div><strong>你正在以访客身份浏览</strong><p>可以查看节点、提供方与运行统计，服务器地址已隐藏。{{ authOptions.registration ? '注册或登录后' : '登录后' }}即可挑选节点、组合自己的订阅并导入客户端。</p></div><div class="guest-banner-actions"><button type="button" class="compact" @click="openAuth('login')">登录</button><button v-if="authOptions.registration" type="button" class="primary compact" @click="openAuth('register')">免费注册</button></div></div>
+        <div v-if="maintenanceOn" class="maintenance-banner" role="status"><AppIcon name="lock" /><div><strong>{{ isAdmin ? '维护模式已开启' : '系统维护中' }}</strong><p>{{ system?.maintenance?.message || '管理员正在维护系统。' }}<template v-if="isAdmin">普通用户与用户管理员现在只能查看和拉取订阅，你仍可正常修改。</template><template v-else>期间可以查看内容和继续使用订阅，暂时不能修改。</template></p></div><a v-if="isAdmin && section !== 'settings'" :href="sectionHref('settings') + '#maintenance'" @click="navigateLink($event, 'settings')">前往设置</a></div>
         <div v-if="databaseUnavailable" class="notice error" role="alert">数据库暂不可用，节点、来源和设置可能无法读取。请恢复数据库连接后重试。<button @click="refreshOverview">重试连接</button></div>
         <div v-if="systemError && !databaseUnavailable" class="notice error" role="alert">{{ systemError }}<button @click="loadSystem">重试</button></div>
         <div v-if="system?.core?.state === 'error'" class="notice warning" role="alert">检测内核尚未就绪，节点检测可能失败。请检查服务运行状态。</div>
@@ -188,13 +265,18 @@ onBeforeUnmount(() => {
         <SubscriptionsView v-if="visited.has('subscriptions')" v-show="section === 'subscriptions'" :paused="reconnecting || section !== 'subscriptions'" />
         <RulesView v-if="visited.has('rules')" v-show="section === 'rules'" :paused="reconnecting || section !== 'rules'" />
         <AccountView v-if="visited.has('account')" v-show="section === 'account'" :paused="reconnecting || section !== 'account'" />
-        <UsersView v-if="isAdmin && visited.has('users')" v-show="section === 'users'" :paused="reconnecting || section !== 'users'" />
-        <SettingsView v-if="isAdmin && visited.has('settings')" v-show="section === 'settings'" :system="system" />
+        <UsersView v-if="canManageUsers && visited.has('users')" v-show="section === 'users'" :paused="reconnecting || section !== 'users'" />
+        <SettingsView v-if="isAdmin && visited.has('settings')" v-show="section === 'settings'" :system="system" @saved="settingsSaved" />
+        <StatisticsView v-if="visited.has('statistics')" v-show="section === 'statistics'" :paused="reconnecting || section !== 'statistics'" />
       </main>
-      <footer class="app-footer"><span>Mihomo NodePool</span><span>连接有序 · 状态可知</span></footer>
+      <footer class="app-footer"><span>MCII节点共享</span><span>连接有序 · 状态可知</span></footer>
     </div>
-    <VersionsDialog v-if="versionsOpen && isAdmin" :key="versionKey" @close="versionsOpen = false" @restart="startReconnect" />
-    <Modal v-else-if="versionsOpen" title="版本信息" @close="versionsOpen = false"><p>Mihomo NodePool <strong>{{ system?.version || '读取中…' }}</strong></p></Modal>
+    <VersionsDialog v-if="versionsOpen && isAdmin" :key="versionKey" :system="system" @close="versionsOpen = false" @restart="startReconnect" />
+    <Modal v-else-if="versionsOpen" title="关于" @close="versionsOpen = false"><div class="about-version"><span class="brand-symbol">M</span><span class="eyebrow">MCII 节点共享</span><strong>{{ system?.version || '读取中…' }}</strong><p class="small muted">MCII节点共享 · 汇集来源、去重检测、组合订阅</p></div><div class="dialog-actions"><button type="button" class="primary" @click="versionsOpen = false">好的</button></div></Modal>
+    <Modal v-if="authPrompt && isGuest" :title="authPrompt.mode === 'register' ? '注册账号' : '登录'" @close="authPrompt = null"><AuthPanel embedded :mode="authPrompt.mode" :reason="authPrompt.reason" :registration="authOptions.registration" :notice="loginError" @mode="authMode" @authenticated="authenticatedFromPanel" /></Modal>
+    <Modal v-if="mobileMore" title="全部页面" @close="mobileMore = false"><div class="more-grid"><a v-for="item in sections" :key="item.id" :href="sectionHref(item.id)" :class="{ active: section === item.id }" @click="mobileGo($event, item.id)"><span class="more-icon"><AppIcon :name="item.icon" /></span><span>{{ item.label }}</span></a></div><button type="button" class="version-chip more-version" @click="mobileMore = false; versionsOpen = true"><span class="version-dot"></span><span class="version-label">版本</span><b>{{ system?.version || '读取中' }}</b><AppIcon name="right" /></button></Modal>
+    <Modal v-if="emailRequired && authenticated" title="绑定邮箱" locked><div class="email-required"><span class="email-required-icon"><AppIcon name="mail" /></span><p><strong>继续使用前，请先绑定并验证邮箱</strong></p><p class="small muted">邮箱用于登录、找回密码和接收重要通知。旧平台迁移或第三方注册的账号需要补齐一次，之后即可正常使用。</p></div><EmailBindForm submit-label="验证并继续" @bound="emailBound"><template #extra><button type="button" class="ghost" :disabled="logoutBusy" @click="logout">退出登录</button></template></EmailBindForm></Modal>
+    <OnboardingTour v-if="tourOpen && authenticated && !emailRequired" :steps="tourSteps" @close="closeTour" />
     <div v-if="reconnecting" class="reconnect-overlay" role="status" aria-live="polite"><span class="spinner"></span><h2>正在重新连接服务</h2><p>服务重启后将自动恢复控制台。</p><p class="small muted">{{ reconnectError || '请稍候…' }}</p></div>
   </div>
 </template>
