@@ -117,4 +117,43 @@ func TestMySQLNodeAvailabilityAndCatalogStats(t *testing.T) {
 	if e != nil || avail["total"].(int) != 1 {
 		t.Fatalf("catalog available filter: %v %v", avail["total"], e)
 	}
+	// 管理员领取同样受席位上限限制：席位已满排在后面，“只看可选”同样生效；等级限制对管理员不生效
+	admin := account(t, s, "availadmin", 200, 5, 3)
+	if _, e = s.DB.Exec(`UPDATE np_users SET role='admin' WHERE id=?`, admin.ID); e != nil {
+		t.Fatal(e)
+	}
+	admin.Role = "admin"
+	// 上面直接改库恢复了节点状态，刷新索引
+	s.InvalidateIndex()
+	ac := pool.WithUser(ctx, admin)
+	for _, sort := range []string{"", "recommend", "latency", "name"} {
+		ordered, e := s.Nodes(ac, pool.Filter{Sort: sort, PageSize: 100})
+		if e != nil {
+			t.Fatal(e)
+		}
+		seen := false
+		for _, n := range ordered.Items {
+			if n.Unavailable != "" {
+				seen = true
+			} else if seen {
+				t.Fatalf("admin sort %q: selectable node listed after seat-full ones", sort)
+			}
+		}
+		if !seen {
+			t.Fatalf("admin sort %q: seat-full node missing", sort)
+		}
+	}
+	if only := reasons(ac, pool.Filter{Available: true}); len(only) != 2 || only[open.ID] != "" || only[high.ID] != "" {
+		t.Fatalf("admin available filter: %v", only)
+	}
+	for _, sort := range []string{"", "recommend", "new"} {
+		catalog, e = s.Catalog(ac, pool.CatalogFilter{Sort: sort, PageSize: 50})
+		if e != nil {
+			t.Fatal(e)
+		}
+		items = catalog["items"].([]pool.Source)
+		if items[len(items)-1].ID != full.ID {
+			t.Fatalf("admin catalog sort %q: seat-full source must be last", sort)
+		}
+	}
 }

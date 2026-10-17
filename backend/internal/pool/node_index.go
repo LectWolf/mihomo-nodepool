@@ -301,7 +301,7 @@ func (s *Store) loadViewer(ctx context.Context, viewer User, following bool, fol
 		}
 		rows.Close()
 	}
-	if viewer.Role != "admin" {
+	{
 		rows, e := s.DB.QueryContext(ctx, `SELECT st.source_id,COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.state='active' AND st.expires_at>UTC_TIMESTAMP(6) GROUP BY st.source_id`)
 		if e != nil {
 			return v, e
@@ -404,7 +404,7 @@ func (s *Store) indexedNodes(ctx context.Context, f Filter, out *NodePage) ([]in
 				(!f.Following || vs.follow[src.owner]) && (f.MinLevel == nil || src.minLevel == *f.MinLevel) {
 				matched = true
 			}
-			if !usable && viewer.Role != "admin" && vs.usable(viewer, src) {
+			if !usable && vs.usable(viewer, src) {
 				usable = true
 			}
 		}
@@ -423,7 +423,7 @@ func (s *Store) indexedNodes(ctx context.Context, f Filter, out *NodePage) ([]in
 		if (f.Type != "" && n.typ != f.Type) || (f.Status != "" && n.status != f.Status) || (len(countries) > 0 && !countries[n.country]) || !matched {
 			continue
 		}
-		if f.Available && viewer.Role != "admin" && !usable {
+		if f.Available && !usable {
 			continue
 		}
 		if f.MaxLatency > 0 && (n.latency < 0 || n.latency > f.MaxLatency) {
@@ -435,16 +435,15 @@ func (s *Store) indexedNodes(ctx context.Context, f Filter, out *NodePage) ([]in
 		agg, has := ix.fieldOf(n.id)
 		r := rankedNode{n: n, field: fieldRank(agg, has), health: n.status == "healthy"}
 		r.fresh = r.health && !n.created.Before(freshSince)
-		// 普通用户：可选 → 席位已满等暂不可选 → 不可用；国内用户实测能连时不按本机不可用处理
-		if viewer.Role != "admin" {
-			switch {
-			case (n.status == "unhealthy" && r.field != 0) || r.field == 3:
-				r.tier = 2
-			case usable:
-				r.tier = 0
-			default:
-				r.tier = 1
-			}
+		// 可选 → 席位已满等暂不可选 → 不可用；国内用户实测能连时不按本机不可用处理。
+		// 管理员领取同样受席位上限限制（只跳过等级），排序一致
+		switch {
+		case (n.status == "unhealthy" && r.field != 0) || r.field == 3:
+			r.tier = 2
+		case usable:
+			r.tier = 0
+		default:
+			r.tier = 1
 		}
 		list = append(list, r)
 	}

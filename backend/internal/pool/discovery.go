@@ -46,7 +46,7 @@ func (s *Store) Catalog(ctx context.Context, f CatalogFilter) (map[string]any, e
 	}
 	viewer := CurrentUser(ctx)
 	usable, usableArgs := sourceUsableSQL(viewer)
-	if f.Available && viewer.Role != "admin" {
+	if f.Available {
 		where += " AND " + usable
 		args = append(args, usableArgs...)
 	}
@@ -61,15 +61,13 @@ func (s *Store) Catalog(ctx context.Context, f CatalogFilter) (map[string]any, e
 		healthy := "(SELECT COUNT(*) FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id WHERE sn.source_id=np_sources.id AND sn.excluded=0 AND n.blocked=0 AND n.status='healthy')"
 		order = "created_at>=? DESC," + healthy + " DESC,id DESC"
 		orderArgs = append(orderArgs, utcNow().Add(FreshSourceWindow*-1))
-		// 可选 → 席位已满等暂不可选 → 节点全部检测不可用
-		if viewer.Role != "admin" {
-			alive := strings.Replace(healthy, "n.status='healthy'", "n.status<>'unhealthy'", 1)
-			order = "CASE WHEN " + alive + "=0 THEN 2 WHEN " + usable + " THEN 0 ELSE 1 END," + order
-			orderArgs = append(append([]any{}, usableArgs...), orderArgs...)
-		}
 	case "new":
 		order = "created_at DESC,id DESC"
 	}
+	// 所有排序：可选 → 席位已满等暂不可选 → 节点全部检测不可用
+	alive := "(SELECT COUNT(*) FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id WHERE sn.source_id=np_sources.id AND sn.excluded=0 AND n.blocked=0 AND n.status<>'unhealthy')"
+	order = "CASE WHEN " + alive + "=0 THEN 2 WHEN " + usable + " THEN 0 ELSE 1 END," + order
+	orderArgs = append(append([]any{}, usableArgs...), orderArgs...)
 	// Neither the catalog nor management responses contain upstream URLs/content.
 	rows, e := s.DB.QueryContext(ctx, `SELECT `+publicSourceColumns+` FROM np_sources WHERE `+where+` ORDER BY `+order+` LIMIT ? OFFSET ?`, append(append(append([]any{}, args...), orderArgs...), size, (page-1)*size)...)
 	if e != nil {

@@ -160,7 +160,7 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 
 实测回报：开启 `beacon_enabled` 的用户下载 Clash 格式时，订阅另附最多 15 个隐藏 url-test 组（`实测回报 N`），每组只含一个节点，检测地址为 `http://<公网主机>/b/<32位令牌>`，间隔 3 小时、`lazy:false`。令牌按（批次，节点）随机生成，同一订阅 12 小时内复用同一批次，之后轮换并优先选该用户未测、全站数据少的节点。GET／HEAD `/b/{token}` 始终返回空 204；首次回报记录该节点连通。批次已有回报 10 分钟后仍未回报的节点视为该用户连不上：订阅中排到末尾，订阅详情 `node_details[].my_failed=true`。拉取订阅的 IP 属于中国大陆（内嵌 APNIC 数据，`scripts/update-cnip.py` 更新）时批次计入国内统计；节点列表 Node 另带 `field_test:{ok,fail,days,paused}`：统计窗口（`settings.field_test_days`，默认 3 天）内按用户去重的国内实测结果；`paused=true` 表示本机状态健康、窗口内多数国内用户能连、最近一次国内回报为能连且在 24 小时内，本机暂停检测，延迟为最后一次本机结果；有人连不上或超过 24 小时无人回报后恢复。连不上不会有任何请求到达服务器：同一批次已有其他节点回报（证明客户端在线并已加载订阅）10 分钟后仍未回报的节点记为连不上。回报走 HTTP 80 端口以免每次握手，反代须让 `/b/` 不跳转 HTTPS。批次保留 8 天。
 
-国内实测参与排序：每个节点按窗口内结果分档——能连用户占比 ≥70% 为“能连”，无数据为“未知”，至少 2 位连不上且能连占比 <30% 为“连不上”，其余为“不一”。`sort=latency` 与 `sort=recommend` 在可选性分组内先按该档位、再按本机延迟；普通用户视角下，本机不可用但国内能连的节点不再排到末尾，国内连不上的节点排到末尾。
+国内实测参与排序：每个节点按窗口内结果分档——能连用户占比 ≥70% 为“能连”，无数据为“未知”，至少 2 位连不上且能连占比 <30% 为“连不上”，其余为“不一”。`sort=latency` 与 `sort=recommend` 在可选性分组内先按该档位、再按本机延迟；本机不可用但国内能连的节点不再排到末尾，国内连不上的节点排到末尾。
 
 ## 积分、头像与反馈
 
@@ -224,7 +224,7 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 - 运行设置 `login`：`{require_email,email_suffixes[],smtp:{host,port,security:"ssl"|"starttls"|"none",username,password,from,from_name},github:{enabled,client_id,client_secret},linuxdo:{...}}`。GET 不返回任何密钥，只返回 `password_set`／`secret_set`；PUT 留空沿用旧值，新值启用数据加密时以 `np_settings.secret` 用途加密保存。未提交 `login` 时保留原值。默认允许后缀 21 个（deepseek.com、edu.mo、edu.hk、edu.tw、foxmail.com、163.com、126.com、139.com、189.cn、edu.cn、gmail.com、aliyun.com、apache.org、sohu.com、privaterelay.appleid.com、xiaomi.com、yahoo.com、sina.cn、sina.com、qq.com、gov.cn），子域名自动匹配，清空表示不限。
 - POST `/settings/smtp-test` `{to}` → `{ok}`，仅管理员，使用已保存的 SMTP 配置。
 - 头像接受 PNG／JPEG／GIF，GIF 与 APNG 只保留首帧并重新编码为静态 PNG（超过 200KB 时转 JPEG）；前端上传前也会裁剪并转成静态 JPEG。
-- GET `/nodes` 新增 `available=1`（只看当前用户可选）和 `sort=recommend`（默认：可选优先，72 小时内新入池的健康节点优先，再按延迟）。普通用户与访客的所有排序都会把不可选节点排在后面；节点与 `sources[]` 返回 `unavailable:"full"|"level"|"kicked"`（席位已满／等级不足／已被移出），节点另有 `fresh`。
+- GET `/nodes` 新增 `available=1`（只看当前用户可选）和 `sort=recommend`（默认：可选优先，72 小时内新入池的健康节点优先，再按延迟）。所有角色（含管理员）的所有排序都按“可选 → 席位已满／等级不足／已被移出 → 检测不可用”分组，管理员领取同样受席位上限限制，只跳过等级限制；`available=1` 对管理员同样生效。来源目录 `/catalog` 的所有排序同理；节点与 `sources[]` 返回 `unavailable:"full"|"level"|"kicked"`（席位已满／等级不足／已被移出），节点另有 `fresh`。
 - GET `/sources/catalog` 新增 `sort=recommend|new`、`available=1`，条目附带 `healthy_count`、`avg_latency`、`countries`（最多 8 个）、`unavailable`、`seated`、`fresh`（7 天内创建）。
 - 来源 `max_users=0`（不限人数）时不占用户的来源额度：保存组合、客户端输出与 `/me` 的 `usage.sources` 都只统计设置了人数上限的来源。
 - 同一节点由多个来源提供时，保存组合按以下顺序决定实际占用的来源（返回的 `nodes[].source_id` 即实际来源）：不限人数的来源 → 你已占有席位或本次已选用的有限来源 → 仍有空位的有限来源。来源被下架、停用、删除、提高等级要求或提供方被停用后，受影响用户的订阅立即切换到其他可用来源（同样优先不限人数）；拉取订阅时发现失效节点也会自动尝试切换（每用户 5 分钟一次，来源恢复或改为不限人数时重置）。没有其他可用来源时节点保留，来源恢复后继续输出。跟随整个来源不参与切换。
