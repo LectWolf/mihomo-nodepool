@@ -172,10 +172,21 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 	if e = tx.Commit(); e != nil {
 		return v, e
 	}
+	// 停用或调整等级要求后，受影响的订阅切换到其他来源
+	if !v.Enabled || p.MinLevel != nil {
+		s.rehomeSources(ctx, id)
+	}
+	if (p.Enabled != nil && *p.Enabled) || (p.MaxUsers != nil && *p.MaxUsers == 0) {
+		resetRehome()
+	}
 	return s.Source(ctx, id)
 }
 func (s *Store) DeleteSource(ctx context.Context, id int64) error {
 	if e := s.SourcePermission(ctx, id); e != nil {
+		return e
+	}
+	users, e := sourceUsers(ctx, s.DB, []int64{id})
+	if e != nil {
 		return e
 	}
 	r, e := s.DB.ExecContext(ctx, `DELETE FROM np_sources WHERE id=?`, id)
@@ -186,6 +197,7 @@ func (s *Store) DeleteSource(ctx context.Context, id int64) error {
 	if n == 0 {
 		return ErrNotFound
 	}
+	s.rehomeUsers(ctx, users)
 	return nil
 }
 func (s *Store) QueueSource(ctx context.Context, id int64) error {

@@ -16,11 +16,11 @@
 - POST `/me/email/code` `{email}` → 向新邮箱发送绑定验证码（校验后缀和占用）；PUT `/me/email` `{email,code}` → User，绑定或换绑。
 - GET `/me/identities` → `{items:[{provider,login,created_at}],providers:{github,linuxdo}}`；DELETE `/me/identities/{provider}` 解绑。
 - 邮件服务可用且 `login.require_email=true` 时，没有邮箱的非管理员账号只能浏览（GET）、绑定邮箱、修改昵称／密码／头像和退出，其他写操作返回 403 `{error,email_required:true}`。
-- POST `/auth/login` `{username?,password,remember?}` → 同上，并设置 HttpOnly、SameSite Cookie；`username` 可以是用户名或已绑定邮箱，省略用户名兼容 `admin`。默认是浏览器会话 Cookie（服务端 12 小时）；`remember=true` 时 Cookie 与服务端会话为 30 天，使用中剩余不足 29 天会自动续期。
+- POST `/auth/login` `{username?,password,remember?}` → 同上，并设置 HttpOnly、SameSite Cookie；`username` 可以是用户名或已绑定邮箱，省略用户名兼容 `admin`。账号存在但没有设置密码（旧平台迁移、第三方注册）时返回 409 `{error,password_unset:true,email_hint,providers}`：`email_hint` 是打码后的已验证邮箱（邮件服务未配置时为空），`providers` 是已绑定且已启用的第三方登录；前端引导用邮箱验证码设置密码，或经第三方登录后强制补设密码。默认是浏览器会话 Cookie（服务端 12 小时）；`remember=true` 时 Cookie 与服务端会话为 30 天，使用中剩余不足 29 天会自动续期。
 - POST `/auth/persist` `{remember}` → 同 `/auth`；登录后“保持登录状态？”确认用，把当前会话改为 30 天持久会话。会话以 SHA-256 摘要存入 `np_sessions`，服务重启不掉线，退出登录、改密码或停用账号即失效。
 - POST `/auth/logout` → `{authenticated:false}`。
 - GET `/me` → `{user:User,usage:{nodes,sources,subscriptions},provider_path}`。
-- PATCH `/me` `{display_name?,password?}` → User；修改密码撤销其他会话，保留当前浏览器。
+- PATCH `/me` `{display_name?,password?,current_password?}` → User；User 含 `has_password`。已有密码的账号修改密码必须提供正确的 `current_password`（错误 400，同一账号 15 分钟内错 5 次后 429）；没有密码的账号可直接设置。修改密码撤销其他会话，保留当前浏览器。
 - GET `/users?q=&role=&status=&risk=&quota=&page=1&page_size=20` → `{items:User[],total,page,page_size,limits,risk}`，管理员与用户管理员（manager）。`role=admin|manager|user`，`status=enabled|disabled`，`risk=flagged|frozen|clean`（触发任一风控标记／冻结中／无标记），`quota=custom|level`（单独设置额度／跟随等级）；参数可组合。
 - POST `/users` `{username,password,display_name?,node_limit?,source_limit?,subscription_limit?,role?}` → User，201。管理员创建的账号沿用 1–64 位用户名规则，便于导入旧平台数据。
 - PATCH `/users/{id}` `{display_name?,password?,enabled?,node_limit?,source_limit?,subscription_limit?,xp?,points?,role?}` → User。
@@ -221,6 +221,7 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 - GET `/nodes` 新增 `available=1`（只看当前用户可选）和 `sort=recommend`（默认：可选优先，72 小时内新入池的健康节点优先，再按延迟）。普通用户与访客的所有排序都会把不可选节点排在后面；节点与 `sources[]` 返回 `unavailable:"full"|"level"|"kicked"`（席位已满／等级不足／已被移出），节点另有 `fresh`。
 - GET `/sources/catalog` 新增 `sort=recommend|new`、`available=1`，条目附带 `healthy_count`、`avg_latency`、`countries`（最多 8 个）、`unavailable`、`seated`、`fresh`（7 天内创建）。
 - 来源 `max_users=0`（不限人数）时不占用户的来源额度：保存组合、客户端输出与 `/me` 的 `usage.sources` 都只统计设置了人数上限的来源。
+- 同一节点由多个来源提供时，保存组合按以下顺序决定实际占用的来源（返回的 `nodes[].source_id` 即实际来源）：不限人数的来源 → 你已占有席位或本次已选用的有限来源 → 仍有空位的有限来源。来源被下架、停用、删除、提高等级要求或提供方被停用后，受影响用户的订阅立即切换到其他可用来源（同样优先不限人数）；拉取订阅时发现失效节点也会自动尝试切换（每用户 5 分钟一次，来源恢复或改为不限人数时重置）。没有其他可用来源时节点保留，来源恢复后继续输出。跟随整个来源不参与切换。
 - 来源直链 `/link/{token}` 不计入个人订阅的拉取风控（每小时次数、每日 IP、节点曝光窗口），也不占用席位。
 - `/me/provider-trend` 每天带 `sampled`，来源上架前没有快照的日子为 false，前端计算平均健康度时跳过。
 

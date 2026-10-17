@@ -13,6 +13,7 @@ import { walletApi } from '../api/economy'
 import { currentUser } from '../api/accounts'
 import { isStaff } from '../api/moderation'
 import SourceModeration from './SourceModeration.vue'
+import { cached, remember } from '../view-cache'
 const props = defineProps<{ paused: boolean }>()
 const api = useApi()
 const q = ref(''); const onlyFollowing = ref(false); const page = ref(1)
@@ -37,17 +38,21 @@ watch([q, onlyFollowing, page], ([query, only, p], [oldQuery]) => {
   if (p > 1) params.set('page', String(p))
   setRouteQuery('providers', params, query !== oldQuery)
 })
+function requestPath() {
+  const params = new URLSearchParams({ q: q.value, page: String(page.value), page_size: '20' })
+  if (onlyFollowing.value) params.set('following', '1')
+  return `/providers?${params}`
+}
 async function load() {
   if (props.paused) return
   const current = ++sequence; controller?.abort(); controller = new AbortController(); loading.value = true
-  const params = new URLSearchParams({ q: q.value, page: String(page.value), page_size: '20' })
-  if (onlyFollowing.value) params.set('following', '1')
+  const path = requestPath()
   try {
-    const result = await api<Page<Provider>>(`/providers?${params}`, { signal: controller.signal })
+    const result = await api<Page<Provider>>(path, { signal: controller.signal })
     if (current !== sequence) return
     const last = Math.max(1, Math.ceil(result.total / 20))
     if (page.value > last) { page.value = last; return }
-    data.value = result; error.value = ''
+    data.value = result; error.value = ''; remember(path, result)
     const ids = new Set(followed.value)
     result.items.forEach(p => { if (p.followed) ids.add(p.id); else ids.delete(p.id) })
     followed.value = ids
@@ -91,6 +96,7 @@ async function share(p: Provider) {
   try { await copyText(absoluteURL(p.provider_path || `/nodes?provider_id=${p.id}`)); message.value = '提供方入口已复制，登录后可选择其节点。' }
   catch (cause) { error.value = errorText(cause) }
 }
+data.value ??= cached<Page<Provider>>(requestPath()) ?? null
 </script>
 <template>
   <section class="providers-page">

@@ -330,7 +330,7 @@ func writeError(w http.ResponseWriter, e error) {
 		code = 403
 	case errors.Is(e, pool.ErrQuota), errors.Is(e, pool.ErrProfileInUse), errors.Is(e, pool.ErrPoints), errors.Is(e, pool.ErrEmailTaken), errors.Is(e, pool.ErrIdentityTaken):
 		code = 409
-	case errors.Is(e, pool.ErrRiskLimit), errors.Is(e, pool.ErrRateLimited), errors.Is(e, pool.ErrCodeCooldown):
+	case errors.Is(e, pool.ErrRiskLimit), errors.Is(e, pool.ErrRateLimited), errors.Is(e, pool.ErrCodeCooldown), errors.Is(e, pool.ErrTooManyAttempts):
 		code = 429
 	case errors.Is(e, pool.ErrDataKey):
 		code = 503

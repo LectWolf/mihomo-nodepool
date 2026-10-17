@@ -17,11 +17,13 @@ import SubscriptionArchives from './SubscriptionArchives.vue'
 import ClientRecommendations from './ClientRecommendations.vue'
 import FeedbackPanel from './FeedbackPanel.vue'
 import UserAvatar from './UserAvatar.vue'
+import { cached, remember } from '../view-cache'
 const props = defineProps<{ paused: boolean }>()
 const api = useApi()
 const scope = useAccountScope(() => props.paused)
-const items = ref<Subscription[]>([])
-const rules = ref<RuleProfile[]>([])
+const restored = cached<[{ items: Subscription[] }, { items: RuleProfile[] }]>('/subscriptions')
+const items = ref<Subscription[]>(restored?.[0].items ?? [])
+const rules = ref<RuleProfile[]>(restored?.[1].items ?? [])
 const loading = ref(false)
 const error = ref('')
 const message = toastRef()
@@ -42,7 +44,7 @@ async function load() {
   try {
     const result = await Promise.all([api<{ items: Subscription[] }>('/subscriptions'), api<{ items: RuleProfile[] }>('/rule-profiles')])
     if (current !== sequence || !scope.current(ticket)) return
-    items.value = result[0].items; rules.value = result[1].items; error.value = ''
+    items.value = result[0].items; rules.value = result[1].items; error.value = ''; remember('/subscriptions', result)
   } catch (cause) { if (current === sequence && scope.current(ticket) && !isCancelled(cause)) error.value = errorText(cause) }
   finally { if (current === sequence) loading.value = false }
 }
@@ -144,7 +146,7 @@ async function saveRule() {
   finally { busy.value = false }
 }
 const subscriptionGuide = [
-  { icon: 'globe', tone: 'tone-blue', title: '节点来自共享', text: '订阅里的节点由提供方共享，提供方可以随时调整、停用或删除来源，平台无法保证某个节点一直可用，也不会为你保存节点。' },
+  { icon: 'globe', tone: 'tone-blue', title: '节点来自共享', text: '订阅里的节点由提供方共享，提供方可以随时调整、停用或删除来源，平台无法保证某个节点一直可用，也不会为你保存节点。同一节点由多个来源提供时优先使用不限席位的来源，来源下架后会自动换到其他仍提供该节点的来源。' },
   { icon: 'alert', tone: 'tone-red', title: '不要单独保存节点', text: '请始终在客户端里通过订阅链接更新，不要把单个节点复制、导出或另存到其他地方。节点地址只有提供方可见；短时间内频繁更换大量节点或跟随的来源会被风控限制（默认每天新增不超过对应额度，30 天内累计不超过额度的 3 倍），订阅链接被多个 IP 频繁拉取也会被标记。' },
   { icon: 'clock', tone: 'tone-amber', title: '席位需要续期', text: '组合订阅会占用所含来源的席位。按时签到，或让客户端保持定期更新和检测（订阅里隐藏的「席位自动续期」），即可自动续期；出门在外可用积分请假延期。过期后拉取会提示回网页激活。' },
   { icon: 'link', tone: 'tone-green', title: '链接只给自己用', text: '订阅链接包含你的个人令牌，请勿分享。怀疑泄露时，在订阅卡片中重置链接，旧链接会立即失效。' },

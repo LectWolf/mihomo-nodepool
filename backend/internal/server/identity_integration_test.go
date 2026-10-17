@@ -221,4 +221,36 @@ func TestMySQLEmailRegistrationBindingAndOAuth(t *testing.T) {
 	if !strings.Contains(res.Header().Get("Location"), "oauth_error=") {
 		t.Fatalf("forged state: %s", res.Header().Get("Location"))
 	}
+
+	// 没有密码的账号：密码登录给出验证方式，验证后可直接设置密码
+	if body := call("POST", "/api/v1/auth/login", `{"username":"octo-cat","password":"whatever"}`, nil, 409).Body.String(); !strings.Contains(body, `"password_unset":true`) || !strings.Contains(body, `"providers":["github"]`) || !strings.Contains(body, `"email_hint":""`) {
+		t.Fatalf("oauth-only unset: %s", body)
+	}
+	if !strings.Contains(call("GET", "/api/v1/me", "", octo, 200).Body.String(), `"has_password":false`) {
+		t.Fatal("has_password false missing")
+	}
+	if _, e := s.DB.Exec(`UPDATE np_users SET password_hash='' WHERE username='legacy'`); e != nil {
+		t.Fatal(e)
+	}
+	if body := call("POST", "/api/v1/auth/login", `{"username":"legacy@163.com","password":"legacy-pass"}`, nil, 409).Body.String(); !strings.Contains(body, `"email_hint":"le****cy@163.com"`) || !strings.Contains(body, `"providers":[]`) {
+		t.Fatalf("legacy unset: %s", body)
+	}
+	call("POST", "/api/v1/auth/email/code", `{"email":"legacy@163.com","purpose":"login"}`, nil, 200)
+	verified := session(call("POST", "/api/v1/auth/login/code", `{"email":"legacy@163.com","code":"`+code("legacy@163.com")+`"}`, nil, 200))
+	call("PATCH", "/api/v1/me", `{"password":"legacy-new-pass"}`, verified, 200)
+	if !strings.Contains(call("GET", "/api/v1/me", "", verified, 200).Body.String(), `"has_password":true`) {
+		t.Fatal("has_password true missing")
+	}
+	// 设置后再修改必须提供当前密码
+	call("PATCH", "/api/v1/me", `{"password":"legacy-other"}`, verified, 400)
+	call("PATCH", "/api/v1/me", `{"password":"legacy-other","current_password":"legacy-new-pass"}`, verified, 200)
+	session(call("POST", "/api/v1/auth/login", `{"username":"legacy","password":"legacy-other"}`, nil, 200))
+}
+
+func TestMaskEmail(t *testing.T) {
+	for in, want := range map[string]string{"2242299685@qq.com": "22****85@qq.com", "abcd@x.com": "a****d@x.com", "ab@x.com": "a*@x.com", "a@x.com": "a*@x.com", "bad": ""} {
+		if got := auth.MaskEmail(in); got != want {
+			t.Fatalf("%s: %s want %s", in, got, want)
+		}
+	}
 }

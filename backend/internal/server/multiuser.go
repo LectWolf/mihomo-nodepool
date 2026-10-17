@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/auth"
@@ -32,15 +33,35 @@ func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manage
 		}
 		return e
 	})
+	guard := newPasswordGuard()
 	business("PATCH /api/v1/me", func(w http.ResponseWriter, r *http.Request) error {
 		var in struct {
-			DisplayName *string `json:"display_name"`
-			Password    *string `json:"password"`
+			DisplayName     *string `json:"display_name"`
+			Password        *string `json:"password"`
+			CurrentPassword string  `json:"current_password"`
 		}
 		if e := decode(w, r, &in); e != nil {
 			return e
 		}
-		u, e := s.PatchUser(r.Context(), pool.CurrentUser(r.Context()).ID, pool.UserPatch{DisplayName: in.DisplayName, Password: in.Password})
+		id := pool.CurrentUser(r.Context()).ID
+		if in.Password != nil {
+			// 已有密码的账号必须先验证当前密码，没有密码的账号（旧站迁移、第三方注册）可直接设置
+			cur, e := s.User(r.Context(), id)
+			if e != nil {
+				return e
+			}
+			if cur.PasswordHash != "" {
+				if !guard.allow(id) {
+					return pool.ErrTooManyAttempts
+				}
+				if !pool.CheckPassword(cur.PasswordHash, in.CurrentPassword) {
+					guard.fail(id)
+					return errors.New("当前密码不正确")
+				}
+				guard.reset(id)
+			}
+		}
+		u, e := s.PatchUser(r.Context(), id, pool.UserPatch{DisplayName: in.DisplayName, Password: in.Password})
 		if e == nil {
 			a.KeepSession(r, u)
 			writeJSON(w, 200, u)
@@ -299,4 +320,41 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 		w.WriteHeader(200)
 		_, _ = w.Write(raw)
 	})
+}
+
+// passwordGuard 限制修改密码时当前密码的连续错误次数
+type passwordGuard struct {
+	mu    sync.Mutex
+	fails map[int64]passwordFails
+}
+type passwordFails struct {
+	count int
+	since time.Time
+}
+
+func newPasswordGuard() *passwordGuard { return &passwordGuard{fails: map[int64]passwordFails{}} }
+func (g *passwordGuard) allow(id int64) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	f := g.fails[id]
+	if time.Since(f.since) > 15*time.Minute {
+		delete(g.fails, id)
+		return true
+	}
+	return f.count < 5
+}
+func (g *passwordGuard) fail(id int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	f := g.fails[id]
+	if f.count == 0 || time.Since(f.since) > 15*time.Minute {
+		f = passwordFails{since: time.Now()}
+	}
+	f.count++
+	g.fails[id] = f
+}
+func (g *passwordGuard) reset(id int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.fails, id)
 }

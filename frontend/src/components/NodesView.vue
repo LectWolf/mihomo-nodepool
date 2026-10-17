@@ -24,6 +24,7 @@ import SourceGallery from './SourceGallery.vue'
 import { blockHint, blockLabel, communityUser, levelOptions, selectionFor, useAccountScope } from '../community'
 import '../community.css'
 import { navigate, route, routeParams, setRouteQuery } from '../router'
+import { cached, remember } from '../view-cache'
 const props = defineProps<{ paused: boolean }>()
 const api = useApi()
 const scope = useAccountScope(() => props.paused)
@@ -119,14 +120,14 @@ async function load() {
     if (currentSequence !== sequence || !scope.current(ticket)) return
     const last = Math.max(1, Math.ceil(result.total / pageSize.value))
     if (page.value > last) { replaceNextRoute = true; page.value = last; return }
-    data.value = result; error.value = ''
+    data.value = result; error.value = ''; remember(`/nodes?${query.value}`, result)
     if (details.value) details.value = result.items.find(item => item.id === details.value?.id) ?? details.value
   } catch (cause) { if (scope.current(ticket) && !isCancelled(cause) && currentSequence === sequence) error.value = errorText(cause) }
   finally { if (currentSequence === sequence) loading.value = false }
 }
 async function loadOptions() {
   const ticket = scope.ticket()
-  try { const value = await api<Options>('/options'); if (scope.current(ticket)) { options.value = value; optionsError.value = '' } }
+  try { const value = await api<Options>('/options'); if (scope.current(ticket)) { options.value = value; optionsError.value = ''; remember('/options', value) } }
   catch (cause) { if (scope.current(ticket) && !isCancelled(cause)) optionsError.value = errorText(cause) }
 }
 watch(filters, () => { if (!restoringRoute) page.value = 1 }, { flush: 'sync' })
@@ -137,6 +138,8 @@ watch([query, layout, browse], ([next], [previous]) => {
   setRouteQuery('nodes', pageParams(), typing || replaceNextRoute); replaceNextRoute = false
 })
 watch(route, restoreRoute, { flush: 'sync', immediate: true })
+data.value = cached<NodePage>(`/nodes?${query.value}`) ?? null
+options.value = cached<Options>('/options') ?? options.value
 watch(query, () => {
   ++sequence; controller?.abort(); clearTimeout(debounce)
   if (!props.paused) { loading.value = true; debounce = setTimeout(() => void load(), 300) }
@@ -176,6 +179,16 @@ function chooseNode(node: PoolNode) {
   const existing = draftNodes.value.find(n => n.node_id === node.id)
   if (existing) { toggleNode(existing); return }
   const sources = origins(node)
+  // 多来源节点优先不限席位的来源，其次沿用本次已选的有限来源，与后端保存时的选择一致
+  const allowed = node.sources.filter(originAllowed)
+  const free = allowed.length > 1 ? allowed.find(s => !s.max_users) : undefined
+  const reuse = !free && allowed.length > 1 ? allowed.find(s => limitedSources.value.has(s.id)) : undefined
+  const auto = free ?? reuse
+  if (auto) {
+    toggleNode(selectionFor(node, auto))
+    if (!selectionError.value) selectionNotice.value = free ? `「${node.name}」由 ${allowed.length} 个来源提供，已自动选择不限席位的「${auto.name}」，不占来源额度。` : `「${node.name}」由 ${allowed.length} 个来源提供，已沿用本次已选的「${auto.name}」，不额外占用来源额度。`
+    return
+  }
   if (sources.length > 1) { originNode.value = node; return }
   if (sources[0] && originAllowed(sources[0])) toggleNode(selectionFor(node, sources[0]))
   else selectionError.value = blockHint(sources[0]?.unavailable || 'level', sources[0]?.min_level)
@@ -289,7 +302,7 @@ async function save() {
       <FeedbackPanel v-if="!isGuest" :key="details.id" target="node" :node-id="details.id" :origins="details.sources.map(s => ({ id: s.id, name: s.name }))" :can-submit="!ownsAll(details)" @changed="load" />
       <div v-if="isAdmin" class="dialog-actions"><button :disabled="nodeTesting.has(details.id) || paused" @click="testNode(details)"><AppIcon name="probe" />{{ nodeTesting.has(details.id) ? '排队中…' : '检测节点' }}</button></div>
     </Modal>
-    <Modal v-if="originNode" title="选择领取来源" @close="originNode = null"><p class="muted">「{{ originNode.name }}」由多个来源提供，请选择本次领取归属。</p><div class="origin-choices"><button v-for="source in origins(originNode)" :key="source.id" class="source-choice" :disabled="!originAllowed(source)" :title="originAllowed(source) ? source.name : blockHint(source.unavailable || 'level', source.min_level)" @click="chooseOrigin(source.id)"><AppIcon name="sources" /><span><strong :title="source.name">{{ source.name }}</strong><small>{{ source.provider_name || '提供方' }} · {{ source.min_level ? `最低 Lv${source.min_level}` : 'Lv0 不限' }}</small><small v-if="!originAllowed(source)" class="danger-text">{{ source.unavailable === 'full' ? '席位已满' : source.unavailable === 'kicked' ? '已被提供方移出' : `等级不足，当前 Lv${communityUser.level}` }}</small><UsageHint :usage="source.subscription_usage" /></span><AppIcon name="right" /></button></div><p class="small muted">同一账号从同一来源引用多个节点，只占一个有效席位。</p></Modal>
+    <Modal v-if="originNode" title="选择领取来源" @close="originNode = null"><p class="muted">「{{ originNode.name }}」由多个来源提供，请选择本次领取归属。</p><div class="origin-choices"><button v-for="source in origins(originNode)" :key="source.id" class="source-choice" :disabled="!originAllowed(source)" :title="originAllowed(source) ? source.name : blockHint(source.unavailable || 'level', source.min_level)" @click="chooseOrigin(source.id)"><AppIcon name="sources" /><span><strong :title="source.name">{{ source.name }}</strong><small>{{ source.provider_name || '提供方' }} · {{ source.min_level ? `最低 Lv${source.min_level}` : 'Lv0 不限' }}</small><small v-if="!originAllowed(source)" class="danger-text">{{ source.unavailable === 'full' ? '席位已满' : source.unavailable === 'kicked' ? '已被提供方移出' : `等级不足，当前 Lv${communityUser.level}` }}</small><UsageHint :usage="source.subscription_usage" /></span><AppIcon name="right" /></button></div><p class="small muted">同一账号从同一来源引用多个节点，只占一个有效席位；保存时如果你已占用其中某个来源的席位，会优先沿用它。所选来源下架后，订阅会自动切换到其他提供此节点的来源。</p></Modal>
     <Modal v-if="sourcesOpen" title="跟随整个来源" wide @close="sourcesOpen = false"><p class="small muted">跟随后订阅会实时同步该来源的全部可用节点，不占节点额度；设置了人数上限的来源占用来源额度。</p><div class="source-selection-layout"><SourceBrowser :provider-id="filters.provider_id" :following="!!filters.following" :selected="wholeSourceIDs" @choose="selectSource" /><DraftPreview /></div><p v-if="selectionError" class="notice warning" role="alert">{{ selectionError }}</p><div class="dialog-actions"><span class="small muted">已选 {{ draftNodes.length }} 个节点 · 跟随 {{ draftSources.length }} 个来源</span><button class="primary" @click="sourcesOpen = false">完成选择</button></div></Modal>
     <Modal v-if="reviewOpen" :title="editingSubscription ? '保存组合修改' : '保存组合订阅'" :busy="saving" @close="reviewOpen = false"><form @submit.prevent="save">
       <div class="form-field"><span class="field-label">保存方式</span><CustomSelect v-model="saveTarget" label="保存方式" :options="targetOptions" :disabled="saving || reviewLoading" /><span class="field-hint">覆盖会替换目标组合的节点和规则，保留原订阅链接。</span></div>

@@ -28,7 +28,7 @@ let nextId = 3
 let settings = { exclude_pattern: '流量|到期', test_url: 'https://www.gstatic.com/generate_204', timeout_ms: 5000, probe_concurrency: 16, source_concurrency: 3, refresh_hours: 6, check_hours: 6 }
 const releases = { current_version: 'v1.0.0', latest_version: 'v2.0.0', update_available: true, can_update: true, can_rollback: true, need_restart: false, state: 'idle', message: '', releases: ['v2.0.0', 'v1.0.0', 'v0.9.0'].map(version => ({ version, name: `Release ${version}`, body: `真实契约测试发布说明 ${version}\n- 测试条目`, published_at: date, url: `https://github.com/example/test/releases/tag/${version}` })) }
 let targetVersion = releases.current_version
-const nodes = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, name: `节点-${index + 1}`, type: 'ss', server: 'example.test', port: 443, latency_ms: 40 + index, status: 'healthy', country: 'United States', country_code: 'US', exit_ip: '192.0.2.1', ...(index === 0 ? { region: ' 加州 ', city: '洛杉矶' } : index === 1 ? { region: '美国', city: ' 美国 ' } : {}), last_checked_at: date, next_check_at: date, last_error: '', sources: [{ id: 1, name: '主要来源', node_name: '原名 A' }, { id: 2, name: '备用来源', node_name: '原名 B' }] }))
+const nodes = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, name: `节点-${index + 1}`, type: 'ss', server: 'example.test', port: 443, latency_ms: 40 + index, status: 'healthy', country: 'United States', country_code: 'US', exit_ip: '192.0.2.1', ...(index === 0 ? { region: ' 加州 ', city: '洛杉矶' } : index === 1 ? { region: '美国', city: ' 美国 ' } : {}), last_checked_at: date, next_check_at: date, last_error: '', sources: [{ id: 1, name: '主要来源', node_name: '原名 A', max_users: 10 }, { id: 2, name: '备用来源', node_name: '原名 B', max_users: index === 2 ? 0 : 20 }] }))
 nodes[0].insights = { v2ray_compatible: false, v2ray_reason: '测试不兼容配置', tls: 'enabled', warnings: [{ code: 'certificate_verification_disabled', severity: 'warning', message: '节点配置关闭了TLS证书验证，存在中间人攻击风险' }] }
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
@@ -294,6 +294,11 @@ try {
   assert.equal(await evaluate('document.querySelector(".node-card").getAttribute("aria-pressed")'), 'false', 'cancelled origin keeps selection clear')
   await evaluate('document.querySelector(".node-card").click()'); await hasText('选择领取来源')
   await click('主要来源', 'document.querySelector("dialog[open]")'); await hasText('1 个单选')
+  // 多来源节点有不限席位来源时直接选用，不弹出选择
+  const third = '[...document.querySelectorAll(".node-card")].find(c => /节点-3(?!\\d)/.test(c.textContent))'
+  await evaluate(`${third}.click()`); await hasText('已自动选择不限席位的「备用来源」')
+  assert.equal(await evaluate('!!document.querySelector("dialog[open]")'), false, 'unlimited origin skips chooser')
+  await evaluate(`${third}.click()`); await hasText('1 个单选')
   await click('下一页'); await hasText('节点-51'); await click('上一页'); await hasText('节点-1')
   assert.equal(await evaluate('document.querySelector(".node-card").getAttribute("aria-pressed")'), 'true', 'selection survives pagination')
   await click('选择整个来源'); await hasText('当前选择'); await hasText('已单选 1 个节点')

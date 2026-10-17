@@ -10,6 +10,7 @@ import PageNumbers from './PageNumbers.vue'
 import UsageHint from './UsageHint.vue'
 import UserAvatar from './UserAvatar.vue'
 import FeedbackBadge from './FeedbackBadge.vue'
+import { cached, remember } from '../view-cache'
 // 按来源浏览：先挑来源再看节点，新上架来源优先曝光
 const props = withDefaults(defineProps<{ paused: boolean; q?: string; providerId?: string; following?: boolean; compact?: boolean }>(), { q: '', providerId: '', following: false, compact: false })
 const emit = defineEmits<{ view: [source: Source] }>()
@@ -29,18 +30,22 @@ const sortOptions = [{ value: 'recommend', label: '推荐' }, { value: 'new', la
 let controller: AbortController | undefined
 let sequence = 0
 let timer: ReturnType<typeof setTimeout> | undefined
-async function load() {
-  if (props.paused) return
-  const ticket = scope.ticket(), current = ++sequence
-  controller?.abort(); controller = new AbortController(); loading.value = true
+function requestPath() {
   const params = new URLSearchParams({ page: String(page.value), page_size: String(pageSize.value), sort: props.compact ? 'new' : sort.value })
   if (!props.compact && search.value.trim()) params.set('q', search.value.trim())
   if (props.providerId) params.set('provider_id', props.providerId)
   if (props.following) params.set('following', '1')
   if (onlyAvailable.value) params.set('available', '1')
+  return `/sources/catalog?${params}`
+}
+async function load() {
+  if (props.paused) return
+  const ticket = scope.ticket(), current = ++sequence
+  controller?.abort(); controller = new AbortController(); loading.value = true
+  const path = requestPath()
   try {
-    const result = await api<Page<Source>>(`/sources/catalog?${params}`, { signal: controller.signal })
-    if (current === sequence && scope.current(ticket)) { data.value = result; error.value = '' }
+    const result = await api<Page<Source>>(path, { signal: controller.signal })
+    if (current === sequence && scope.current(ticket)) { data.value = result; error.value = ''; remember(path, result) }
   } catch (cause) { if (!isCancelled(cause) && current === sequence && scope.current(ticket)) error.value = errorText(cause) }
   finally { if (current === sequence) loading.value = false }
 }
@@ -63,6 +68,7 @@ function add(s: Source) {
   toggleSource(s)
   if (!selectingNodes.value && picked(s)) selectingNodes.value = true
 }
+data.value ??= cached<Page<Source>>(requestPath()) ?? null
 </script>
 
 <template>

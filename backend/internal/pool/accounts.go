@@ -40,6 +40,7 @@ type User struct {
 	EmailVerified         bool       `json:"email_verified"`
 	ProbeUUID             string     `json:"-"`
 	PasswordHash          string     `json:"-"`
+	HasPassword           bool       `json:"has_password"`
 	AuthVersion           int64      `json:"-"`
 }
 type UserInput struct {
@@ -50,6 +51,8 @@ type UserInput struct {
 	SourceLimit       *int   `json:"source_limit"`
 	SubscriptionLimit *int   `json:"subscription_limit"`
 	Role              string `json:"role"`
+	// NoPassword 用于第三方登录注册，用户之后自行设置密码
+	NoPassword bool `json:"-"`
 }
 type UserPatch struct {
 	DisplayName       *string `json:"display_name"`
@@ -93,6 +96,7 @@ func scanUser(row scanner) (User, error) {
 	var u User
 	e := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.NodeLimit, &u.SourceLimit, &u.SubscriptionLimit, &u.CreatedAt, &u.PasswordHash, &u.AuthVersion, &u.XP, &u.Points, &u.CheckinOn, &u.CheckinStreak, &u.SubscriptionExpiresAt, &u.ProbeUUID, &u.Title, &u.AvatarVersion, &u.RiskFrozenUntil, &u.Email, &u.EmailVerified)
 	u.Level = LevelForXP(u.XP)
+	u.HasPassword = u.PasswordHash != ""
 	return u, e
 }
 func (s *Store) User(ctx context.Context, id int64) (User, error) {
@@ -163,9 +167,12 @@ func (s *Store) CreateUser(ctx context.Context, in UserInput) (User, error) {
 	if e := validateLimits(u); e != nil {
 		return u, e
 	}
-	hash, e := HashPassword(in.Password)
-	if e != nil {
-		return u, e
+	hash := ""
+	if !in.NoPassword {
+		var e error
+		if hash, e = HashPassword(in.Password); e != nil {
+			return u, e
+		}
 	}
 	settings, e := s.Settings(ctx)
 	if e != nil {
@@ -245,6 +252,7 @@ func (s *Store) PatchUser(ctx context.Context, id int64, p UserPatch) (User, err
 	revoke := p.Password != nil || (p.Enabled != nil && !*p.Enabled)
 	if p.Password != nil {
 		u.PasswordHash = hash
+		u.HasPassword = hash != ""
 	}
 	if revoke {
 		u.AuthVersion++
@@ -314,7 +322,33 @@ func (s *Store) PatchUser(ctx context.Context, id int64, p UserPatch) (User, err
 			}
 		}
 	}
-	return u, tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return u, e
+	}
+	if p.Enabled != nil && !*p.Enabled {
+		// 提供方被停用后，其他人订阅里来自其来源的节点切换到别的来源
+		if owned, err := ownedSources(ctx, s.DB, id); err == nil {
+			s.rehomeSources(ctx, owned...)
+		}
+	}
+	return u, nil
+}
+
+func ownedSources(ctx context.Context, q queryer, ownerID int64) ([]int64, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id FROM np_sources WHERE owner_id=?`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 func pagination(page, size int) (int, int) {
 	if page < 1 {

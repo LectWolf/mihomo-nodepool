@@ -2,7 +2,7 @@
 import { toastRef } from '../toast'
 import { computed, ref, watch } from 'vue'
 import { errorText, formatDate, isCancelled, json, useApi } from '../api/system'
-import { absoluteURL, accountTab, authOptions, copyText, currentUser, loadProfile, profile, limits } from '../api/accounts'
+import { absoluteURL, accountTab, authOptions, clearPasswordSetup, copyText, currentUser, loadProfile, profile, limits } from '../api/accounts'
 import { identityApi, oauthHref, providerNames, type Identity } from '../api/identity'
 import { ledgerKinds, removeAvatar, squareAvatar, uploadAvatar, walletApi, type LedgerPage, type Wallet } from '../api/economy'
 import { levelLabel, levelNames, timeAgo, useAccountScope } from '../community'
@@ -18,6 +18,9 @@ const api = useApi()
 const scope = useAccountScope(() => props.paused)
 const displayName = ref(currentUser.value?.display_name ?? '')
 const password = ref('')
+const currentPassword = ref('')
+// 旧站迁移或第三方注册的账号没有密码，可以直接设置
+const hasPassword = computed(() => currentUser.value?.has_password !== false)
 const confirmPassword = ref('')
 const saving = ref('')
 const error = ref('')
@@ -44,7 +47,7 @@ async function load() {
   catch (cause) { if (scope.current(ticket) && !isCancelled(cause)) error.value = errorText(cause) }
   await Promise.all([loadWallet(), loadLedger()])
 }
-watch(() => props.paused, paused => { if (!paused) { void load(); if (accountTab.value === 'security') void loadIdentities() } else { password.value = ''; confirmPassword.value = '' } }, { immediate: true })
+watch(() => props.paused, paused => { if (!paused) { void load(); if (accountTab.value === 'security') void loadIdentities() } else { password.value = ''; confirmPassword.value = ''; currentPassword.value = '' } }, { immediate: true })
 const tabs = [{ id: 'overview', label: '概览', icon: 'chart' }, { id: 'security', label: '资料与安全', icon: 'shield' }, { id: 'points', label: '积分与兑换', icon: 'coin' }] as const
 watch(accountTab, tab => { if (tab === 'security' && !props.paused) void loadIdentities() })
 // 第三方账号绑定
@@ -76,16 +79,19 @@ async function patch(kind: 'profile' | 'password', body: Record<string, string>,
     await api('/me', json('PATCH', body))
     if (!scope.current(ticket)) return
     message.value = done
-    if (kind === 'password') { password.value = ''; confirmPassword.value = '' }
+    if (kind === 'password') { password.value = ''; confirmPassword.value = ''; currentPassword.value = ''; clearPasswordSetup() }
     await load()
   } catch (cause) { if (scope.current(ticket) && !isCancelled(cause)) error.value = errorText(cause) }
   finally { saving.value = '' }
 }
 function saveProfile() { void patch('profile', { display_name: displayName.value.trim() }, '昵称已保存。') }
 function savePassword() {
+  if (hasPassword.value && !currentPassword.value) { error.value = '请输入当前密码。'; return }
   if (password.value.length < 8) { error.value = '新密码至少 8 位。'; return }
   if (password.value !== confirmPassword.value) { error.value = '两次输入的密码不一致。'; return }
-  void patch('password', { display_name: currentUser.value?.display_name ?? displayName.value.trim(), password: password.value }, '密码已更新，其他设备需要重新登录。')
+  const body: Record<string, string> = { display_name: currentUser.value?.display_name ?? displayName.value.trim(), password: password.value }
+  if (hasPassword.value) body.current_password = currentPassword.value
+  void patch('password', body, hasPassword.value ? '密码已更新，其他设备需要重新登录。' : '登录密码已设置，之后可以用用户名或邮箱加密码登录。')
 }
 async function copy() {
   try { await copyText(absoluteURL(profile.value?.provider_path || `/nodes?provider_id=${currentUser.value?.id}`)); message.value = '提供方入口已复制。' }
@@ -207,13 +213,14 @@ const achievementList = [
         <div class="dialog-actions"><button class="primary" :disabled="!!saving || paused || !displayName.trim() || displayName.trim() === currentUser?.display_name">{{ saving === 'profile' ? '保存中…' : '保存昵称' }}</button></div>
       </form>
       <form class="panel security-card" @submit.prevent="savePassword">
-        <div class="panel-heading"><div><h2>登录密码</h2><p class="small muted">修改后其他设备上的登录会失效。</p></div></div>
+        <div class="panel-heading"><div><h2>{{ hasPassword ? '登录密码' : '设置登录密码' }}</h2><p class="small muted">{{ hasPassword ? '需要验证当前密码，修改后其他设备上的登录会失效。' : '当前账号还没有登录密码，设置后可以用用户名或邮箱加密码登录。' }}</p></div></div>
         <fieldset :disabled="!!saving || paused">
           <input class="sr-only" :value="currentUser?.username" autocomplete="username" readonly tabindex="-1" aria-hidden="true" />
+          <label v-if="hasPassword" class="form-field"><span class="field-label">当前密码</span><input v-model="currentPassword" type="password" maxlength="1024" autocomplete="current-password" placeholder="请输入当前密码" /><span v-if="currentUser?.email_verified" class="field-hint">忘记当前密码时，可以退出登录后在登录页使用“忘记密码”通过邮箱重置。</span></label>
           <label class="form-field"><span class="field-label">新密码</span><input v-model="password" type="password" minlength="8" maxlength="1024" autocomplete="new-password" placeholder="至少 8 位" /></label>
           <label class="form-field"><span class="field-label">确认新密码</span><input v-model="confirmPassword" type="password" minlength="8" maxlength="1024" autocomplete="new-password" placeholder="再输入一次" /></label>
         </fieldset>
-        <div class="dialog-actions"><button class="primary" :disabled="!!saving || paused || !password">{{ saving === 'password' ? '保存中…' : '更新密码' }}</button></div>
+        <div class="dialog-actions"><button class="primary" :disabled="!!saving || paused || !password || (hasPassword && !currentPassword)">{{ saving === 'password' ? '保存中…' : hasPassword ? '更新密码' : '设置密码' }}</button></div>
       </form>
       </div>
       <div class="security-col">

@@ -350,11 +350,36 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 		}
 		usedSources[sid] = true
 	}
+	// 节点出现在多个来源时，按 pickHome 的优先级选择实际占用的来源
+	homes := map[int64][]nodeHome{}
+	loadHomes := func(list []Selection) error {
+		ids := make([]int64, 0, len(list))
+		for _, n := range list {
+			ids = append(ids, n.NodeID)
+		}
+		found, e := nodeHomes(ctx, tx, u, ids)
+		if e != nil {
+			return e
+		}
+		for nid, hs := range found {
+			homes[nid] = hs
+			for _, h := range hs {
+				free[h.SourceID] = h.Free
+			}
+		}
+		return nil
+	}
+	if e = loadHomes(in.Nodes); e != nil {
+		return out, e
+	}
 	chosen := []Selection{}
 	seen := map[int64]bool{}
 	add := func(n Selection, explicit bool) error {
 		if seen[n.NodeID] {
 			return nil
+		}
+		if h, ok := pickHome(homes[n.NodeID], n.SourceID, usedSources); ok {
+			n.SourceID = h.SourceID
 		}
 		newSource := !usedSources[n.SourceID] && !free[n.SourceID]
 		newNode := !usedNodes[n.NodeID]
@@ -421,6 +446,9 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 		}
 		return candidates[i].NodeID < candidates[j].NodeID
 	})
+	if e = loadHomes(candidates); e != nil {
+		return out, e
+	}
 	for _, n := range candidates {
 		if e = add(n, false); e != nil {
 			return out, e
@@ -451,12 +479,12 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 	for _, sid := range follows {
 		selectedSources[sid] = true
 	}
-	sources := []int64{}
-	for _, sid := range sourceOrder {
-		if !selectedSources[sid] {
-			continue
-		}
+	sources := make([]int64, 0, len(selectedSources))
+	for sid := range selectedSources {
 		sources = append(sources, sid)
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i] < sources[j] })
+	for _, sid := range sources {
 		if e = claimSeat(ctx, tx, u, sid, *u.SubscriptionExpiresAt); e != nil {
 			return out, e
 		}
@@ -588,7 +616,7 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 	free, freeKnown, limitedSeen := map[int64]bool{}, map[int64]bool{}, 0
 	out := []Node{}
 	outSeen := map[int64]bool{}
-	found := false
+	found, stale := false, false
 	for i, v := range items {
 		if i >= u.SubscriptionLimit {
 			break
@@ -599,6 +627,7 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 		for _, pair := range v.Nodes {
 			n, e := scanNode(tx.QueryRowContext(ctx, `SELECT `+strings.Replace(nodeColumns, "n.name", "sn.node_name", 1)+` FROM np_nodes n JOIN np_source_nodes sn ON sn.node_id=n.id JOIN np_sources s ON s.id=sn.source_id JOIN np_users p ON p.id=s.owner_id JOIN np_source_seats c ON c.source_id=s.id AND c.user_id=? AND c.state='active' AND c.expires_at>UTC_TIMESTAMP(6) WHERE n.id=? AND s.id=? AND sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND p.enabled=1 AND (s.min_level<=? OR s.owner_id=? OR ?='admin')`, u.ID, pair.NodeID, pair.SourceID, u.Level, u.ID, u.Role))
 			if errors.Is(e, sql.ErrNoRows) {
+				stale = true
 				continue
 			}
 			if e != nil {
@@ -685,6 +714,12 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 	}
 	if e = tx.Commit(); e != nil {
 		return nil, e
+	}
+	// 有节点的来源失效时尝试切换到其他来源，成功后重新生成
+	if stale && rehomeDue(u.ID) {
+		if changed, err := s.RehomeUser(ctx, u.ID); err == nil && changed {
+			return s.SubscriptionNodes(ctx, token)
+		}
 	}
 	ids := make([]int64, 0, len(out))
 	for _, n := range out {

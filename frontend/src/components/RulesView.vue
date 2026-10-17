@@ -6,12 +6,14 @@ import type { RuleProfile } from '../api/accounts'
 import Modal from './Modal.vue'
 import AppIcon from './AppIcon.vue'
 import RuleProfileEditor from './RuleProfileEditor.vue'
+import { cached, remember } from '../view-cache'
 const props = defineProps<{ paused: boolean }>()
 const api = useApi()
-const items = ref<RuleProfile[]>([])
+const restored = cached<{ items: RuleProfile[]; limit?: number }>('/rule-profiles')
+const items = ref<RuleProfile[]>(restored?.items ?? [])
 const official = computed(() => items.value.find(item => item.official || item.id === 0))
 const personal = computed(() => items.value.filter(item => !item.official && item.id !== 0))
-const limit = ref(10)
+const limit = ref(restored?.limit || 10)
 const atLimit = computed(() => personal.value.length >= limit.value)
 const limitTitle = computed(() => atLimit.value ? `每人最多 ${limit.value} 份规则组合，请先删除不用的组合` : '')
 const error = ref('')
@@ -27,7 +29,7 @@ const formError = ref('')
 async function load() {
   if (props.paused || loading.value) return
   loading.value = true
-  try { const result = await api<{ items: RuleProfile[]; limit?: number }>('/rule-profiles'); items.value = result.items; if (result.limit) limit.value = result.limit; error.value = '' }
+  try { const result = await api<{ items: RuleProfile[]; limit?: number }>('/rule-profiles'); items.value = result.items; if (result.limit) limit.value = result.limit; error.value = ''; remember('/rule-profiles', result) }
   catch (cause) { if (!isCancelled(cause)) error.value = errorText(cause) }
   finally { loading.value = false }
 }

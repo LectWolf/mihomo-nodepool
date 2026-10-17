@@ -97,7 +97,8 @@ export interface Releases {
 export interface NewSource { name: string; kind: Source['kind']; url?: string; content?: string; exclude_pattern?: string; max_users?: number; min_level?: number }
 export class ApiError extends Error {
   readonly status: number
-  constructor(message: string, status = 0) { super(message); this.name = 'ApiError'; this.status = status }
+  readonly body: unknown
+  constructor(message: string, status = 0, body: unknown = null) { super(message); this.name = 'ApiError'; this.status = status; this.body = body }
 }
 export const apiEvents = new EventTarget()
 const controllers = new Set<AbortController>()
@@ -132,7 +133,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
         apiEvents.dispatchEvent(new Event('database-unavailable'))
         throw new ApiError(`数据库暂不可用。${detail}`, 503)
       }
-      throw new ApiError(detail, response.status)
+      throw new ApiError(detail, response.status, body)
     }
     if (body === null) throw new ApiError('服务返回了无法读取的响应，请重试。')
     return body as T

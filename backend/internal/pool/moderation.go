@@ -153,6 +153,11 @@ func (s *Store) ModerateSource(ctx context.Context, id int64, action, reason, de
 	if err = tx.Commit(); err != nil {
 		return out, err
 	}
+	if action == "takedown" {
+		s.rehomeSources(ctx, id)
+	} else {
+		resetRehome()
+	}
 	out.Source, err = s.Source(ctx, id)
 	return out, err
 }

@@ -334,7 +334,7 @@ func TestMySQLAccountUnionQuotasAndLoweredSourceCapacity(t *testing.T) {
 	c := account(t, s, "quotaC", 2, 1, 3)
 	ac := pool.WithUser(ctx, a)
 	bc := pool.WithUser(ctx, b)
-	src := sharedSource(t, s, pc, "quota-nodes", 3, 2)
+	src := sharedSource(t, s, pc, "quota-nodes", 3, 3)
 	page, e := s.Nodes(ctx, pool.Filter{SourceID: src.ID})
 	if e != nil {
 		t.Fatal(e)
@@ -368,8 +368,16 @@ func TestMySQLAccountUnionQuotasAndLoweredSourceCapacity(t *testing.T) {
 	if e != nil || dedup.Total != 3 || len(dedup.Items[0].Sources) != 2 {
 		t.Fatal("cross-user global node fingerprint dedup changed")
 	}
-	if _, e = s.SaveSubscription(ac, 0, pool.SubscriptionInput{Name: "over account sources", Nodes: []pool.Selection{{NodeID: pairs[0].NodeID, SourceID: other.ID}}}); !errors.Is(e, pool.ErrQuota) {
-		t.Fatalf("aggregate source quota: %v", e)
+	// 同一节点在多个有限来源时，沿用已占席位的来源，不额外占用来源额度
+	if v, e := s.SaveSubscription(ac, first.Subscription.ID, pool.SubscriptionInput{Name: "one", Nodes: []pool.Selection{{NodeID: pairs[0].NodeID, SourceID: other.ID}}}); e != nil || v.Subscription.Nodes[0].SourceID != src.ID {
+		t.Fatalf("held source should be reused: %+v %v", v.Subscription.Nodes, e)
+	}
+	third := account(t, s, "quotaThird", 2, 1, 3)
+	if _, e = s.SaveSubscription(pool.WithUser(ctx, third), 0, pool.SubscriptionInput{Name: "one source", Nodes: pairs[:1]}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.SaveSubscription(pool.WithUser(ctx, third), 0, pool.SubscriptionInput{Name: "over account sources", Nodes: []pool.Selection{{NodeID: pairs[1].NodeID, SourceID: other.ID}}}); e != nil {
+		t.Fatalf("same held source should be reused: %v", e)
 	}
 	// 未设置使用人数上限的来源不占来源额度
 	zero := 0
@@ -381,6 +389,10 @@ func TestMySQLAccountUnionQuotasAndLoweredSourceCapacity(t *testing.T) {
 	}
 	if usage, e := s.Usage(ctx, a.ID); e != nil || usage.Sources != 1 {
 		t.Fatalf("usage should only count limited sources: %+v %v", usage, e)
+	}
+	// 删除不限席位来源后，节点切回已占用的有限来源，后续容量断言只涉及 src
+	if e = s.DeleteSource(bc, other.ID); e != nil {
+		t.Fatal(e)
 	}
 	second, e := s.SaveSubscription(bc, 0, pool.SubscriptionInput{Name: "second claimant", Nodes: pairs[:1]})
 	if e != nil {
@@ -457,5 +469,97 @@ func TestMySQLConcurrentAccountSubscriptionLimit(t *testing.T) {
 	}
 	if success != 1 || denied != 1 {
 		t.Fatalf("account oversubscribed: successes=%d denied=%d", success, denied)
+	}
+}
+
+func TestMySQLPreferUnlimitedSourceAndFailover(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	p1 := account(t, s, "homeP1", 200, 3, 1)
+	p2 := account(t, s, "homeP2", 200, 3, 1)
+	p3 := account(t, s, "homeP3", 200, 3, 1)
+	u := account(t, s, "homeU", 10, 2, 3)
+	uc := pool.WithUser(ctx, u)
+	limited := sharedSource(t, s, pool.WithUser(ctx, p1), "home-nodes", 2, 5)
+	add := func(owner pool.User, name string, max int) pool.Source {
+		v, e := s.AddSource(pool.WithUser(ctx, owner), pool.SourceInput{Name: name, Kind: "file", Content: limited.Content, MaxUsers: max})
+		if e != nil {
+			t.Fatal(e)
+		}
+		parsed, _ := pool.Parse(limited.Content, nil)
+		if e = s.ApplySource(ctx, v, limited.Content, parsed); e != nil {
+			t.Fatal(e)
+		}
+		return v
+	}
+	free := add(p2, "home-free", 0)
+	backup := add(p3, "home-backup", 5)
+	page, e := s.Nodes(ctx, pool.Filter{SourceID: limited.ID})
+	if e != nil || len(page.Items) != 2 {
+		t.Fatal("nodes", e)
+	}
+	node := page.Items[0].ID
+	served := func(token string) []int64 {
+		t.Helper()
+		nodes, e := s.SubscriptionNodes(ctx, token)
+		if e != nil {
+			t.Fatal(e)
+		}
+		ids := []int64{}
+		for _, n := range nodes {
+			ids = append(ids, n.Sources[0].ID)
+		}
+		return ids
+	}
+	// 选择有限来源中的节点，实际改用不限席位的来源，不占来源额度
+	v, e := s.SaveSubscription(uc, 0, pool.SubscriptionInput{Name: "prefer free", Nodes: []pool.Selection{{NodeID: node, SourceID: limited.ID}}})
+	if e != nil || v.Subscription.Nodes[0].SourceID != free.ID {
+		t.Fatalf("free source not preferred: %+v %v", v.Subscription.Nodes, e)
+	}
+	if usage, _ := s.Usage(ctx, u.ID); usage.Sources != 0 {
+		t.Fatalf("free source counted: %+v", usage)
+	}
+	token := v.Subscription.Token
+	// 整源快照同样优先不限席位来源
+	whole, e := s.SaveSubscription(uc, 0, pool.SubscriptionInput{Name: "whole", SourceIDs: []int64{limited.ID}})
+	if e != nil || len(whole.Subscription.Nodes) != 2 || whole.Subscription.Nodes[0].SourceID != free.ID || whole.Subscription.Nodes[1].SourceID != free.ID {
+		t.Fatalf("whole source not moved to free: %+v %v", whole.Subscription.Nodes, e)
+	}
+	if _, e = s.MutateSubscription(uc, whole.Subscription.ID, false); e != nil {
+		t.Fatal(e)
+	}
+	// 不限席位来源下架后切换到有限来源并正常占用席位
+	off, on := false, true
+	if _, e = s.PatchSource(pool.WithUser(ctx, p2), free.ID, pool.SourcePatch{Enabled: &off}); e != nil {
+		t.Fatal(e)
+	}
+	if got := served(token); len(got) != 1 || got[0] != limited.ID {
+		t.Fatalf("failover to limited: %v", got)
+	}
+	if usage, _ := s.Usage(ctx, u.ID); usage.Sources != 1 {
+		t.Fatalf("limited seat not occupied: %+v", usage)
+	}
+	// 删除有限来源后切到另一家
+	if e = s.DeleteSource(pool.WithUser(ctx, p1), limited.ID); e != nil {
+		t.Fatal(e)
+	}
+	if got := served(token); len(got) != 1 || got[0] != backup.ID {
+		t.Fatalf("failover after delete: %v", got)
+	}
+	// 没有其他来源时保留节点，来源恢复后拉取订阅自动切回不限席位来源
+	if _, e = s.PatchSource(pool.WithUser(ctx, p3), backup.ID, pool.SourcePatch{Enabled: &off}); e != nil {
+		t.Fatal(e)
+	}
+	if got := served(token); len(got) != 0 {
+		t.Fatalf("no source left: %v", got)
+	}
+	if _, e = s.PatchSource(pool.WithUser(ctx, p2), free.ID, pool.SourcePatch{Enabled: &on}); e != nil {
+		t.Fatal(e)
+	}
+	if got := served(token); len(got) != 1 || got[0] != free.ID {
+		t.Fatalf("lazy rehome to restored free source: %v", got)
+	}
+	if usage, _ := s.Usage(ctx, u.ID); usage.Sources != 0 {
+		t.Fatalf("limited seats should be released: %+v", usage)
 	}
 }

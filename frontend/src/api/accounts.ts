@@ -7,7 +7,7 @@ export interface User {
   node_limit: number; source_limit: number; subscription_limit: number; created_at: string
   xp: number; points: number; level: number; checkin_on: string; checkin_streak: number; subscription_expires_at: string | null
   title?: string; avatar_version?: number; risk_frozen_until?: string | null
-  email?: string; email_verified?: boolean
+  email?: string; email_verified?: boolean; has_password?: boolean
 }
 export interface Quota { nodes: number; sources: number; subscriptions: number }
 export interface Limits extends Quota { level: Quota; personal: Quota; boost: Quota }
@@ -136,3 +136,9 @@ export async function copyText(value: string) {
   parent.append(area); area.select(); const ok = document.execCommand('copy'); area.remove(); active?.focus()
   if (!ok) throw new Error('无法自动复制，请选中链接手动复制。')
 }
+
+// 没有密码的账号通过第三方验证身份后，登录完成时要求设置密码
+const passwordSetupKey = 'nodepool-password-setup'
+export function markPasswordSetup() { try { sessionStorage.setItem(passwordSetupKey, '1') } catch { /* 隐私模式下忽略 */ } }
+export function passwordSetupPending() { try { return sessionStorage.getItem(passwordSetupKey) === '1' } catch { return false } }
+export function clearPasswordSetup() { try { sessionStorage.removeItem(passwordSetupKey) } catch { /* 隐私模式下忽略 */ } }

@@ -8,10 +8,11 @@ import AppIcon from './AppIcon.vue'
 import PageNumbers from './PageNumbers.vue'
 import BarChart from './BarChart.vue'
 import '../statistics.css'
+import { cached, remember } from '../view-cache'
 const props = defineProps<{ paused: boolean }>()
 const api = useApi()
 const scope = useAccountScope(() => props.paused)
-const data = ref<SystemStatistics | null>(null)
+const data = ref<SystemStatistics | null>(cached<SystemStatistics>('/statistics') ?? null)
 const loading = ref(false)
 const error = ref('')
 const usagePage = ref(1)
@@ -26,7 +27,7 @@ async function load() {
   controller = new AbortController(); loading.value = true
   try {
     const result = await api<SystemStatistics>('/statistics', { signal: controller.signal })
-    if (current === sequence && scope.current(ticket)) { data.value = result; error.value = '' }
+    if (current === sequence && scope.current(ticket)) { data.value = result; error.value = ''; remember('/statistics', result) }
   } catch (cause) {
     if (current === sequence && scope.current(ticket) && !isCancelled(cause)) error.value = errorText(cause)
   } finally { if (current === sequence) loading.value = false }
