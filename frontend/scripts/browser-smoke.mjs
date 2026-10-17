@@ -30,6 +30,8 @@ const releases = { current_version: 'v1.0.0', latest_version: 'v2.0.0', update_a
 let targetVersion = releases.current_version
 const nodes = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, name: `节点-${index + 1}`, type: 'ss', server: 'example.test', port: 443, latency_ms: 40 + index, status: 'healthy', country: 'United States', country_code: 'US', exit_ip: '192.0.2.1', ...(index === 0 ? { region: ' 加州 ', city: '洛杉矶' } : index === 1 ? { region: '美国', city: ' 美国 ' } : {}), last_checked_at: date, next_check_at: date, last_error: '', sources: [{ id: 1, name: '主要来源', node_name: '原名 A', max_users: 10 }, { id: 2, name: '备用来源', node_name: '原名 B', max_users: index === 2 ? 0 : 20 }] }))
 nodes[0].field_test = { ok: 9, fail: 1 }
+nodes[0].sources = nodes[0].sources.map(source => ({ ...source, subscription_usage: { status: 'unknown' } }))
+nodes[3].field_test = { ok: 2, fail: 5 }
 nodes[0].insights = { v2ray_compatible: false, v2ray_reason: '测试不兼容配置', tls: 'enabled', warnings: [{ code: 'certificate_verification_disabled', severity: 'warning', message: '节点配置关闭了TLS证书验证，存在中间人攻击风险' }] }
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
@@ -480,6 +482,22 @@ try {
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
   await cdp('Page.navigate', { url: appUrl + '/nodes' }); await hasText('节点-1')
   check('statistics route, live tasks, null usage values, automatic refresh and 320px layout')
+  await click('切换到经典版界面')
+  await eventually(() => evaluate('location.pathname === "/catalog" && !!document.querySelector(".classic-card") && !document.querySelector(".sidebar")'), 'classic catalog home')
+  assert.equal(await evaluate('localStorage.getItem("nodepool-layout")'), 'classic')
+  await click('延迟', 'document.querySelector(".classic-sorts")')
+  await eventually(() => requests.filter(item => item.route === '/sources/catalog').at(-1)?.query.sort === 'latency', 'classic latency sort')
+  await evaluate('document.querySelector(".classic-card").click()')
+  await eventually(() => evaluate('!!document.querySelector("dialog[open] .csd-list button.on")'), 'classic source dialog with source list')
+  await key('Escape')
+  await eventually(() => evaluate('!document.querySelector("dialog[open] .csd-layout")'), 'classic source dialog closed')
+  await cdp('Page.navigate', { url: appUrl + '/' }); await eventually(() => evaluate('location.pathname === "/catalog" && !!document.querySelector(".classic-head")'), 'classic layout remembered')
+  await click('节点', 'document.querySelector(".classic-tabs")'); await hasText('节点-1')
+  assert.equal(await evaluate('!!document.querySelector(".stats-grid")'), false)
+  await click('切换到新版界面')
+  await eventually(() => evaluate('location.pathname === "/nodes" && !!document.querySelector(".sidebar") && !document.querySelector(".classic-head")'), 'switch back to modern layout')
+  await cdp('Page.navigate', { url: appUrl + '/nodes' }); await hasText('节点-1')
+  check('classic layout toggle, catalog home, sort tabs, source dialog and switching back')
   await click('节点总览')
   await input('.filters input[type=search]', 'timeout')
   await eventually(async () => (await text()).includes('请求超时'), 'fetch timeout guidance', 25000)

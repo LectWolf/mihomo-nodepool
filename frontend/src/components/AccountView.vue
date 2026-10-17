@@ -25,6 +25,10 @@ const confirmPassword = ref('')
 const saving = ref('')
 const error = ref('')
 const message = toastRef()
+async function copyUserID() {
+  if (!currentUser.value) return
+  try { await copyText(String(currentUser.value.id)); message.value = '用户 ID 已复制，可发给提供方用于分享私有来源。' } catch { message.value = `你的用户 ID 是 ${currentUser.value.id}` }
+}
 const wallet = ref<Wallet | null>(null)
 const ledger = ref<LedgerPage | null>(null)
 const ledgerPage = ref(1)
@@ -172,7 +176,7 @@ const achievementList = [
       <div class="profile-avatar"><UserAvatar :id="currentUser?.id" :name="currentUser?.display_name || currentUser?.username" :version="currentUser?.avatar_version" :size="76" /><button type="button" class="icon-button avatar-edit" aria-label="更换头像" title="更换头像" :disabled="avatarBusy" @click="avatarInput?.click()"><span v-if="avatarBusy" class="spinner"></span><AppIcon v-else name="camera" /></button><input ref="avatarInput" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="pickAvatar" /></div>
       <div class="profile-copy">
         <h2>{{ currentUser?.display_name || currentUser?.username }}<TitleChip :name="currentUser?.title" /></h2>
-        <p class="account-meta"><span>@{{ currentUser?.username }}</span><span class="level-pill">{{ levelLabel(currentUser?.level ?? 0) }}</span><span :class="['mini-tag', currentUser?.email ? 'tone-green' : 'tone-amber']"><AppIcon name="mail" />{{ currentUser?.email ? '邮箱已验证' : '未绑定邮箱' }}</span></p>
+        <p class="account-meta"><span>@{{ currentUser?.username }}</span><button type="button" class="mini-tag user-id-chip" title="复制用户 ID，提供方分享私有来源时需要它" @click="copyUserID">ID #{{ currentUser?.id }}<AppIcon name="copy" /></button><span class="level-pill">{{ levelLabel(currentUser?.level ?? 0) }}</span><span :class="['mini-tag', currentUser?.email ? 'tone-green' : 'tone-amber']"><AppIcon name="mail" />{{ currentUser?.email ? '邮箱已验证' : '未绑定邮箱' }}</span></p>
       </div>
       <dl class="account-stats"><div><dt>积分</dt><dd>{{ points.toLocaleString() }}</dd></div><div><dt>经验</dt><dd>{{ (currentUser?.xp ?? 0).toLocaleString() }}</dd></div><div><dt>连续签到</dt><dd>{{ currentUser?.checkin_streak ?? 0 }}<small> 天</small></dd></div><div><dt>订阅有效期</dt><dd class="account-expire">{{ expiresText }}</dd></div></dl>
     </section>

@@ -51,9 +51,9 @@ func recordSeatEvent(ctx context.Context, tx *sql.Tx, sourceID, userID int64, ac
 // never historical claims. Expired seats cease occupying capacity immediately.
 func claimSeat(ctx context.Context, tx *sql.Tx, u User, sourceID int64, until time.Time) error {
 	var owner int64
-	var enabled, ownerEnabled bool
+	var enabled, ownerEnabled, private bool
 	var limit, minLevel int
-	if err := tx.QueryRowContext(ctx, `SELECT owner_id,enabled,max_users,min_level FROM np_sources WHERE id=? FOR UPDATE`, sourceID).Scan(&owner, &enabled, &limit, &minLevel); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT owner_id,enabled,max_users,min_level,private FROM np_sources WHERE id=? FOR UPDATE`, sourceID).Scan(&owner, &enabled, &limit, &minLevel, &private); err != nil {
 		return err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT enabled FROM np_users WHERE id=?`, owner).Scan(&ownerEnabled); err != nil {
@@ -62,7 +62,12 @@ func claimSeat(ctx context.Context, tx *sql.Tx, u User, sourceID int64, until ti
 	if !enabled || !ownerEnabled {
 		return ErrForbidden
 	}
-	if u.ID != owner && u.Role != "admin" && u.Level < minLevel {
+	if ok, err := canAccessSource(ctx, tx, u, sourceID, owner, private); err != nil {
+		return err
+	} else if !ok {
+		return errors.New("这是私有来源，只有提供方分享的用户可以使用")
+	}
+	if !private && u.ID != owner && u.Role != "admin" && u.Level < minLevel {
 		return errors.New("账号等级不足，无法领取该来源")
 	}
 	var state string

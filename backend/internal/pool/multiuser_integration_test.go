@@ -63,11 +63,11 @@ func TestMySQLMultiuserSourceOwnershipAndDiscovery(t *testing.T) {
 	if e := s.QueueSource(bc, src.ID); !errors.Is(e, pool.ErrForbidden) {
 		t.Fatalf("refresh ownership: %v", e)
 	}
-	mine, e := s.Sources(bc)
+	mine, e := s.Sources(bc, false)
 	if e != nil || len(mine) != 0 {
 		t.Fatalf("management leak: %v %+v", e, mine)
 	}
-	mine, e = s.Sources(ac)
+	mine, e = s.Sources(ac, false)
 	if e != nil || len(mine) != 1 || mine[0].OwnerID != a.ID || mine[0].MaxUsers != 2 {
 		t.Fatalf("own metadata: %v %+v", e, mine)
 	}

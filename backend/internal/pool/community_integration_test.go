@@ -172,7 +172,7 @@ func TestMySQLCommunitySourceLinkMetadataLevelAndHistory(t *testing.T) {
 	if _, err = s.DB.Exec(`UPDATE np_sources SET subscription_usage=? WHERE id=?`, raw, src.ID); err != nil {
 		t.Fatal(err)
 	}
-	sources, err := s.Sources(oc)
+	sources, err := s.Sources(oc, false)
 	if err != nil {
 		t.Fatal(err)
 	}

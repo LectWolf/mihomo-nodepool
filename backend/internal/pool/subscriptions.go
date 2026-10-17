@@ -157,7 +157,7 @@ func unlimitedSources(ctx context.Context, q execer, ids map[int64]bool) (map[in
 		marks = append(marks, "?")
 		args = append(args, id)
 	}
-	rows, err := q.QueryContext(ctx, `SELECT id FROM np_sources WHERE max_users=0 AND id IN (`+strings.Join(marks, ",")+`)`, args...)
+	rows, err := q.QueryContext(ctx, `SELECT id FROM np_sources WHERE (max_users=0 OR private=1) AND id IN (`+strings.Join(marks, ",")+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -625,7 +625,7 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 			found = true
 		}
 		for _, pair := range v.Nodes {
-			n, e := scanNode(tx.QueryRowContext(ctx, `SELECT `+strings.Replace(nodeColumns, "n.name", "sn.node_name", 1)+` FROM np_nodes n JOIN np_source_nodes sn ON sn.node_id=n.id JOIN np_sources s ON s.id=sn.source_id JOIN np_users p ON p.id=s.owner_id JOIN np_source_seats c ON c.source_id=s.id AND c.user_id=? AND c.state='active' AND c.expires_at>UTC_TIMESTAMP(6) WHERE n.id=? AND s.id=? AND sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND p.enabled=1 AND (s.min_level<=? OR s.owner_id=? OR ?='admin')`, u.ID, pair.NodeID, pair.SourceID, u.Level, u.ID, u.Role))
+			n, e := scanNode(tx.QueryRowContext(ctx, `SELECT `+strings.Replace(nodeColumns, "n.name", "sn.node_name", 1)+` FROM np_nodes n JOIN np_source_nodes sn ON sn.node_id=n.id JOIN np_sources s ON s.id=sn.source_id JOIN np_users p ON p.id=s.owner_id JOIN np_source_seats c ON c.source_id=s.id AND c.user_id=? AND c.state='active' AND c.expires_at>UTC_TIMESTAMP(6) WHERE n.id=? AND s.id=? AND sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND p.enabled=1 AND (s.private=1 OR s.min_level<=? OR s.owner_id=? OR ?='admin') AND `+accessSQL("s"), u.ID, pair.NodeID, pair.SourceID, u.Level, u.ID, u.Role, u.ID, u.ID))
 			if errors.Is(e, sql.ErrNoRows) {
 				stale = true
 				continue
@@ -635,7 +635,7 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 			}
 			if !freeKnown[pair.SourceID] {
 				var maxUsers int
-				if e = tx.QueryRowContext(ctx, `SELECT max_users FROM np_sources WHERE id=?`, pair.SourceID).Scan(&maxUsers); e != nil {
+				if e = tx.QueryRowContext(ctx, `SELECT IF(private=1,0,max_users) FROM np_sources WHERE id=?`, pair.SourceID).Scan(&maxUsers); e != nil {
 					return nil, e
 				}
 				freeKnown[pair.SourceID] = true
@@ -659,7 +659,7 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 		// 跟随整个来源：实时输出该来源全部可用节点，不计节点额度，占来源额度
 		for _, sid := range v.FollowIDs {
 			var ok int
-			e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_sources s JOIN np_users p ON p.id=s.owner_id JOIN np_source_seats c ON c.source_id=s.id AND c.user_id=? AND c.state='active' AND c.expires_at>UTC_TIMESTAMP(6) WHERE s.id=? AND s.enabled=1 AND p.enabled=1 AND (s.min_level<=? OR s.owner_id=? OR ?='admin')`, u.ID, sid, u.Level, u.ID, u.Role).Scan(&ok)
+			e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_sources s JOIN np_users p ON p.id=s.owner_id JOIN np_source_seats c ON c.source_id=s.id AND c.user_id=? AND c.state='active' AND c.expires_at>UTC_TIMESTAMP(6) WHERE s.id=? AND s.enabled=1 AND p.enabled=1 AND (s.private=1 OR s.min_level<=? OR s.owner_id=? OR ?='admin') AND `+accessSQL("s"), u.ID, sid, u.Level, u.ID, u.Role, u.ID, u.ID).Scan(&ok)
 			if e != nil {
 				return nil, e
 			}
@@ -668,7 +668,7 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 			}
 			if !freeKnown[sid] {
 				var maxUsers int
-				if e = tx.QueryRowContext(ctx, `SELECT max_users FROM np_sources WHERE id=?`, sid).Scan(&maxUsers); e != nil {
+				if e = tx.QueryRowContext(ctx, `SELECT IF(private=1,0,max_users) FROM np_sources WHERE id=?`, sid).Scan(&maxUsers); e != nil {
 					return nil, e
 				}
 				freeKnown[sid] = true

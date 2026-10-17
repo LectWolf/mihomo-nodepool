@@ -94,8 +94,8 @@ func TestMySQLLoadHotPaths(t *testing.T) {
 		return e
 	})
 	timeit("Statistics", 2, func() error { _, e := s.Statistics(ac); return e })
-	timeit("Sources admin", 3, func() error { _, e := s.Sources(ac); return e })
-	timeit("Sources user", 3, func() error { _, e := s.Sources(uc); return e })
+	timeit("Sources admin", 3, func() error { _, e := s.Sources(ac, true); return e })
+	timeit("Sources user", 3, func() error { _, e := s.Sources(uc, false); return e })
 	timeit("TaskStatus", 3, func() error { _, e := s.TaskStatus(ctx); return e })
 	timeit("Usage user", 3, func() error { _, e := s.Usage(uc, users[3].ID); return e })
 	timeit("SweepCommunity", 3, func() error { return s.SweepCommunity(ctx) })

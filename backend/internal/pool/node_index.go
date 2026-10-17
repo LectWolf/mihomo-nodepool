@@ -25,6 +25,7 @@ const (
 type indexSource struct {
 	id, owner             int64
 	enabled, ownerEnabled bool
+	private               bool
 	minLevel, maxUsers    int
 }
 
@@ -98,14 +99,14 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 	ix := &s.index
 	ix.dirty.Store(false)
 	sources := map[int64]*indexSource{}
-	rows, e := s.DB.QueryContext(ctx, `SELECT s.id,s.owner_id,s.enabled,u.enabled,s.min_level,s.max_users FROM np_sources s JOIN np_users u ON u.id=s.owner_id`)
+	rows, e := s.DB.QueryContext(ctx, `SELECT s.id,s.owner_id,s.enabled,u.enabled,s.private,s.min_level,s.max_users FROM np_sources s JOIN np_users u ON u.id=s.owner_id`)
 	if e != nil {
 		ix.dirty.Store(true)
 		return e
 	}
 	for rows.Next() {
 		v := &indexSource{}
-		if e = rows.Scan(&v.id, &v.owner, &v.enabled, &v.ownerEnabled, &v.minLevel, &v.maxUsers); e != nil {
+		if e = rows.Scan(&v.id, &v.owner, &v.enabled, &v.ownerEnabled, &v.private, &v.minLevel, &v.maxUsers); e != nil {
 			rows.Close()
 			ix.dirty.Store(true)
 			return e
@@ -281,10 +282,26 @@ type viewerSeats struct {
 	seat   map[int64]string
 	active map[int64]int
 	follow map[int64]bool
+	shared map[int64]bool
 }
 
 func (s *Store) loadViewer(ctx context.Context, viewer User, following bool, followUser int64) (viewerSeats, error) {
-	v := viewerSeats{seat: map[int64]string{}, active: map[int64]int{}, follow: map[int64]bool{}}
+	v := viewerSeats{seat: map[int64]string{}, active: map[int64]int{}, follow: map[int64]bool{}, shared: map[int64]bool{}}
+	if viewer.ID > 0 {
+		rows, e := s.DB.QueryContext(ctx, `SELECT source_id FROM np_source_shares WHERE user_id=?`, viewer.ID)
+		if e != nil {
+			return v, e
+		}
+		for rows.Next() {
+			var id int64
+			if e = rows.Scan(&id); e != nil {
+				rows.Close()
+				return v, e
+			}
+			v.shared[id] = true
+		}
+		rows.Close()
+	}
 	if viewer.ID > 0 {
 		rows, e := s.DB.QueryContext(ctx, `SELECT source_id,IF(state='kicked','kicked',IF(state='active' AND expires_at>UTC_TIMESTAMP(6),'active','')) FROM np_source_seats WHERE user_id=?`, viewer.ID)
 		if e != nil {
@@ -335,12 +352,17 @@ func (s *Store) loadViewer(ctx context.Context, viewer User, following bool, fol
 	return v, nil
 }
 
+// sees 私有来源只对提供者本人与被分享的用户可见
+func (v viewerSeats) sees(u User, src *indexSource) bool {
+	return !src.private || (u.ID > 0 && (src.owner == u.ID || v.shared[src.id]))
+}
+
 // usable 与 usableSQL、claimSeat 规则一致
 func (v viewerSeats) usable(u User, src *indexSource) bool {
-	if !src.enabled || !src.ownerEnabled {
+	if !src.enabled || !src.ownerEnabled || !v.sees(u, src) {
 		return false
 	}
-	if src.owner != u.ID && u.Role != "admin" && src.minLevel > u.Level {
+	if !src.private && src.owner != u.ID && u.Role != "admin" && src.minLevel > u.Level {
 		return false
 	}
 	seat := v.seat[src.id]
@@ -381,7 +403,7 @@ func (s *Store) indexedNodes(ctx context.Context, f Filter, out *NodePage) ([]in
 			countries[c] = true
 		}
 	}
-	sourceFilter := f.SourceID > 0 || f.ProviderID > 0 || f.Following || f.MinLevel != nil
+	sourceFilter := f.SourceID > 0 || f.ProviderID > 0 || f.Following || f.Exclusive || f.MinLevel != nil
 	adminSearch := viewer.Role == "admin" && !DataEncryptionEnabled()
 	freshSince := utcNow().Add(-FreshWindow)
 	ix.mu.RLock()
@@ -393,15 +415,16 @@ func (s *Store) indexedNodes(ctx context.Context, f Filter, out *NodePage) ([]in
 		visible, matched, usable, named := false, !sourceFilter, false, f.Q == ""
 		for _, l := range n.links {
 			src := l.src
-			if !named && src.enabled && strings.Contains(l.name, f.Q) {
-				named = true
-			}
-			if !src.enabled || !src.ownerEnabled {
+			if !src.enabled || !src.ownerEnabled || !vs.sees(viewer, src) {
 				continue
+			}
+			if !named && strings.Contains(l.name, f.Q) {
+				named = true
 			}
 			visible = true
 			if !matched && (f.SourceID == 0 || src.id == f.SourceID) && (f.ProviderID == 0 || src.owner == f.ProviderID) &&
-				(!f.Following || vs.follow[src.owner]) && (f.MinLevel == nil || src.minLevel == *f.MinLevel) {
+				(!f.Following || vs.follow[src.owner]) && (!f.Exclusive || (viewer.ID > 0 && src.owner == viewer.ID) || (src.private && vs.shared[src.id])) &&
+				(f.MinLevel == nil || src.minLevel == *f.MinLevel) {
 				matched = true
 			}
 			if !usable && vs.usable(viewer, src) {

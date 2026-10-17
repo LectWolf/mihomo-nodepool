@@ -106,3 +106,13 @@
   .node-level-filter { width: 100%; }
   .node-level-filter .custom-select { flex: 1; }
 }
+
+.source-scope { display: flex; width: fit-content; margin: 0 0 14px; }
+.source-scope button { min-width: 96px; }
+.private-chip { display: inline-flex; align-items: center; gap: 3px; color: var(--tone-amber); font-weight: 600; }
+.private-chip .app-icon { width: 12px; height: 12px; }
+.checkbox-label.private-option { align-items: flex-start; gap: 10px; margin: 6px 0 12px; }
+.checkbox-label.private-option span { display: grid; gap: 2px; }
+.checkbox-label.private-option input { margin-top: 3px; }
+.account-meta .user-id-chip { display: inline-flex; align-items: center; gap: 5px; min-height: 0; padding: 2px 8px; cursor: pointer; font: inherit; font-size: 12px; line-height: 1.5; }
+.account-meta .user-id-chip .app-icon { flex: none; width: 12px; height: 12px; }

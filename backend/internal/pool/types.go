@@ -126,6 +126,9 @@ type Source struct {
 	MinLevel          int                `json:"min_level"`
 	ShareURL          string             `json:"share_url,omitempty"`
 	ShareToken        string             `json:"-"`
+	Private           bool               `json:"private"`
+	ShareCount        int                `json:"share_count,omitempty"`
+	SharedWithMe      bool               `json:"shared_with_me,omitempty"`
 	SubscriptionUsage *SubscriptionUsage `json:"subscription_usage,omitempty"`
 	// 以下仅来源目录填充
 	HealthyCount   int        `json:"healthy_count,omitempty"`
@@ -153,6 +156,7 @@ type Source struct {
 type SourceInput struct {
 	MaxUsers       int    `json:"max_users"`
 	MinLevel       int    `json:"min_level"`
+	Private        bool   `json:"private"`
 	Name           string `json:"name"`
 	Kind           string `json:"kind"`
 	URL            string `json:"url"`
@@ -164,6 +168,7 @@ type SourcePatch struct {
 	MinLevel       *int    `json:"min_level"`
 	Name           *string `json:"name"`
 	Enabled        *bool   `json:"enabled"`
+	Private        *bool   `json:"private"`
 	ExcludePattern *string `json:"exclude_pattern"`
 	URL            *string `json:"url"`
 	Content        *string `json:"content"`
@@ -175,6 +180,7 @@ type Origin struct {
 	Name              string             `json:"name"`
 	NodeName          string             `json:"node_name"`
 	MinLevel          int                `json:"min_level"`
+	Private           bool               `json:"private,omitempty"`
 	SubscriptionUsage *SubscriptionUsage `json:"subscription_usage,omitempty"`
 	ProviderUsername  string             `json:"provider_username"`
 	ProviderAvatar    int                `json:"provider_avatar"`
@@ -245,6 +251,7 @@ type Filter struct {
 	Countries                      []string
 	ProviderID                     int64
 	Following                      bool
+	Exclusive                      bool // 专属：自己的来源与分享给自己的私有来源
 	UserID                         int64
 	Page, PageSize                 int
 	Q, Type, Country, Status, Sort string

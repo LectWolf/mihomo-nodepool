@@ -10,8 +10,10 @@ type CatalogFilter struct {
 	Q              string
 	ProviderID     int64
 	Following      bool
+	Exclusive      bool
 	Sort           string
 	Available      bool
+	Countries      []string
 	Page, PageSize int
 }
 type Provider struct {
@@ -44,6 +46,20 @@ func (s *Store) Catalog(ctx context.Context, f CatalogFilter) (map[string]any, e
 		where += ` AND EXISTS(SELECT 1 FROM np_follows f WHERE f.provider_id=np_sources.owner_id AND f.user_id=?)`
 		args = append(args, CurrentUser(ctx).ID)
 	}
+	// 私有来源只对提供者本人与被分享的用户可见；专属只看自己的来源与分享给自己的来源
+	me := CurrentUser(ctx).ID
+	where += ` AND ` + accessSQL("np_sources")
+	args = append(args, me, me)
+	if f.Exclusive {
+		where += ` AND (owner_id=? OR (private=1 AND EXISTS(SELECT 1 FROM np_source_shares x WHERE x.source_id=np_sources.id AND x.user_id=?)))`
+		args = append(args, me, me)
+	}
+	if len(f.Countries) > 0 {
+		where += ` AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id WHERE sn.source_id=np_sources.id AND sn.excluded=0 AND n.blocked=0 AND n.country_code IN (` + strings.TrimSuffix(strings.Repeat("?,", len(f.Countries)), ",") + `))`
+		for _, c := range f.Countries {
+			args = append(args, c)
+		}
+	}
 	viewer := CurrentUser(ctx)
 	usable, usableArgs := sourceUsableSQL(viewer)
 	if f.Available {
@@ -63,6 +79,14 @@ func (s *Store) Catalog(ctx context.Context, f CatalogFilter) (map[string]any, e
 		orderArgs = append(orderArgs, utcNow().Add(FreshSourceWindow*-1))
 	case "new":
 		order = "created_at DESC,id DESC"
+	case "latency":
+		// 健康节点平均延迟升序，没有健康节点的排后
+		latency := "(SELECT AVG(n.latency_ms) FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id WHERE sn.source_id=np_sources.id AND sn.excluded=0 AND n.blocked=0 AND n.status='healthy' AND n.latency_ms IS NOT NULL)"
+		order = latency + " IS NULL," + latency + ",id DESC"
+	case "idle":
+		// 空闲：席位占用比例低的优先，不限人数按使用人数
+		seats := "(SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=np_sources.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))"
+		order = "CASE WHEN max_users=0 THEN 0 ELSE " + seats + "/max_users END," + seats + ",id DESC"
 	}
 	// 所有排序：可选 → 席位已满等暂不可选 → 节点全部检测不可用
 	alive := "(SELECT COUNT(*) FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id WHERE sn.source_id=np_sources.id AND sn.excluded=0 AND n.blocked=0 AND n.status<>'unhealthy')"
@@ -98,7 +122,7 @@ func (s *Store) Catalog(ctx context.Context, f CatalogFilter) (map[string]any, e
 const FreshSourceWindow = 7 * 24 * time.Hour
 
 func sourceUsableSQL(u User) (string, []any) {
-	return `((owner_id=? OR ?='admin' OR min_level<=?) AND NOT EXISTS(SELECT 1 FROM np_source_seats k WHERE k.source_id=np_sources.id AND k.user_id=? AND k.state='kicked') AND (max_users=0 OR EXISTS(SELECT 1 FROM np_source_seats me WHERE me.source_id=np_sources.id AND me.user_id=? AND me.state='active' AND me.expires_at>UTC_TIMESTAMP(6)) OR (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=np_sources.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))<max_users))`, []any{u.ID, u.Role, u.Level, u.ID, u.ID}
+	return `((private=1 OR owner_id=? OR ?='admin' OR min_level<=?) AND NOT EXISTS(SELECT 1 FROM np_source_seats k WHERE k.source_id=np_sources.id AND k.user_id=? AND k.state='kicked') AND (max_users=0 OR EXISTS(SELECT 1 FROM np_source_seats me WHERE me.source_id=np_sources.id AND me.user_id=? AND me.state='active' AND me.expires_at>UTC_TIMESTAMP(6)) OR (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=np_sources.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))<max_users))`, []any{u.ID, u.Role, u.Level, u.ID, u.ID}
 }
 
 // attachSourceStats 补充来源目录的健康概况和当前用户可用性
@@ -174,13 +198,17 @@ func (s *Store) attachSourceStats(ctx context.Context, viewer User, items []Sour
 	for i := range items {
 		v := &items[i]
 		v.Seated = seats[v.ID] == "active"
-		v.Unavailable = originBlock(viewer, Origin{OwnerID: v.OwnerID, MinLevel: v.MinLevel, MaxUsers: v.MaxUsers, ActiveUsers: v.ActiveUsers}, seats[v.ID])
+		v.Unavailable = originBlock(viewer, Origin{OwnerID: v.OwnerID, MinLevel: v.MinLevel, Private: v.Private, MaxUsers: v.MaxUsers, ActiveUsers: v.ActiveUsers}, seats[v.ID])
+		v.SharedWithMe = v.Private && v.OwnerID != viewer.ID
+		if v.OwnerID != viewer.ID {
+			v.ShareCount = 0
+		}
 	}
 	return nil
 }
 func (s *Store) Providers(ctx context.Context, f CatalogFilter) (map[string]any, error) {
 	page, size := pagination(f.Page, f.PageSize)
-	where := `u.enabled=1 AND EXISTS(SELECT 1 FROM np_sources s WHERE s.owner_id=u.id AND s.enabled=1)`
+	where := `u.enabled=1 AND EXISTS(SELECT 1 FROM np_sources s WHERE s.owner_id=u.id AND s.enabled=1 AND s.private=0)`
 	args := []any{}
 	if f.Q != "" {
 		where += ` AND (u.username LIKE ? OR u.display_name LIKE ?)`
@@ -194,7 +222,7 @@ func (s *Store) Providers(ctx context.Context, f CatalogFilter) (map[string]any,
 	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_users u WHERE `+where, args...).Scan(&total); e != nil {
 		return nil, e
 	}
-	query := `SELECT u.id,u.username,u.display_name,(SELECT COUNT(*) FROM np_sources s WHERE s.owner_id=u.id AND s.enabled=1),(SELECT COUNT(DISTINCT sn.node_id) FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_nodes n ON n.id=sn.node_id WHERE s.owner_id=u.id AND s.enabled=1 AND sn.excluded=0 AND n.blocked=0),(SELECT COUNT(*) FROM np_follows f WHERE f.provider_id=u.id),EXISTS(SELECT 1 FROM np_follows f WHERE f.provider_id=u.id AND f.user_id=?),u.avatar_version,u.title FROM np_users u WHERE ` + where + ` ORDER BY u.id LIMIT ? OFFSET ?`
+	query := `SELECT u.id,u.username,u.display_name,(SELECT COUNT(*) FROM np_sources s WHERE s.owner_id=u.id AND s.enabled=1 AND s.private=0),(SELECT COUNT(DISTINCT sn.node_id) FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_nodes n ON n.id=sn.node_id WHERE s.owner_id=u.id AND s.enabled=1 AND s.private=0 AND sn.excluded=0 AND n.blocked=0),(SELECT COUNT(*) FROM np_follows f WHERE f.provider_id=u.id),EXISTS(SELECT 1 FROM np_follows f WHERE f.provider_id=u.id AND f.user_id=?),u.avatar_version,u.title FROM np_users u WHERE ` + where + ` ORDER BY u.id LIMIT ? OFFSET ?`
 	queryArgs := append([]any{CurrentUser(ctx).ID}, args...)
 	queryArgs = append(queryArgs, size, (page-1)*size)
 	rows, e := s.DB.QueryContext(ctx, query, queryArgs...)

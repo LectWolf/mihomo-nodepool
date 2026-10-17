@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { toast } from '../toast'
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { errorText, formatDate, isCancelled, json, useApi, type NodePage, type Options, type PoolNode, type Source } from '../api/system'
-import { currentUser, isAdmin, isGuest, requireLogin, profile, draftNodes, draftSources, draftName, draftRuleProfile, selectingNodes, draftEstimate, selectedSources, limitedSources, editingSubscription, selectionError, selectionNotice, toggleNode, toggleSource, resetDraft, saveDraft, loadProfile, type Subscription, limits } from '../api/accounts'
+import { currentUser, isAdmin, isGuest, requireLogin, profile, draftNodes, draftSources, draftName, draftRuleProfile, selectingNodes, draftEstimate, selectedSources, limitedSources, editingSubscription, selectionError, selectionNotice, toggleNode, toggleSource, resetDraft, saveDraft, loadProfile, reviewRequested, type Subscription, limits } from '../api/accounts'
 import { usePolling } from '../polling'
 import Modal from './Modal.vue'
 import AppIcon from './AppIcon.vue'
@@ -26,6 +26,7 @@ import { blockHint, blockLabel, communityUser, levelOptions, selectionFor, useAc
 import '../community.css'
 import { navigate, route, routeParams, setRouteQuery } from '../router'
 import { cached, remember } from '../view-cache'
+import { classic } from '../layout'
 const props = defineProps<{ paused: boolean }>()
 const api = useApi()
 const scope = useAccountScope(() => props.paused)
@@ -35,7 +36,7 @@ const loading = ref(false)
 const error = ref('')
 const options = ref<Options>({ types: [], countries: [] })
 const optionsError = ref('')
-const filters = reactive({ q: '', type: '', countries: '', source_id: '', status: '', provider_id: '', following: '', min_level: '', available: '', sort: 'recommend' })
+const filters = reactive({ q: '', type: '', countries: '', source_id: '', status: '', provider_id: '', following: '', exclusive: '', min_level: '', available: '', sort: 'recommend' })
 // 按节点或按来源浏览
 const browse = ref<'nodes' | 'sources'>('nodes')
 const countries = computed({ get: () => filters.countries ? filters.countries.split(',') : [], set: (value: string[]) => { filters.countries = value.join(',') } })
@@ -98,7 +99,7 @@ function restoreRoute() {
   Object.assign(filters, {
     q: params.get('q') ?? '', type: params.get('type') ?? '',
     countries: [...new Set((params.get('countries') || params.get('country') || '').toUpperCase().split(',').filter(v => /^[A-Z]{2}$/.test(v)))].join(','),
-    source_id: positiveID('source_id'), provider_id: positiveID('provider_id'), following: params.get('following') === '1' ? '1' : '',
+    source_id: positiveID('source_id'), provider_id: positiveID('provider_id'), following: params.get('following') === '1' ? '1' : '', exclusive: params.get('exclusive') === '1' ? '1' : '',
     min_level: /^[0-6]$/.test(params.get('min_level') ?? '') ? params.get('min_level') : '',
     status: ['healthy', 'unhealthy', 'unknown'].includes(params.get('status') ?? '') ? params.get('status') : '',
     available: params.get('available') === '1' ? '1' : '',
@@ -147,8 +148,10 @@ watch(query, () => {
 })
 watch(() => props.paused, paused => {
   if (paused) { ++sequence; clearTimeout(debounce); controller?.abort(); loading.value = false; details.value = null; originNode.value = null; sourcesOpen.value = false; reviewOpen.value = false }
-  else { void load(); void loadOptions() }
+  else { void load(); void loadOptions(); takeReview() }
 })
+function takeReview() { if (reviewRequested.value && !props.paused) { reviewRequested.value = false; if (hasDraft.value) void openReview() } }
+onMounted(takeReview)
 usePolling(async () => { if (!loading.value && !props.paused) await load() }, 15000)
 usePolling(async () => { if (!props.paused) await loadOptions() }, 60000)
 onBeforeUnmount(() => { ++sequence; clearTimeout(debounce); controller?.abort() })
@@ -157,7 +160,7 @@ function ownsAll(node: PoolNode) { return node.sources.every(s => s.owner_id ===
 function viewProvider(id: number) { navigate('nodes', new URLSearchParams({ provider_id: String(id) })); details.value = null }
 // 健康节点按延迟分三档着色
 function latencyTier(node: PoolNode) { if (node.status !== 'healthy' || node.latency_ms == null) return ''; return node.latency_ms < 120 ? 'lat-fast' : node.latency_ms < 250 ? 'lat-mid' : 'lat-slow' }
-function reset() { Object.assign(filters, { q: '', type: '', countries: '', source_id: '', status: '', provider_id: '', following: '', min_level: '', available: '', sort: 'recommend' }); sourceName.value = ''; page.value = 1 }
+function reset() { Object.assign(filters, { q: '', type: '', countries: '', source_id: '', status: '', provider_id: '', following: '', exclusive: '', min_level: '', available: '', sort: 'recommend' }); sourceName.value = ''; page.value = 1 }
 function chooseFilter(source: Source, close: () => void) { sourceName.value = source.name; filters.source_id = String(source.id); close() }
 async function testNode(node: PoolNode) {
   if (props.paused || !isAdmin.value || nodeTesting.has(node.id)) return
@@ -174,7 +177,7 @@ function origins(node: PoolNode) {
 function originAllowed(source: { owner_id?: number; min_level?: number; unavailable?: string }) { return !source.unavailable && (isAdmin.value || source.owner_id === currentUser.value?.id || communityUser.value.level >= (source.min_level ?? 0)) }
 // 新上架来源与按来源视图共用：点“查看节点”切回节点视图并筛选该来源
 function viewSource(source: Source) { sourceName.value = source.name; filters.source_id = String(source.id); browse.value = 'nodes' }
-const showSpotlight = computed(() => browse.value === 'nodes' && page.value === 1 && !filters.q && !filters.source_id && !filters.provider_id && !filters.following && !filters.type && !filters.countries && !filters.status && filters.min_level === '')
+const showSpotlight = computed(() => !classic.value && browse.value === 'nodes' && page.value === 1 && !filters.q && !filters.source_id && !filters.provider_id && !filters.following && !filters.exclusive && !filters.type && !filters.countries && !filters.status && filters.min_level === '')
 function cardOrigin(node: PoolNode) { return origins(node)[0] }
 function chooseNode(node: PoolNode) {
   const existing = draftNodes.value.find(n => n.node_id === node.id)
@@ -237,21 +240,21 @@ async function save() {
 <template>
   <section>
     <div class="page-heading"><div><p class="eyebrow">NODE OVERVIEW</p><h1>节点总览</h1><p class="muted">{{ selectingNodes ? '点击卡片选择节点，选区会跨页保留。' : '点击卡片查看详情，进入选择模式组合你的订阅。' }}</p></div><button data-tour="select-nodes" :class="{ primary: !selectingNodes }" :aria-pressed="selectingNodes" @click="toggleSelecting"><AppIcon :name="selectingNodes ? 'check' : 'plus'" />{{ selectingNodes ? '完成选择' : '选择节点' }}</button></div>
-    <div class="stats-grid">
+    <div v-if="!classic" class="stats-grid">
       <article class="stat-card metric tone-blue"><span><i class="metric-icon"><AppIcon name="nodes" /></i>有效节点</span><strong>{{ data?.stats.total?.toLocaleString() ?? '—' }}</strong></article>
       <article class="stat-card metric tone-green"><span><i class="metric-icon"><AppIcon name="check" /></i>健康节点</span><strong class="green-text">{{ data?.stats.healthy?.toLocaleString() ?? '—' }}</strong></article>
       <article class="stat-card metric tone-red"><span><i class="metric-icon"><AppIcon name="alert" /></i>不可用</span><strong :class="{ 'has-value': (data?.stats.unhealthy ?? 0) > 0 }">{{ data?.stats.unhealthy?.toLocaleString() ?? '—' }}</strong></article>
       <article class="stat-card metric tone-amber"><span><i class="metric-icon"><AppIcon name="clock" /></i>待检测</span><strong>{{ data?.stats.pending?.toLocaleString() ?? '—' }}</strong></article>
     </div>
     <div class="directory-toolbar node-scope">
-      <div class="scope-tabs" role="group" aria-label="节点范围"><button :aria-pressed="!filters.following && !filters.provider_id" @click="filters.following = ''; filters.provider_id = ''; filters.source_id = ''">全部节点</button><button v-if="!isGuest" :aria-pressed="!!filters.following" @click="filters.following = filters.following ? '' : '1'; filters.provider_id = ''; filters.source_id = ''"><AppIcon name="heart" />已关注</button><span v-if="filters.provider_id" class="provider-scope">提供方 #{{ filters.provider_id }}<button class="icon-button" aria-label="取消提供方筛选" @click="filters.provider_id = ''; filters.source_id = ''"><AppIcon name="close" /></button></span></div>
-      <div class="node-scope-actions"><label class="switch-chip" title="隐藏席位已满、等级不足等暂时无法选择的节点"><input v-model="filters.available" type="checkbox" class="switch" true-value="1" false-value="" />只看可选</label><div class="scope-tabs browse-switch" role="group" aria-label="浏览方式"><button type="button" :aria-pressed="browse === 'nodes'" @click="browse = 'nodes'"><AppIcon name="nodes" />按节点</button><button type="button" :aria-pressed="browse === 'sources'" @click="browse = 'sources'"><AppIcon name="sources" />按来源</button></div><button v-if="browse === 'nodes'" @click="openSources"><AppIcon name="plus" />选择整个来源</button></div>
+      <div class="scope-tabs" role="group" aria-label="节点范围"><button :aria-pressed="!filters.following && !filters.exclusive && !filters.provider_id" @click="filters.following = ''; filters.exclusive = ''; filters.provider_id = ''; filters.source_id = ''">全部节点</button><button v-if="!isGuest" :aria-pressed="!!filters.following" @click="filters.following = filters.following ? '' : '1'; filters.exclusive = ''; filters.provider_id = ''; filters.source_id = ''"><AppIcon name="heart" />已关注</button><button v-if="!isGuest" :aria-pressed="!!filters.exclusive" title="自己的来源与提供方私下分享给你的来源" @click="filters.exclusive = filters.exclusive ? '' : '1'; filters.following = ''; filters.provider_id = ''; filters.source_id = ''"><AppIcon name="lock" />专属</button><span v-if="filters.provider_id" class="provider-scope">提供方 #{{ filters.provider_id }}<button class="icon-button" aria-label="取消提供方筛选" @click="filters.provider_id = ''; filters.source_id = ''"><AppIcon name="close" /></button></span></div>
+      <div class="node-scope-actions"><label class="switch-chip" title="隐藏席位已满、等级不足等暂时无法选择的节点"><input v-model="filters.available" type="checkbox" class="switch" true-value="1" false-value="" />只看可选</label><div v-if="!classic" class="scope-tabs browse-switch" role="group" aria-label="浏览方式"><button type="button" :aria-pressed="browse === 'nodes'" @click="browse = 'nodes'"><AppIcon name="nodes" />按节点</button><button type="button" :aria-pressed="browse === 'sources'" @click="browse = 'sources'"><AppIcon name="sources" />按来源</button></div><button v-if="browse === 'nodes'" @click="openSources"><AppIcon name="plus" />选择整个来源</button></div>
     </div>
     <div v-if="hasDraft" class="selection-bar"><div><strong>{{ editingSubscription ? '编辑组合' : '已选节点' }}</strong><span>{{ draftNodes.length }} 个单选 · 跟随 {{ draftSources.length }} 个来源</span><small class="muted">账号额度 {{ limits.nodes }} 节点 / {{ limits.sources }} 来源（不限人数的来源不占）</small></div><button class="text-button" @click="resetDraft">清空</button><button class="primary" @click="openReview">{{ editingSubscription ? '保存修改' : '保存组合' }}<AppIcon name="right" /></button></div>
     <p v-if="selectionError" class="notice warning" role="alert">{{ selectionError }}</p>
     <p v-if="selectionNotice" class="notice info" role="status">{{ selectionNotice }}</p>
     <div v-if="actionError" class="notice error" role="alert">{{ actionError }}</div>
-    <SourceGallery v-if="browse === 'sources'" :paused="paused" :provider-id="filters.provider_id" :following="!!filters.following" @view="viewSource" />
+    <SourceGallery v-if="browse === 'sources'" :paused="paused" :provider-id="filters.provider_id" :following="!!filters.following" :exclusive="!!filters.exclusive" @view="viewSource" />
     <SourceGallery v-if="showSpotlight" compact :paused="paused" @view="viewSource" />
     <div v-show="browse === 'nodes'" class="panel node-panel">
       <div class="panel-heading node-toolbar"><h2>所有节点 <span class="count">{{ data?.total ?? '—' }}</span></h2><div class="node-toolbar-actions"><div class="view-switch" role="group" aria-label="节点展示方式"><button type="button" :aria-pressed="layout === 'cards'" aria-label="卡片视图" title="卡片视图" @click="layout = 'cards'"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h4v4H2zm8 0h4v4h-4zM2 10h4v4H2zm8 0h4v4h-4z" /></svg></button><button type="button" :aria-pressed="layout === 'list'" aria-label="列表视图" title="列表视图" @click="layout = 'list'"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h2m2 0h8M2 8h2m2 0h8M2 13h2m2 0h8" /></svg></button></div><button type="button" class="icon-button" aria-label="刷新节点" title="刷新节点" :disabled="loading || paused" @click="load"><span v-if="loading" class="spinner"></span><AppIcon v-else name="refresh" /></button></div></div>
@@ -259,7 +262,7 @@ async function save() {
         <label class="search-field"><span class="sr-only">搜索节点</span><AppIcon name="search" /><input v-model="filters.q" type="search" :placeholder="isAdmin ? '搜索名称或地址' : '搜索节点名称'" /></label>
         <button type="button" class="mobile-filter-toggle" :aria-expanded="filtersOpen" :aria-label="filtersOpen ? '收起筛选' : '展开筛选'" @click="filtersOpen = !filtersOpen"><AppIcon name="filter" />{{ filtersOpen ? "收起筛选" : "筛选" }}<span v-if="activeFilters" class="count">{{ activeFilters }}</span></button>
         <CustomSelect v-model="filters.type" label="协议" :options="protocolOptions" />
-        <FilterPopover label="来源" :text="sourceText" :active="!!filters.source_id"><template #default="{ close }"><SourceBrowser mode="filter" :provider-id="filters.provider_id" :following="!!filters.following" :selected="filters.source_id ? [Number(filters.source_id)] : []" @choose="chooseFilter($event, close)" @clear="filters.source_id = ''; sourceName = ''; close()" /></template></FilterPopover>
+        <FilterPopover label="来源" :text="sourceText" :active="!!filters.source_id"><template #default="{ close }"><SourceBrowser mode="filter" :provider-id="filters.provider_id" :following="!!filters.following" :exclusive="!!filters.exclusive" :selected="filters.source_id ? [Number(filters.source_id)] : []" @choose="chooseFilter($event, close)" @clear="filters.source_id = ''; sourceName = ''; close()" /></template></FilterPopover>
         <CountryFilter v-model="countries" :options="options.countries" />
         <div class="node-level-filter"><span class="sr-only">来源门槛</span><CustomSelect v-model="filters.min_level" label="来源最低等级筛选" :options="minimumOptions" :disabled="paused" /></div>
         <CustomSelect v-model="filters.status" label="健康状态" :options="healthOptions" />
@@ -282,6 +285,7 @@ async function save() {
           <span class="node-card-overview"><NodeLocation :node="node" /><span :class="['latency', latencyTier(node), { 'green-text': node.status === 'healthy' }]">{{ node.latency_ms === null ? '—' : `${node.latency_ms} ms` }}</span></span>
           <NodeBadges :insights="node.insights" :min-level="cardOrigin(node)?.min_level" :usage="cardOrigin(node)?.subscription_usage" />
           <span class="node-card-signals"><FeedbackBadge :summary="node.feedback" /><FieldTestBadge :result="node.field_test" /></span>
+          <span class="node-card-spacer" aria-hidden="true"></span>
           <span class="node-card-footer"><span class="source-association" :title="node.sources.map(s => s.name).join(' · ')">{{ node.sources[0]?.name || '—' }}<span v-if="node.sources.length > 1" class="count">+{{ node.sources.length - 1 }}</span></span><span class="status-text"><span class="dot" :class="{ bad: node.status === 'unhealthy', pending: node.status === 'unknown' }"></span>{{ statusLabels[node.status] }}</span></span>
         </button></div>
         <div v-else-if="loading && !data" class="empty-state" role="status"><span class="spinner"></span><h3>正在读取节点</h3><p>等待服务返回最新列表…</p></div>
@@ -304,7 +308,7 @@ async function save() {
       <div v-if="isAdmin" class="dialog-actions"><button :disabled="nodeTesting.has(details.id) || paused" @click="testNode(details)"><AppIcon name="probe" />{{ nodeTesting.has(details.id) ? '排队中…' : '检测节点' }}</button></div>
     </Modal>
     <Modal v-if="originNode" title="选择领取来源" @close="originNode = null"><p class="muted">「{{ originNode.name }}」由多个来源提供，请选择本次领取归属。</p><div class="origin-choices"><button v-for="source in origins(originNode)" :key="source.id" class="source-choice" :disabled="!originAllowed(source)" :title="originAllowed(source) ? source.name : blockHint(source.unavailable || 'level', source.min_level)" @click="chooseOrigin(source.id)"><AppIcon name="sources" /><span><strong :title="source.name">{{ source.name }}</strong><small>{{ source.provider_name || '提供方' }} · {{ source.min_level ? `最低 Lv${source.min_level}` : 'Lv0 不限' }}</small><small v-if="!originAllowed(source)" class="danger-text">{{ source.unavailable === 'full' ? '席位已满' : source.unavailable === 'kicked' ? '已被提供方移出' : `等级不足，当前 Lv${communityUser.level}` }}</small><UsageHint :usage="source.subscription_usage" /></span><AppIcon name="right" /></button></div><p class="small muted">同一账号从同一来源引用多个节点，只占一个有效席位；保存时如果你已占用其中某个来源的席位，会优先沿用它。所选来源下架后，订阅会自动切换到其他提供此节点的来源。</p></Modal>
-    <Modal v-if="sourcesOpen" title="跟随整个来源" wide @close="sourcesOpen = false"><p class="small muted">跟随后订阅会实时同步该来源的全部可用节点，不占节点额度；设置了人数上限的来源占用来源额度。</p><div class="source-selection-layout"><SourceBrowser :provider-id="filters.provider_id" :following="!!filters.following" :selected="wholeSourceIDs" @choose="selectSource" /><DraftPreview /></div><p v-if="selectionError" class="notice warning" role="alert">{{ selectionError }}</p><div class="dialog-actions"><span class="small muted">已选 {{ draftNodes.length }} 个节点 · 跟随 {{ draftSources.length }} 个来源</span><button class="primary" @click="sourcesOpen = false">完成选择</button></div></Modal>
+    <Modal v-if="sourcesOpen" title="跟随整个来源" wide @close="sourcesOpen = false"><p class="small muted">跟随后订阅会实时同步该来源的全部可用节点，不占节点额度；设置了人数上限的来源占用来源额度。</p><div class="source-selection-layout"><SourceBrowser :provider-id="filters.provider_id" :following="!!filters.following" :exclusive="!!filters.exclusive" :selected="wholeSourceIDs" @choose="selectSource" /><DraftPreview /></div><p v-if="selectionError" class="notice warning" role="alert">{{ selectionError }}</p><div class="dialog-actions"><span class="small muted">已选 {{ draftNodes.length }} 个节点 · 跟随 {{ draftSources.length }} 个来源</span><button class="primary" @click="sourcesOpen = false">完成选择</button></div></Modal>
     <Modal v-if="reviewOpen" :title="editingSubscription ? '保存组合修改' : '保存组合订阅'" :busy="saving" @close="reviewOpen = false"><form @submit.prevent="save">
       <div class="form-field"><span class="field-label">保存方式</span><CustomSelect v-model="saveTarget" label="保存方式" :options="targetOptions" :disabled="saving || reviewLoading" /><span class="field-hint">覆盖会替换目标组合的节点和规则，保留原订阅链接。</span></div>
       <p v-if="subscriptionFull" class="notice info">订阅数量已满，请选择覆盖已有组合。</p>

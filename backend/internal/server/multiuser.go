@@ -6,8 +6,8 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -80,20 +80,14 @@ func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manage
 		uf := pool.UserFilter{Q: f.Q, Role: q.Get("role"), Status: q.Get("status"), Quota: q.Get("quota")}
 		// 风控标记需要实时计算，先算出命中的用户再分页
 		if risk := q.Get("risk"); risk == "flagged" || risk == "frozen" || risk == "clean" {
-			all, e := s.UserIDs(r.Context(), uf)
+			ids, exclude, e := s.RiskUserIDs(r.Context(), uf, risk)
 			if e != nil {
 				return e
 			}
-			summaries, e := s.RiskSummaries(r.Context(), all)
-			if e != nil {
-				return e
-			}
-			uf.IDs = []int64{}
-			for _, id := range all {
-				flags := summaries[id].Flags
-				if (risk == "flagged" && len(flags) > 0) || (risk == "frozen" && slices.Contains(flags, "frozen")) || (risk == "clean" && len(flags) == 0) {
-					uf.IDs = append(uf.IDs, id)
-				}
+			if risk == "clean" {
+				uf.ExcludeIDs = exclude
+			} else {
+				uf.IDs = ids
 			}
 		}
 		v, e := s.Users(r.Context(), uf, f.Page, f.PageSize)
@@ -101,13 +95,13 @@ func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manage
 			return e
 		}
 		items, _ := v["items"].([]pool.User)
-		ids := []int64{}
-		limits := map[int64]pool.EffectiveLimits{}
+		ids := make([]int64, 0, len(items))
 		for _, u := range items {
 			ids = append(ids, u.ID)
-			if limits[u.ID], e = s.EffectiveLimits(r.Context(), u); e != nil {
-				return e
-			}
+		}
+		limits, e := s.BatchLimits(r.Context(), items)
+		if e != nil {
+			return e
 		}
 		risks, e := s.RiskSummaries(r.Context(), ids)
 		if e != nil {
@@ -260,7 +254,13 @@ func catalogFilter(r *http.Request) pool.CatalogFilter {
 	page, _ := strconv.Atoi(q.Get("page"))
 	size, _ := strconv.Atoi(q.Get("page_size"))
 	provider, _ := strconv.ParseInt(q.Get("provider_id"), 10, 64)
-	return pool.CatalogFilter{Q: q.Get("q"), ProviderID: provider, Following: q.Get("following") == "1", Sort: q.Get("sort"), Available: q.Get("available") == "1", Page: page, PageSize: size}
+	countries := []string{}
+	for _, c := range strings.Split(strings.ToUpper(q.Get("countries")), ",") {
+		if len(c) == 2 && c[0] >= 'A' && c[0] <= 'Z' && c[1] >= 'A' && c[1] <= 'Z' && len(countries) < 20 {
+			countries = append(countries, c)
+		}
+	}
+	return pool.CatalogFilter{Q: q.Get("q"), ProviderID: provider, Following: q.Get("following") == "1", Exclusive: q.Get("exclusive") == "1", Sort: q.Get("sort"), Available: q.Get("available") == "1", Countries: countries, Page: page, PageSize: size}
 }
 func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*net.IPNet) {
 	mux.HandleFunc("GET /sub/{token}", func(w http.ResponseWriter, r *http.Request) {

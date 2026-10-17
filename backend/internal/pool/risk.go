@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -213,39 +214,33 @@ type RiskSummary struct {
 	LastExposure      *time.Time `json:"last_exposure,omitempty"`
 }
 
-func (s *Store) riskSummary(ctx context.Context, q execer, u User, c CommunitySettings, now time.Time) (RiskSummary, error) {
+// riskStats 是风控摘要依赖的窗口统计
+type riskStats struct {
+	windowNodes, todayNew, windowSources, todayNewSources, todayIPs, todayPulls int
+	lastExposure                                                                *time.Time
+}
+
+// buildRisk 由统计值计算风控标记；无活动的账号不会被标记
+func buildRisk(u User, c CommunitySettings, limits EffectiveLimits, st riskStats, now time.Time) RiskSummary {
 	r := RiskSummary{UserID: u.ID, Flags: []string{}, FrozenUntil: u.RiskFrozenUntil, WindowDays: c.RiskWindowDays, DistinctIPs: c.RiskDistinctIPs}
-	limits, err := limitsFor(ctx, q, u, c)
-	if err != nil {
-		return r, err
-	}
 	r.NodeLimit = limits.Nodes
 	r.WindowLimit = c.RiskExposureMultiplier * limits.Nodes
 	r.DailyNewCap = c.RiskDailyNewNodes
 	if r.DailyNewCap == 0 {
 		r.DailyNewCap = limits.Nodes
 	}
-	var last *time.Time
-	if err = q.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(first_at>=?),0),MAX(last_at) FROM np_node_exposures WHERE user_id=? AND last_at>=?`, dayStart(now), u.ID, now.Add(-time.Duration(c.RiskWindowDays)*24*time.Hour)).Scan(&r.WindowNodes, &r.TodayNew, &last); err != nil {
-		return r, err
-	}
-	r.LastExposure = last
+	r.WindowNodes, r.TodayNew, r.LastExposure = st.windowNodes, st.todayNew, st.lastExposure
 	r.SourceWindowLimit = sourceWindowLimit(c, limits.Sources)
 	r.SourceDailyCap = sourceDailyCap(c, limits.Sources)
-	if err = q.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(first_at>=?),0) FROM np_source_exposures WHERE user_id=? AND last_at>=?`, dayStart(now), u.ID, now.Add(-time.Duration(c.RiskWindowDays)*24*time.Hour)).Scan(&r.WindowSources, &r.TodayNewSources); err != nil {
-		return r, err
-	}
-	day, _ := checkinDay(now)
-	if err = q.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(pulls),0) FROM np_pull_stats WHERE user_id=? AND day=?`, u.ID, day).Scan(&r.TodayIPs, &r.TodayPulls); err != nil {
-		return r, err
-	}
-	if r.WindowNodes*10 >= r.WindowLimit*8 {
+	r.WindowSources, r.TodayNewSources = st.windowSources, st.todayNewSources
+	r.TodayIPs, r.TodayPulls = st.todayIPs, st.todayPulls
+	if r.WindowNodes > 0 && r.WindowNodes*10 >= r.WindowLimit*8 {
 		r.Flags = append(r.Flags, "frequent_swaps")
 	}
-	if r.TodayNew*10 >= r.DailyNewCap*8 && r.TodayNew > 0 {
+	if r.TodayNew > 0 && r.TodayNew*10 >= r.DailyNewCap*8 {
 		r.Flags = append(r.Flags, "daily_new_high")
 	}
-	if r.WindowSources*10 >= r.SourceWindowLimit*8 && r.WindowSources > 1 {
+	if r.WindowSources > 1 && r.WindowSources*10 >= r.SourceWindowLimit*8 {
 		r.Flags = append(r.Flags, "frequent_source_swaps")
 	}
 	if r.TodayIPs > c.RiskDistinctIPs {
@@ -254,25 +249,258 @@ func (s *Store) riskSummary(ctx context.Context, q execer, u User, c CommunitySe
 	if r.FrozenUntil != nil && r.FrozenUntil.After(now) {
 		r.Flags = append(r.Flags, "frozen")
 	}
-	return r, nil
+	return r
+}
+
+const riskBatch = 500
+
+func inList(ids []int64) (string, []any) {
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	return "(?" + strings.Repeat(",?", len(ids)-1) + ")", args
+}
+
+// batchRisk 按批聚合统计，避免逐个用户查询
+func batchRisk(ctx context.Context, q execer, users []User, c CommunitySettings, now time.Time) (map[int64]RiskSummary, error) {
+	out := make(map[int64]RiskSummary, len(users))
+	since, today := now.Add(-time.Duration(c.RiskWindowDays)*24*time.Hour), dayStart(now)
+	day, _ := checkinDay(now)
+	for start := 0; start < len(users); start += riskBatch {
+		chunk := users[start:min(start+riskBatch, len(users))]
+		ids := make([]int64, len(chunk))
+		for i, u := range chunk {
+			ids[i] = u.ID
+		}
+		in, idArgs := inList(ids)
+		boosts := map[int64]LevelQuota{}
+		stats := map[int64]*riskStats{}
+		stat := func(id int64) *riskStats {
+			if stats[id] == nil {
+				stats[id] = &riskStats{}
+			}
+			return stats[id]
+		}
+		each := func(query string, args []any, scan func(*sql.Rows) error) error {
+			rows, err := q.QueryContext(ctx, query, args...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				if err = scan(rows); err != nil {
+					return err
+				}
+			}
+			return rows.Err()
+		}
+		with := func(head ...any) []any { return append(head, idArgs...) }
+		if err := each(`SELECT user_id,kind,COALESCE(SUM(amount),0) FROM np_quota_boosts WHERE expires_at>? AND user_id IN `+in+` GROUP BY user_id,kind`, with(now), func(r *sql.Rows) error {
+			var id int64
+			var kind string
+			var amount int
+			if err := r.Scan(&id, &kind, &amount); err != nil {
+				return err
+			}
+			b := boosts[id]
+			switch kind {
+			case "node":
+				b.Nodes = amount
+			case "source":
+				b.Sources = amount
+			case "subscription":
+				b.Subscriptions = amount
+			}
+			boosts[id] = b
+			return nil
+		}); err != nil {
+			return out, err
+		}
+		if err := each(`SELECT user_id,COUNT(*),COALESCE(SUM(first_at>=?),0),MAX(last_at) FROM np_node_exposures WHERE last_at>=? AND user_id IN `+in+` GROUP BY user_id`, with(today, since), func(r *sql.Rows) error {
+			var id int64
+			var v riskStats
+			if err := r.Scan(&id, &v.windowNodes, &v.todayNew, &v.lastExposure); err != nil {
+				return err
+			}
+			st := stat(id)
+			st.windowNodes, st.todayNew, st.lastExposure = v.windowNodes, v.todayNew, v.lastExposure
+			return nil
+		}); err != nil {
+			return out, err
+		}
+		if err := each(`SELECT user_id,COUNT(*),COALESCE(SUM(first_at>=?),0) FROM np_source_exposures WHERE last_at>=? AND user_id IN `+in+` GROUP BY user_id`, with(today, since), func(r *sql.Rows) error {
+			var id int64
+			var a, b int
+			if err := r.Scan(&id, &a, &b); err != nil {
+				return err
+			}
+			st := stat(id)
+			st.windowSources, st.todayNewSources = a, b
+			return nil
+		}); err != nil {
+			return out, err
+		}
+		if err := each(`SELECT user_id,COUNT(*),COALESCE(SUM(pulls),0) FROM np_pull_stats WHERE day=? AND user_id IN `+in+` GROUP BY user_id`, with(day), func(r *sql.Rows) error {
+			var id int64
+			var a, b int
+			if err := r.Scan(&id, &a, &b); err != nil {
+				return err
+			}
+			st := stat(id)
+			st.todayIPs, st.todayPulls = a, b
+			return nil
+		}); err != nil {
+			return out, err
+		}
+		for _, u := range chunk {
+			st := riskStats{}
+			if v := stats[u.ID]; v != nil {
+				st = *v
+			}
+			out[u.ID] = buildRisk(u, c, composeLimits(u, c, boosts[u.ID]), st, now)
+		}
+	}
+	return out, nil
+}
+
+// usersByIDs 批量读取账号，保持传入顺序
+func (s *Store) usersByIDs(ctx context.Context, ids []int64) ([]User, error) {
+	byID := make(map[int64]User, len(ids))
+	for start := 0; start < len(ids); start += riskBatch {
+		chunk := ids[start:min(start+riskBatch, len(ids))]
+		in, args := inList(chunk)
+		rows, err := s.DB.QueryContext(ctx, `SELECT `+userColumns+` FROM np_users WHERE id IN `+in, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			u, err := scanUser(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			byID[u.ID] = u
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]User, 0, len(ids))
+	for _, id := range ids {
+		if u, ok := byID[id]; ok {
+			out = append(out, u)
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) RiskSummaries(ctx context.Context, ids []int64) (map[int64]RiskSummary, error) {
-	out := map[int64]RiskSummary{}
-	c := currentCommunity()
-	now := utcNow()
-	for _, id := range ids {
-		u, err := s.User(ctx, id)
-		if err != nil {
-			return out, err
+	if len(ids) == 0 {
+		return map[int64]RiskSummary{}, nil
+	}
+	users, err := s.usersByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	return batchRisk(ctx, s.DB, users, currentCommunity(), utcNow())
+}
+
+// BatchLimits 批量计算账号的实际额度
+func (s *Store) BatchLimits(ctx context.Context, users []User) (map[int64]EffectiveLimits, error) {
+	out := make(map[int64]EffectiveLimits, len(users))
+	if len(users) == 0 {
+		return out, nil
+	}
+	settings, err := s.Settings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, len(users))
+	for i, u := range users {
+		ids[i] = u.ID
+	}
+	in, args := inList(ids)
+	rows, err := s.DB.QueryContext(ctx, `SELECT user_id,kind,COALESCE(SUM(amount),0) FROM np_quota_boosts WHERE expires_at>? AND user_id IN `+in+` GROUP BY user_id,kind`, append([]any{utcNow()}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	boosts := map[int64]LevelQuota{}
+	for rows.Next() {
+		var id int64
+		var kind string
+		var amount int
+		if err = rows.Scan(&id, &kind, &amount); err != nil {
+			return nil, err
 		}
-		r, err := s.riskSummary(ctx, s.DB, u, c, now)
-		if err != nil {
-			return out, err
+		b := boosts[id]
+		switch kind {
+		case "node":
+			b.Nodes = amount
+		case "source":
+			b.Sources = amount
+		case "subscription":
+			b.Subscriptions = amount
 		}
-		out[id] = r
+		boosts[id] = b
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, u := range users {
+		out[u.ID] = composeLimits(u, settings.Community, boosts[u.ID])
 	}
 	return out, nil
+}
+
+// RiskUserIDs 返回风控筛选命中的账号；只对近期有活动或被冻结的账号计算，其余必然正常
+func (s *Store) RiskUserIDs(ctx context.Context, f UserFilter, risk string) (ids, exclude []int64, err error) {
+	c, now := currentCommunity(), utcNow()
+	where, args := f.where()
+	if risk == "frozen" {
+		ids, err = s.idList(ctx, `SELECT id FROM np_users WHERE `+where+` AND risk_frozen_until>? ORDER BY id LIMIT 20000`, append(args, now)...)
+		return ids, nil, err
+	}
+	since := now.Add(-time.Duration(c.RiskWindowDays) * 24 * time.Hour)
+	day, _ := checkinDay(now)
+	active := ` AND (risk_frozen_until>? OR EXISTS(SELECT 1 FROM np_node_exposures e WHERE e.user_id=np_users.id AND e.last_at>=?) OR EXISTS(SELECT 1 FROM np_source_exposures e WHERE e.user_id=np_users.id AND e.last_at>=?) OR EXISTS(SELECT 1 FROM np_pull_stats p WHERE p.user_id=np_users.id AND p.day=?))`
+	candidates, err := s.idList(ctx, `SELECT id FROM np_users WHERE `+where+active+` ORDER BY id LIMIT 20000`, append(args, now, since, since, day)...)
+	if err != nil {
+		return nil, nil, err
+	}
+	summaries, err := s.RiskSummaries(ctx, candidates)
+	if err != nil {
+		return nil, nil, err
+	}
+	flagged := []int64{}
+	for _, id := range candidates {
+		if len(summaries[id].Flags) > 0 {
+			flagged = append(flagged, id)
+		}
+	}
+	if risk == "clean" {
+		return nil, flagged, nil
+	}
+	return flagged, nil, nil
+}
+
+func (s *Store) idList(ctx context.Context, query string, args ...any) ([]int64, error) {
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // FreezeUser blocks node swaps until the given time; zero hours unfreezes.

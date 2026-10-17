@@ -375,6 +375,8 @@ type UserFilter struct {
 	Status string // enabled / disabled
 	Quota  string // custom / level
 	IDs    []int64
+	// ExcludeIDs 排除这些用户（风控“正常”筛选）
+	ExcludeIDs []int64
 }
 
 func (f UserFilter) where() (string, []any) {
@@ -395,6 +397,12 @@ func (f UserFilter) where() (string, []any) {
 		where += ` AND (node_limit>0 OR source_limit>0 OR subscription_limit>0)`
 	case "level":
 		where += ` AND node_limit=0 AND source_limit=0 AND subscription_limit=0`
+	}
+	if len(f.ExcludeIDs) > 0 {
+		where += ` AND id NOT IN (?` + strings.Repeat(",?", len(f.ExcludeIDs)-1) + `)`
+		for _, id := range f.ExcludeIDs {
+			args = append(args, id)
+		}
 	}
 	if f.IDs != nil {
 		if len(f.IDs) == 0 {

@@ -136,6 +136,50 @@ func registerCommunity(business businessRegistrar, s *pool.Store) {
 		}
 		return err
 	})
+	// 私有来源分享名单
+	business("GET /api/v1/sources/{id}/shares", func(w http.ResponseWriter, r *http.Request) error {
+		id, err := idOf(r)
+		if err != nil {
+			return err
+		}
+		v, err := s.SourceShares(r.Context(), id)
+		if err == nil {
+			writeJSON(w, 200, map[string]any{"items": v, "limit": pool.MaxSourceShares})
+		}
+		return err
+	})
+	business("POST /api/v1/sources/{id}/shares", func(w http.ResponseWriter, r *http.Request) error {
+		id, err := idOf(r)
+		if err != nil {
+			return err
+		}
+		var in struct {
+			User string `json:"user"`
+		}
+		if err = decode(w, r, &in); err != nil {
+			return err
+		}
+		v, err := s.AddSourceShare(r.Context(), id, in.User)
+		if err == nil {
+			writeJSON(w, 201, v)
+		}
+		return err
+	})
+	business("DELETE /api/v1/sources/{id}/shares/{userID}", func(w http.ResponseWriter, r *http.Request) error {
+		id, err := idOf(r)
+		if err != nil {
+			return err
+		}
+		userID, err := strconv.ParseInt(r.PathValue("userID"), 10, 64)
+		if err != nil || userID < 1 {
+			return errors.New("账号ID无效")
+		}
+		err = s.RemoveSourceShare(r.Context(), id, userID)
+		if err == nil {
+			w.WriteHeader(http.StatusNoContent)
+		}
+		return err
+	})
 	business("POST /api/v1/sources/{id}/link/rotate", func(w http.ResponseWriter, r *http.Request) error {
 		id, err := idOf(r)
 		if err != nil {

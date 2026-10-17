@@ -8,7 +8,7 @@ import UsageHint from './UsageHint.vue'
 import '../community.css'
 import AppIcon from './AppIcon.vue'
 import PageNumbers from './PageNumbers.vue'
-const props = withDefaults(defineProps<{ providerId?: string; following?: boolean; selected?: number[]; mode?: 'filter' | 'select' }>(), { mode: 'select', selected: () => [] })
+const props = withDefaults(defineProps<{ providerId?: string; following?: boolean; exclusive?: boolean; selected?: number[]; mode?: 'filter' | 'select' }>(), { mode: 'select', selected: () => [] })
 const emit = defineEmits<{ choose: [source: Source]; clear: [] }>()
 const api = useApi(); const q = ref(''); const page = ref(1); const data = ref<Page<Source> | null>(null); const loading = ref(false); const error = ref('')
 const scope = useAccountScope()
@@ -17,13 +17,13 @@ async function load() {
   const ticket = scope.ticket()
   const current=++sequence; controller?.abort(); controller = new AbortController(); loading.value=true
   const params = new URLSearchParams({ q:q.value.trim(), page:String(page.value), page_size:'20', sort:'recommend' })
-  if (props.providerId) params.set('provider_id', props.providerId); if(props.following) params.set('following','1')
+  if (props.providerId) params.set('provider_id', props.providerId); if(props.following) params.set('following','1'); if(props.exclusive) params.set('exclusive','1')
   try { const result = await api<Page<Source>>(`/sources/catalog?${params}`, { signal: controller.signal }); if(current === sequence && scope.current(ticket)) { data.value=result; error.value='' } }
   catch(cause) { if(!isCancelled(cause) && current===sequence && scope.current(ticket)) error.value=errorText(cause) }
   finally { if(current===sequence) loading.value=false }
 }
 watch(q, () => {page.value=1})
-watch([q,page,()=>props.providerId,()=>props.following],()=>{ ++sequence; controller?.abort(); clearTimeout(timer); timer=setTimeout(()=>void load(),250) },{immediate:true})
+watch([q,page,()=>props.providerId,()=>props.following,()=>props.exclusive],()=>{ ++sequence; controller?.abort(); clearTimeout(timer); timer=setTimeout(()=>void load(),250) },{immediate:true})
 onBeforeUnmount(()=>{++sequence; clearTimeout(timer); controller?.abort()})
 function selectedCount(id: number) { return draftNodes.value.filter(node => node.source_id === id).length }
 function belowLevel(source: Source) { return currentUser.value?.role !== 'admin' && source.owner_id !== currentUser.value?.id && communityUser.value.level < (source.min_level ?? 0) }

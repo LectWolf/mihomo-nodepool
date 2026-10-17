@@ -28,7 +28,7 @@ User = {id,username,display_name,role:"admin"|"user",enabled,node_limit,source_l
 - PATCH /users/{id} {display_name?,password?,enabled?,node_limit?,source_limit?,subscription_limit?} -> User
 
 Source增加{owner_id,provider_name,max_users,claimed_users,active_users,occupied_users,min_level,subscription_usage,share_url?}；新建／编辑支持max_users／min_level。active_users／occupied_users按启用账号未过期有效席位去重，claimed_users仅保留期内历史统计。GET /sources为本人管理来源（admin全部），share_url不进入公共目录；写删刷新检查owner／admin，不返回上游URL或节点凭据。
-- GET /sources/catalog?q=&provider_id=&following=1&page=1&page_size=20 -> {items:Source[],total,page,page_size}（只共享可用来源）；供可搜索分页来源选择与整来源选取。
+- GET /sources/catalog?q=&provider_id=&following=1&sort=&available=1&countries=&page=1&page_size=20 -> {items:Source[],total,page,page_size}（只共享可用来源）；供可搜索分页来源选择与整来源选取。
 - GET /providers?q=&following=1&page=1&page_size=20 -> {items:Provider[],total,page,page_size}
   Provider = {id,username,display_name,source_count,node_count,followers,followed,provider_path}
 - POST /providers/{id}/follow；DELETE /providers/{id}/follow -> {followed:boolean}
@@ -66,3 +66,9 @@ Subscription = {id,name,node_count,source_count,created_at,updated_at,url:string
 ## 最小必要验证
 
 权限越权/停用会话、来源所有权、管理员接口、并发名额唯一计数/上限、去重和额度/全选裁切、token撤销、格式往返/配置不丢失、原调度回归；隔离MariaDB，无业务库。前端类型/构建及一轮Edge契约回归，更新旧选择器。
+
+## 私有来源
+
+- `np_sources.private` 标记私有，`np_source_shares(source_id,user_id)` 保存分享名单（随来源或用户删除级联清理）。可见条件：公开，或本人，或在名单内；管理员不例外。
+- 私有来源跳过等级门槛与席位上限占额判断（按不限人数计，不占来源额度），提供方统计和每日分享奖励排除私有来源。
+- 改为私有或取消分享时释放不在名单内的有效席位，并触发同节点换绑到其他可用来源。
