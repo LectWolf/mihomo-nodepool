@@ -194,6 +194,7 @@ type Origin struct {
 }
 type Node struct {
 	ID            int64            `json:"id"`
+	TLSPin        string           `json:"-"` // 仅 v2ray 导出使用的证书指纹
 	Name          string           `json:"name"`
 	Type          string           `json:"type"`
 	Server        string           `json:"server"`

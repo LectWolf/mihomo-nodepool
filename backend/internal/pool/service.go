@@ -55,10 +55,25 @@ func (s *Service) Run(ctx context.Context) {
 					log.Print("每日共享奖励发放失败，将自动重试")
 				}
 				if err := s.hourly(ctx); err != nil {
-					log.Print("每小时流量快照失败，将在下个整点重试")
+					log.Printf("每小时流量快照失败，将在下个整点重试：%v", err)
 				}
 			}
 			if !wait(ctx, time.Minute) {
+				return
+			}
+		}
+	}()
+	// 证书指纹单独循环：直连节点可能较慢，不拖慢每分钟的维护任务
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for ctx.Err() == nil {
+			if s.ready(ctx) {
+				if err := s.Store.RefreshTLSPins(ctx); err != nil && ctx.Err() == nil {
+					log.Printf("节点证书指纹读取失败，将自动重试：%v", err)
+				}
+			}
+			if !wait(ctx, 5*time.Minute) {
 				return
 			}
 		}

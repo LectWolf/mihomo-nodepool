@@ -367,6 +367,11 @@ func (s *Store) ExportSavedSubscriptionNodes(ctx context.Context, token, format 
 	if e != nil {
 		return nil, 0, 0, nil, e
 	}
+	if format == "v2ray" {
+		if e = s.attachTLSPins(ctx, nodes); e != nil {
+			return nil, 0, 0, nil, e
+		}
+	}
 	raw, skipped, routingSkipped, e := s.exportSaved(ctx, token, format, nodes)
 	return raw, skipped, routingSkipped, nodes, e
 }

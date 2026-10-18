@@ -305,3 +305,48 @@ func containsToken(raw []byte, token string) bool {
 	}
 	return false
 }
+
+// 仅踢出：来源从该用户全部组合移除并释放席位，但不禁止，之后可以重新加入
+func TestMySQLRemoveSubscriberWithoutBan(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	owner := account(t, s, "removeowner", 20, 3, 2)
+	u := account(t, s, "removeduser", 20, 3, 2)
+	oc, uc := pool.WithUser(ctx, owner), pool.WithUser(ctx, u)
+	src := sharedSource(t, s, oc, "softremove", 1, 1)
+	saved, err := s.SaveSubscription(uc, 0, pool.SubscriptionInput{Name: "soft", SourceIDs: []int64{src.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ModerateSourceSubscriber(uc, src.ID, u.ID, "remove"); err == nil {
+		t.Fatal("subscriber removed someone without permission")
+	}
+	if err = s.ModerateSourceSubscriber(oc, src.ID, u.ID, "remove"); err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := s.SubscriptionNodes(ctx, saved.Subscription.Token)
+	if err != nil || len(nodes) != 0 {
+		t.Fatalf("remove left nodes: %d %v", len(nodes), err)
+	}
+	var state string
+	if err = s.DB.QueryRow(`SELECT state FROM np_source_seats WHERE source_id=? AND user_id=?`, src.ID, u.ID).Scan(&state); err != nil || state != "released" {
+		t.Fatalf("seat state %q %v", state, err)
+	}
+	var events int
+	if err = s.DB.QueryRow(`SELECT COUNT(*) FROM np_source_events WHERE source_id=? AND user_id=? AND action='removed'`, src.ID, u.ID).Scan(&events); err != nil || events != 1 {
+		t.Fatalf("removed event %d %v", events, err)
+	}
+	// 满员来源（上限 1）释放后可重新加入
+	if _, err = s.SaveSubscription(uc, 0, pool.SubscriptionInput{Name: "rejoin", SourceIDs: []int64{src.ID}}); err != nil {
+		t.Fatal("removed account cannot rejoin", err)
+	}
+	if err = s.ModerateSourceSubscriber(oc, src.ID, u.ID, "kick"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ModerateSourceSubscriber(oc, src.ID, u.ID, "remove"); err == nil {
+		t.Fatal("remove on banned subscriber should explain unblock first")
+	}
+	if err = s.ModerateSourceSubscriber(oc, src.ID, u.ID, "bogus"); err == nil {
+		t.Fatal("unknown action accepted")
+	}
+}

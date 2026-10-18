@@ -3,8 +3,10 @@ package pool
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -95,16 +97,72 @@ func (s *Service) pollUsage(ctx context.Context) {
 	wg.Wait()
 }
 
+// SnapshotSources 记录整点快照。已用流量在 Go 里解析：套餐信息缺少上传或下载字段时
+// JSON 里是 null，严格模式下 CAST 会报错并让整条 INSERT 失败，导致所有来源都没有快照
 func (s *Store) SnapshotSources(ctx context.Context, hour time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO np_source_hourly(source_id,hour,users,nodes,healthy,used_bytes)
+	used, err := s.usedBytes(ctx)
+	if err != nil {
+		return err
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO np_source_hourly(source_id,hour,users,nodes,healthy,used_bytes)
  SELECT s.id,?,
  (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=s.id AND st.user_id<>s.owner_id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6)),
  (SELECT COUNT(*) FROM np_source_nodes sn WHERE sn.source_id=s.id AND sn.excluded=0),
  (SELECT COUNT(*) FROM np_source_nodes sn JOIN np_nodes n ON n.id=sn.node_id WHERE sn.source_id=s.id AND sn.excluded=0 AND n.blocked=0 AND n.status='healthy'),
- CAST(JSON_EXTRACT(s.subscription_usage,'$.upload_bytes') AS SIGNED)+CAST(JSON_EXTRACT(s.subscription_usage,'$.download_bytes') AS SIGNED)
+ NULL
  FROM np_sources s
- ON DUPLICATE KEY UPDATE users=VALUES(users),nodes=VALUES(nodes),healthy=VALUES(healthy),used_bytes=VALUES(used_bytes)`, hour)
-	return err
+ ON DUPLICATE KEY UPDATE users=VALUES(users),nodes=VALUES(nodes),healthy=VALUES(healthy),used_bytes=NULL`, hour); err != nil {
+		return err
+	}
+	ids := make([]int64, 0, len(used))
+	for id := range used {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for start := 0; start < len(ids); start += 500 {
+		chunk := ids[start:min(start+500, len(ids))]
+		cases, args := strings.Builder{}, make([]any, 0, len(chunk)*3+1)
+		for _, id := range chunk {
+			cases.WriteString(" WHEN ? THEN ?")
+			args = append(args, id, used[id])
+		}
+		args = append(args, hour)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE np_source_hourly SET used_bytes=CASE source_id`+cases.String()+` END WHERE hour=? AND source_id IN (?`+strings.Repeat(",?", len(chunk)-1)+`)`, args...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// usedBytes 返回上传与下载都已知的来源的已用流量
+func (s *Store) usedBytes(ctx context.Context) (map[int64]int64, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,subscription_usage FROM np_sources WHERE subscription_usage IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]int64{}
+	for rows.Next() {
+		var id int64
+		var raw []byte
+		if err = rows.Scan(&id, &raw); err != nil {
+			return nil, err
+		}
+		var u SubscriptionUsage
+		if json.Unmarshal(raw, &u) != nil || u.UploadBytes == nil || u.DownloadBytes == nil || *u.UploadBytes > math.MaxInt64-*u.DownloadBytes {
+			continue
+		}
+		out[id] = *u.UploadBytes + *u.DownloadBytes
+	}
+	return out, rows.Err()
 }
 
 type TrafficPoint struct {

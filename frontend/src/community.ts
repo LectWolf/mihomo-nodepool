@@ -67,7 +67,7 @@ export interface Subscriber {
 export interface HistoryItem { source_id: number; source_name: string; action: string; created_at: string }
 export type RetainedPage<T> = Page<T> & { history_retention_days: number }
 export function historyAction(action: string) {
-  const labels: Record<string, string> = { claimed: '领取来源', activated: '激活来源', renewed: '续期', released: '释放席位', expired: '租期到期', kicked: '被移除并禁用', unblocked: '解除禁用', checkin: '网页签到', probe: '探测续期', leave: '请假延期' }
+  const labels: Record<string, string> = { claimed: '领取来源', activated: '激活来源', renewed: '续期', released: '释放席位', expired: '租期到期', removed: '被提供方踢出', kicked: '被移除并禁用', unblocked: '解除禁用', checkin: '网页签到', probe: '探测续期', leave: '请假延期' }
   return labels[action] ?? action
 }
 export function formatBytes(value: number) {
@@ -106,11 +106,15 @@ export function blockLabel(reason?: string, minLevel?: number) {
   if (reason === 'full') return '席位已满'
   if (reason === 'level') return `需 Lv${minLevel ?? 0}`
   if (reason === 'kicked') return '已被移出'
+  if (reason === 'exhausted') return '流量耗尽'
+  if (reason === 'expired') return '套餐到期'
   return ''
 }
 export function blockHint(reason?: string, minLevel?: number) {
   if (reason === 'full') return '该来源的使用人数已满，等有人退出后才能加入。'
   if (reason === 'level') return `该来源需要 Lv${minLevel ?? 0} 才能使用，签到和共享可以升级。`
   if (reason === 'kicked') return '你已被该来源的提供方移出，无法再次加入。'
+  if (reason === 'exhausted') return '该来源的套餐流量已用完，提供方续费或流量重置后恢复。'
+  if (reason === 'expired') return '该来源的套餐已到期，提供方续费后恢复。'
   return ''
 }

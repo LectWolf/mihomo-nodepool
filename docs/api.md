@@ -67,7 +67,7 @@ GET `/statistics`（仅管理员）→ `{sampled_at,overview,tasks,source_tasks,
 `max_users=0`不限。容量统计`np_source_seats`中启用账号未过期的有效席位，同账号多个节点／组合计一人。删除最后引用、踢出或过期释放；历史领取不占容量，降低上限保留有效已有席位。`active_users`与`occupied_users`均表示当前有效席位人数，`claimed_users`表示保留的历史领取账号数。来源URL唯一性按owner＋URL哈希，节点按完整配置去重；管理列表与共享目录不返回上游URL、缓存内容或节点凭据。
 
 - GET `/sources/{id}/subscribers?state=current|history|all&page=1&page_size=20` → `{items,total,page,page_size,history_retention_days}`，仅owner／admin。Item为`{user_id,username,display_name,level,xp,enabled,state,claimed_at,expires_at,last_pull_at,last_renewed_at,renew_method,ended_at,node_count,subscription_count}`。
-- PATCH `/sources/{id}/subscribers/{userID}` `{blocked:boolean}` → `{blocked}`。踢出从全部组合移除本来源并禁领，直到明确解除；owner自身不可踢。禁领不随历史清理失效。
+- PATCH `/sources/{id}/subscribers/{userID}` `{action:"remove"|"kick"|"unblock"}` → `{action,blocked}`（旧的 `{blocked:boolean}` 仍可用，true＝kick、false＝unblock）。`remove` 仅踢出：从其全部组合移除本来源、释放有效席位（事件 `removed`），对方之后可重新加入；`kick` 同时禁领，直到 `unblock`；已禁领的用户须先解除。owner自身不可踢。禁领不随历史清理失效。
 - POST `/sources/{id}/link/rotate` → `{url:"/link/{token}"}`，仅owner／admin，旧直链失效。
 - GET `/link/{token}?format=clash|v2ray|auto`（旧站路径 `/l/{token}`、`/give/{token}` 等价）无API前缀和Cookie，下载整个来源，绕过个人席位／等级，不附个人保活；来源和owner必须启用。持有链接即可访问。
 
@@ -79,7 +79,7 @@ GET `/nodes?page=1&page_size=50&q=&type=&countries=JP,US&min_level=0..6&source_i
 
 `Node = {id,name,type,server,port,latency_ms:number|null,status:"unknown"|"healthy"|"unhealthy",country,country_code,region,city,exit_ip,last_checked_at,next_check_at,last_error,sources:[{id,name,node_name,owner_id,provider_name}]}`。
 
-普通用户的节点列表按“可选 → 席位已满等暂不可选 → 检测不可用”分层，层内再按所选排序；来源推荐排序同理（没有可用节点的来源最后）。
+普通用户的节点列表按“可选 → 席位已满、流量耗尽（`unavailable=exhausted`）、套餐到期（`expired`）等暂不可选 → 检测不可用”分层，层内再按所选排序；来源推荐排序同理（没有可用节点的来源最后）。
 
 Node另带`insights:{v2ray_compatible,v2ray_reason,cipher?,transport?,tls,warnings:[{code,severity,message}]}`，Origin另带`min_level,subscription_usage?`；只分析配置，不保证实际客户端连通，不输出凭据。TLS状态按协议判断，不把SS AEAD／SS2022／WireGuard泛化为明文。
 
@@ -150,6 +150,7 @@ GET `/sub/{token}?format=clash|v2ray|auto`，**无 `/api/v1` 前缀**，无 Cook
 
 - `clash`：包含完整代理配置、选择组和规则的 Clash／Mihomo YAML。
 - `v2ray`：UTF-8 分享 URI 按行连接后 Base64。支持可以完整表达的 SS／SS2022、VMess、VLESS、Trojan、Hysteria2、TUIC、HTTP／SOCKS；不能保留参数的节点会跳过，全部无法表达则 422。
+- 证书指纹：Xray 新版移除了 `allowInsecure`，只有它而没有 `pinnedPeerCertSha256` 时内核拒绝启动，新版 v2rayN 也不再写入它。服务端每 5 分钟为跳过证书验证（`skip-cert-verify`）的 VMess／VLESS／Trojan TLS 节点（非 Reality）和无混淆的 Hysteria2 节点直连读取证书（只连公网地址），记下叶子证书与签发证书的 SHA256（`np_node_tls`，成功后每天复查，失败 6 小时后重试并保留旧值）。v2ray 导出保留 `allowInsecure=1`／`insecure=1` 兼容旧内核，另附 `pcs=<叶子>,<签发>`（VMess JSON 为 `pcs` 字段），Hysteria2 写 `pinSHA256=<叶子>`；节点自带 `fingerprint` 时优先使用。导入分享链接时 `pcs` 保留为节点的 `fingerprint`。Clash 导出不变。
 - `auto` 或省略：按 User-Agent 选择。Mihomo／Clash／Stash 返回 Clash，v2rayN／v2rayNG 等兼容客户端返回 URI 订阅，未知 UA 默认 Clash。显式格式优先。
 
 URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集合伪装为 JSON。v2ray 输出 v2rayN 等客户端通用的分享 URI：只要求连接必需的信息能完整表示，TFO、多路复用、UDP 开关、early data、除 Host 外的伪装请求头等客户端调优参数不保留；链式代理、未知协议、未知传输方式和插件（如 shadow-tls）无法连接，跳过并通过 `X-Subscription-Skipped` 报告数量。全部无法输出时返回只含一条提示节点的订阅（HTTP 200），避免客户端只报“无效的订阅内容”。支持 ss（obfs、v2ray-plugin）、vmess、vless（含 reality）、trojan、hysteria2（`mport` 端口跳跃）、tuic、anytls、http、socks5；传输方式 tcp、ws、httpupgrade、grpc、h2、http、xhttp。
@@ -158,7 +159,7 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 
 `/sub/` 与 `/link/` 下载均带 `Content-Disposition: attachment; filename="MCII"; filename*=UTF-8''MCII%E8%AE%A2%E9%98%85%E5%85%B1%E4%BA%AB` 及 `Profile-Title: base64:…`，客户端显示订阅名「MCII节点共享」，不再显示令牌。个人下载另带`X-Subscription-State:active|expired`、`Profile-Web-Page-Url`和`Subscription-Userinfo: expire=个人租期Unix秒`。到期返回200提示节点，不输出真实节点。有效下载附保活VLESS/WS节点及独立hidden url-test组；只有固定HTTP gstatic204的HEAD／GET有效探测续期，旧过期UUID不能复活。GET `/ws/lease/{uuid}`仅WebSocket协议入口，不提供通用转发。公网源优先settings.public_url，否则按请求TLS／Host推断，不信任转发头；反代须配置真实HTTPS源和WS Upgrade。来源`/link/`转发已解析来源用量头，不套个人到期。
 
-实测回报：开启 `beacon_enabled` 的用户下载 Clash 格式时，订阅另附最多 15 个隐藏 url-test 组（`实测回报 N`），每组只含一个节点，检测地址为 `http://<公网主机>/b/<32位令牌>`，间隔 3 小时、`lazy:false`。令牌按（批次，节点）随机生成，同一订阅 12 小时内复用同一批次，之后轮换并优先选该用户未测、全站数据少的节点。GET／HEAD `/b/{token}` 始终返回空 204；首次回报记录该节点连通。批次已有回报 10 分钟后仍未回报的节点视为该用户连不上：订阅中排到末尾，订阅详情 `node_details[].my_failed=true`。拉取订阅的 IP 属于中国大陆（内嵌 APNIC 数据，`scripts/update-cnip.py` 更新）时批次计入国内统计；节点列表 Node 另带 `field_test:{ok,fail,days,paused}`：统计窗口（`settings.field_test_days`，默认 3 天）内按用户去重的国内实测结果；`paused=true` 表示本机状态健康、窗口内多数国内用户能连、最近一次国内回报为能连且在 24 小时内，本机暂停检测，延迟为最后一次本机结果；有人连不上或超过 24 小时无人回报后恢复。连不上不会有任何请求到达服务器：同一批次已有其他节点回报（证明客户端在线并已加载订阅）10 分钟后仍未回报的节点记为连不上。回报走 HTTP 80 端口以免每次握手，反代须让 `/b/` 不跳转 HTTPS。批次保留 8 天。
+实测回报：开启 `beacon_enabled` 的用户下载 Clash 格式时，订阅另附最多 15 个隐藏 url-test 组（`实测回报 N`），每组只含一个节点，检测地址为 `http://<公网主机>/b/<32位令牌>`，间隔 1 小时、`lazy:false`。令牌按（批次，节点）随机生成，同一订阅 1 小时内复用同一批次，之后轮换：优先选统计窗口内该用户测得次数少（未测的最先）、其次全站实测人数少的节点。GET／HEAD `/b/{token}` 始终返回空 204；首次回报记录该节点连通。批次已有回报 10 分钟后仍未回报的节点视为该用户连不上：订阅中排到末尾，订阅详情 `node_details[].my_failed=true`。拉取订阅的 IP 属于中国大陆（内嵌 APNIC 数据，`scripts/update-cnip.py` 更新）时批次计入国内统计；节点列表 Node 另带 `field_test:{ok,fail,days,paused}`：统计窗口（`settings.field_test_days`，默认 3 天）内按用户去重的国内实测结果；`paused=true` 表示本机状态健康、窗口内多数国内用户能连、最近一次国内回报为能连且在 24 小时内，本机暂停检测，延迟为最后一次本机结果；有人连不上或超过 24 小时无人回报后恢复。连不上不会有任何请求到达服务器：同一批次已有其他节点回报（证明客户端在线并已加载订阅）10 分钟后仍未回报的节点记为连不上。回报走 HTTP 80 端口以免每次握手，反代须让 `/b/` 不跳转 HTTPS。批次保留 8 天。
 
 国内实测参与排序：每个节点按窗口内结果分档——能连用户占比 ≥70% 为“能连”，无数据为“未知”，至少 2 位连不上且能连占比 <30% 为“连不上”，其余为“不一”。`sort=latency` 与 `sort=recommend` 在可选性分组内先按该档位、再按本机延迟；本机不可用但国内能连的节点不再排到末尾，国内连不上的节点排到末尾。
 

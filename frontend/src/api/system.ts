@@ -42,7 +42,7 @@ export interface Source {
 // 管理员下架记录：下架期间提供方不能自行启用
 export interface SourceTakedown { reason: string; reason_label: string; detail: string; at: string; by: string }
 // 当前用户无法选用的原因：席位已满、等级不足、被提供方移出
-export type Unavailable = '' | 'full' | 'level' | 'kicked'
+export type Unavailable = '' | 'full' | 'level' | 'kicked' | 'exhausted' | 'expired'
 /** 统计窗口内国内用户客户端实测（按用户去重） */
 export interface FieldTest { ok: number; fail: number; days?: number; paused?: boolean }
 export interface PoolNode {

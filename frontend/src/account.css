@@ -109,7 +109,7 @@
 .gallery-toolbar > .small { margin-left: auto; }
 .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 268px), 1fr)); gap: 14px; }
 .source-gallery.compact .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); }
-.gallery-card { display: grid; gap: 10px; align-content: start; padding: 14px 15px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); transition: border-color .15s, box-shadow .15s, opacity .15s; }
+.gallery-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px 15px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); transition: border-color .15s, box-shadow .15s, opacity .15s; }
 .gallery-card:hover { border-color: var(--control-line); box-shadow: 0 6px 18px rgb(0 0 0 / .06); }
 .gallery-card.picked { border-color: var(--green); box-shadow: 0 0 0 1px var(--green) inset; }
 .gallery-card.unavailable { opacity: .62; }
@@ -129,7 +129,8 @@
 .gallery-flags span { display: inline-grid; place-items: center; min-width: 22px; height: 16px; border-radius: 3px; overflow: hidden; box-shadow: 0 0 0 1px var(--line); }
 .gallery-flags img { display: block; width: 22px; height: 16px; object-fit: cover; }
 .gallery-flags b { font-size: 9.5px; padding: 0 3px; color: var(--muted); }
-.gallery-actions { display: flex; gap: 8px; margin-top: 2px; }
+/* 操作按钮固定在卡片底部，同一行卡片对齐 */
+.gallery-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 2px; }
 .gallery-actions button { flex: 1; justify-content: center; }
 .gallery-actions .app-icon { width: 14px; height: 14px; }
 

@@ -21,7 +21,8 @@ const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
 const message = toastRef()
-const kicking = ref<Subscriber | null>(null)
+// 待确认的踢出：ban 为 true 时同时禁止再次领取
+const kicking = ref<{ user: Subscriber; ban: boolean } | null>(null)
 const states = { active: '当前在订', expired: '租期已到期', released: '已释放', kicked: '已踢出 · 禁止领取' }
 const pages = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / 20)))
 let sequence = 0
@@ -42,14 +43,15 @@ watch([state, page], () => void load(), { immediate: true })
 function canManage(user: Subscriber) { return user.user_id !== props.source.owner_id && (currentUser.value?.role === 'admin' || props.source.owner_id === currentUser.value?.id) }
 // 与后端 renew_method 取值对应：claim 为领取时的初始值
 function renewal(method: string) { return ({ claim: '首次领取', checkin: '网页签到', probe: '客户端探测', leave: '请假延期', makeup: '补签' } as Record<string, string>)[method] || '其他方式' }
-async function block(user: Subscriber, blocked: boolean) {
-  if (busy.value || !canManage(user) || (blocked && kicking.value?.user_id !== user.user_id)) return
+const done = { remove: '已从该用户全部组合中移除此来源并释放席位，对方之后仍可重新加入。', kick: '已从该用户全部组合中移除此来源，并禁止再次领取。', unblock: '已解除此来源的领取禁用，用户需要重新选择并激活。' }
+async function moderate(user: Subscriber, action: 'remove' | 'kick' | 'unblock') {
+  if (busy.value || !canManage(user) || (action !== 'unblock' && kicking.value?.user.user_id !== user.user_id)) return
   const ticket = scope.ticket()
   busy.value = true; error.value = ''; message.value = ''
   try {
-    await api(`/sources/${props.source.id}/subscribers/${user.user_id}`, json('PATCH', { blocked }))
+    await api(`/sources/${props.source.id}/subscribers/${user.user_id}`, json('PATCH', { action }))
     if (!scope.current(ticket)) return
-    kicking.value = null; message.value = blocked ? '已从该用户全部组合中移除此来源，并禁止再次领取。' : '已解除此来源的领取禁用，用户需要重新选择并激活。'
+    kicking.value = null; message.value = done[action]
     emit('changed'); await load()
   } catch (cause) { if (scope.current(ticket) && !isCancelled(cause)) error.value = errorText(cause) }
   finally { busy.value = false }
@@ -72,12 +74,12 @@ async function block(user: Subscriber, blocked: boolean) {
           <div><dt>最近拉取</dt><dd>{{ user.last_pull_at ? formatDate(user.last_pull_at) : '尚无记录' }}</dd></div><div><dt>最近续期</dt><dd>{{ user.last_renewed_at ? `${formatDate(user.last_renewed_at)} · ${renewal(user.renew_method)}` : '尚未续期' }}</dd></div>
           <div v-if="user.ended_at"><dt>结束时间</dt><dd>{{ formatDate(user.ended_at) }}</dd></div>
         </dl>
-        <div v-if="canManage(user)" class="source-community-actions"><button v-if="user.state === 'kicked'" class="compact" :disabled="busy" @click="block(user, false)">解除领取禁用</button><button v-else class="compact danger" :disabled="busy" @click="kicking = user; error = ''">踢出并禁止领取</button></div>
+        <div v-if="canManage(user)" class="source-community-actions"><button v-if="user.state === 'kicked'" class="compact" :disabled="busy" @click="moderate(user, 'unblock')">解除领取禁用</button><template v-else><button class="compact" :disabled="busy" title="移出组合并释放席位，对方之后可重新加入" @click="kicking = { user, ban: false }; error = ''">踢出</button><button class="compact danger" :disabled="busy" @click="kicking = { user, ban: true }; error = ''">踢出并禁止领取</button></template></div>
         <p v-else-if="user.user_id === source.owner_id" class="small muted">来源所有者不可踢出。</p>
       </article>
       <p v-if="!loading && !error && !data?.items.length" class="small muted">{{ state === 'current' ? '暂无当前在订用户。' : '暂无历史记录。' }}</p>
     </div>
-    <div v-if="kicking" class="subscriber-confirm" role="alertdialog" aria-label="确认踢出订阅用户"><p>确定踢出「{{ kicking.display_name || kicking.username }}」并禁止再次领取吗？此来源会从其所有组合中移除，现有有效席位将释放。</p><div class="dialog-actions"><button :disabled="busy" @click="kicking = null">取消</button><button class="danger-solid" :disabled="busy" @click="block(kicking, true)">确认踢出并禁用</button></div></div>
+    <div v-if="kicking" class="subscriber-confirm" role="alertdialog" aria-label="确认踢出订阅用户"><p v-if="kicking.ban">确定踢出「{{ kicking.user.display_name || kicking.user.username }}」并禁止再次领取吗？此来源会从其所有组合中移除，现有有效席位将释放。</p><p v-else>确定踢出「{{ kicking.user.display_name || kicking.user.username }}」吗？此来源会从其所有组合中移除并释放席位，对方之后仍可重新加入。</p><div class="dialog-actions"><button :disabled="busy" @click="kicking = null">取消</button><button class="danger-solid" :disabled="busy" @click="moderate(kicking.user, kicking.ban ? 'kick' : 'remove')">{{ kicking.ban ? '确认踢出并禁用' : '确认踢出' }}</button></div></div>
     <div class="compact-pagination"><span class="small muted">共 {{ data?.total ?? 0 }} 人</span><PageNumbers v-model="page" :pages="pages" :disabled="loading || busy" previous-label="上一页订阅用户" next-label="下一页订阅用户" /></div>
     <div class="dialog-actions"><button :disabled="busy" @click="emit('close')">关闭</button></div>
   </Modal>

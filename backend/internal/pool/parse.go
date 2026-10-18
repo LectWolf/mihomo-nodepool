@@ -66,19 +66,25 @@ func Parse(content string, validate func(map[string]any) error) (ParseResult, er
 						}
 					}
 				}
+				// pcs 是 Xray 分享链接里的证书指纹，转换器会丢弃；保留为 mihomo 的 fingerprint（只取第一个）
+				if u, err := url.Parse(line); err == nil && (u.Scheme == "vless" || u.Scheme == "trojan") {
+					keepPin(converted, u.Query().Get("pcs"))
+				}
 				// fp is part of the VMess v2 share JSON but is omitted by the
 				// upstream converter. Retain it before validation/fingerprinting.
 				if strings.HasPrefix(line, "vmess://") {
 					for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
 						if raw, err := enc.DecodeString(strings.TrimPrefix(line, "vmess://")); err == nil {
 							var share struct {
-								FP string `json:"fp"`
+								FP  string `json:"fp"`
+								PCS string `json:"pcs"`
 							}
 							if json.Unmarshal(raw, &share) == nil && share.FP != "" {
 								for _, m := range converted {
 									m["client-fingerprint"] = share.FP
 								}
 							}
+							keepPin(converted, share.PCS)
 							break
 						}
 					}
@@ -111,6 +117,21 @@ func Parse(content string, validate func(map[string]any) error) (ParseResult, er
 		return result, errors.New("没有解析到有效节点，请检查文件格式或分享链接")
 	}
 	return result, nil
+}
+
+func keepPin(maps []map[string]any, pcs string) {
+	pin, _, _ := strings.Cut(strings.TrimSpace(pcs), ",")
+	if pin = strings.ToLower(strings.ReplaceAll(pin, ":", "")); len(pin) != 64 {
+		return
+	}
+	if _, err := hex.DecodeString(pin); err != nil {
+		return
+	}
+	for _, m := range maps {
+		if str(m, "fingerprint") == "" {
+			m["fingerprint"] = pin
+		}
+	}
 }
 
 func normalize(m map[string]any, validate func(map[string]any) error) (ParsedNode, error) {

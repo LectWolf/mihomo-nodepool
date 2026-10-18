@@ -103,6 +103,9 @@ func (s *Store) Ensure(ctx context.Context) error {
 	if err := s.ensureBeacon(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureTLSPins(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureEncryption(ctx); err != nil {
 		return err
 	}

@@ -98,13 +98,13 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 			return out, e
 		}
 		v.Seated = seat == "active"
-		v.Unavailable = originBlock(viewer, v, seat)
 		if len(usage) > 0 {
 			if e = json.Unmarshal(usage, &v.SubscriptionUsage); e != nil {
 				return out, e
 			}
 		}
 		refreshUsageStatus(v.SubscriptionUsage)
+		v.Unavailable = originBlock(viewer, v, seat)
 		i := index[id]
 		out.Items[i].Sources = append(out.Items[i].Sources, v)
 		if len(out.Items[i].Sources) == 1 {
@@ -130,9 +130,21 @@ func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {
 // FreshWindow 内首次入池的节点视为新上架
 const FreshWindow = 72 * time.Hour
 
+// drainedSQL 来源套餐流量已用完或已到期：和席位已满一样暂不可选、排在后面
+func drainedSQL(alias string) string {
+	return `COALESCE(JSON_UNQUOTE(JSON_EXTRACT(` + alias + `.subscription_usage,'$.status')),'') IN ('exhausted','expired')`
+}
+
+func drainedReason(u *SubscriptionUsage) string {
+	if u != nil && (u.Status == "exhausted" || u.Status == "expired") {
+		return u.Status
+	}
+	return ""
+}
+
 // usableSQL 判断当前用户能否通过任一来源选用节点，规则与 claimSeat 一致
 func usableSQL(u User) (string, []any) {
-	return `EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1 AND u.enabled=1 AND (s.private=1 OR s.owner_id=? OR ?='admin' OR s.min_level<=?) AND ` + accessSQL("s") + ` AND NOT EXISTS(SELECT 1 FROM np_source_seats k WHERE k.source_id=s.id AND k.user_id=? AND k.state='kicked') AND (s.max_users=0 OR EXISTS(SELECT 1 FROM np_source_seats me WHERE me.source_id=s.id AND me.user_id=? AND me.state='active' AND me.expires_at>UTC_TIMESTAMP(6)) OR (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=s.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))<s.max_users))`, []any{u.ID, u.Role, u.Level, u.ID, u.ID, u.ID, u.ID}
+	return `EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1 AND u.enabled=1 AND NOT ` + drainedSQL("s") + ` AND (s.private=1 OR s.owner_id=? OR ?='admin' OR s.min_level<=?) AND ` + accessSQL("s") + ` AND NOT EXISTS(SELECT 1 FROM np_source_seats k WHERE k.source_id=s.id AND k.user_id=? AND k.state='kicked') AND (s.max_users=0 OR EXISTS(SELECT 1 FROM np_source_seats me WHERE me.source_id=s.id AND me.user_id=? AND me.state='active' AND me.expires_at>UTC_TIMESTAMP(6)) OR (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=s.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))<s.max_users))`, []any{u.ID, u.Role, u.Level, u.ID, u.ID, u.ID, u.ID}
 }
 
 func originBlock(u User, o Origin, seat string) string {
@@ -141,6 +153,8 @@ func originBlock(u User, o Origin, seat string) string {
 		return "kicked"
 	case !o.Private && o.OwnerID != u.ID && u.Role != "admin" && u.Level < o.MinLevel:
 		return "level"
+	case drainedReason(o.SubscriptionUsage) != "":
+		return drainedReason(o.SubscriptionUsage)
 	case o.MaxUsers > 0 && seat != "active" && o.ActiveUsers >= o.MaxUsers:
 		return "full"
 	}

@@ -24,6 +24,7 @@ const actions: Record<string, { label: string; icon: string; tone: string }> = {
   leave: { label: '请假延期', icon: 'clock', tone: 'violet' },
   released: { label: '不再使用，释放席位', icon: 'unlink', tone: 'muted' },
   expired: { label: '租期到期，席位已释放', icon: 'clock', tone: 'amber' },
+  removed: { label: '被提供方踢出，可重新加入', icon: 'unlink', tone: 'amber' },
   kicked: { label: '被提供方移出并禁用', icon: 'alert', tone: 'red' },
   unblocked: { label: '提供方解除禁用', icon: 'unlock', tone: 'green' },
 }

@@ -20,8 +20,8 @@ import (
 // 客户端实测回报：订阅里为部分节点各加一个隐藏的 url-test 分组，检测地址指向本站。
 // 节点在用户网络中能连通时，请求经该节点到达本站并记录；同一批次其它节点已回报而它没有，视为该用户连不上。
 const (
-	BeaconInterval = 3 * time.Hour      // 客户端检测间隔
-	BeaconRotate   = 12 * time.Hour     // 同一订阅在此时长内复用同一批节点
+	BeaconInterval = time.Hour          // 客户端检测间隔
+	BeaconRotate   = time.Hour          // 同一订阅在此时长内复用同一批节点，超过后换一批
 	BeaconSettle   = 10 * time.Minute   // 批次首次回报后等待其它节点回报的时间
 	BeaconKeep     = 8 * 24 * time.Hour // 比最长统计窗口（7 天）多一天
 	BeaconMaxNodes = 15
@@ -159,7 +159,7 @@ func (s *Store) batchTokens(ctx context.Context, batch int64, present map[int64]
 	return out, rows.Err()
 }
 
-// pickBeaconNodes 优先选该用户近期没测过、全站实测数据少的节点，同等条件随机
+// pickBeaconNodes 优先选该用户近期测得少的节点（没测过的最先），其次全站实测人数少的，同等条件随机
 func (s *Store) pickBeaconNodes(ctx context.Context, userID int64, ids []int64, now time.Time) ([]int64, error) {
 	type stat struct{ mine, users int }
 	stats := map[int64]stat{}
@@ -169,7 +169,7 @@ func (s *Store) pickBeaconNodes(ctx context.Context, userID int64, ids []int64, 
 		for _, id := range chunk {
 			args = append(args, id)
 		}
-		rows, err := s.DB.QueryContext(ctx, `SELECT c.node_id,MAX(b.user_id=?),COUNT(DISTINCT b.user_id) FROM np_beacon_checks c JOIN np_beacon_batches b ON b.id=c.batch_id WHERE b.created_at>=? AND c.node_id IN (`+placeholders(len(chunk))+`) GROUP BY c.node_id`, args...)
+		rows, err := s.DB.QueryContext(ctx, `SELECT c.node_id,SUM(b.user_id=?),COUNT(DISTINCT b.user_id) FROM np_beacon_checks c JOIN np_beacon_batches b ON b.id=c.batch_id WHERE b.created_at>=? AND c.node_id IN (`+placeholders(len(chunk))+`) GROUP BY c.node_id`, args...)
 		if err != nil {
 			return nil, err
 		}

@@ -49,6 +49,9 @@ func ExportSubscription(nodes []Node, format string) ([]byte, int, error) {
 			skipped++
 			continue
 		}
+		if format == "v2ray" && n.TLSPin != "" {
+			m[pinKey] = n.TLSPin
+		}
 		name := n.Name
 		if name == "" {
 			name = text(m["name"])
@@ -242,6 +245,9 @@ func shareURI(m map[string]any) (string, error) {
 			if truthy(m["skip-cert-verify"]) {
 				vm["insecure"] = "1"
 			}
+			if v := sharePins(m); v != "" {
+				vm["pcs"] = v
+			}
 		}
 		raw, e := json.Marshal(vm)
 		if e != nil {
@@ -278,6 +284,9 @@ func shareURI(m map[string]any) (string, error) {
 		}
 		q.Set("security", "tls")
 		tlsQuery(m, q, "allowInsecure")
+		if v := sharePins(m); v != "" && opts(m, "reality-opts") == nil {
+			q.Set("pcs", v)
+		}
 		if v := str(m, "client-fingerprint"); v != "" {
 			q.Set("fp", v)
 		}
@@ -299,7 +308,8 @@ func shareURI(m map[string]any) (string, error) {
 		}
 		u.User = url.User(password)
 		tlsQuery(m, q, "insecure")
-		if v := str(m, "fingerprint"); v != "" {
+		// Hysteria2 的 pinSHA256 只支持一个值，取叶子证书
+		if v, _, _ := strings.Cut(sharePins(m), ","); v != "" {
 			q.Set("pinSHA256", v)
 		}
 		if v := str(m, "ports"); v != "" {
@@ -367,6 +377,14 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// sharePins 分享链接里的证书指纹：节点自带的优先，否则用本站读取的
+func sharePins(m map[string]any) string {
+	if v := certPin(m); v != "" {
+		return v
+	}
+	return str(m, pinKey)
 }
 
 // tlsQuery 写入 SNI、ALPN 和跳过证书验证；insecure 为该协议使用的参数名

@@ -107,3 +107,50 @@ func TestMySQLSourceDownloadProcessCounters(t *testing.T) {
 		t.Fatal("cache reparse counted as network download")
 	}
 }
+
+// 有来源只返回部分套餐字段时，整点快照仍要成功，流量差值按小时归档
+func TestMySQLHourlySnapshotWithPartialUsage(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	full := sharedSource(t, s, ctx, "snap-full", 1, 0)
+	partial := sharedSource(t, s, ctx, "snap-partial", 1, 0)
+	setUsage := func(id int64, header string) {
+		t.Helper()
+		raw, _ := json.Marshal(pool.ParseSubscriptionUsage(header))
+		if _, err := s.DB.Exec(`UPDATE np_sources SET subscription_usage=? WHERE id=?`, raw, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expire := time.Now().Add(72 * time.Hour).Unix()
+	setUsage(full.ID, fmt.Sprintf("upload=100;download=900;total=10000;expire=%d", expire))
+	setUsage(partial.ID, fmt.Sprintf("expire=%d", expire))
+	now := time.Now().UTC().Truncate(time.Hour)
+	first, second := now.Add(-2*time.Hour), now.Add(-time.Hour)
+	if err := s.SnapshotSources(ctx, first); err != nil {
+		t.Fatalf("snapshot with partial usage: %v", err)
+	}
+	setUsage(full.ID, fmt.Sprintf("upload=300;download=1700;total=10000;expire=%d", expire))
+	if err := s.SnapshotSources(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	var used *int64
+	if err := s.DB.QueryRow(`SELECT used_bytes FROM np_source_hourly WHERE source_id=? AND hour=?`, partial.ID, second).Scan(&used); err != nil || used != nil {
+		t.Fatalf("partial source used bytes: %v %v", err, used)
+	}
+	if err := s.DB.QueryRow(`SELECT used_bytes FROM np_source_hourly WHERE source_id=? AND hour=?`, full.ID, second).Scan(&used); err != nil || used == nil || *used != 2000 {
+		t.Fatalf("full source used bytes: %v %v", err, used)
+	}
+	traffic, err := s.TrafficStatistics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got int64
+	for _, p := range traffic.Hourly {
+		if p.At.Equal(first) {
+			got = p.Bytes
+		}
+	}
+	if got < 1000 {
+		t.Fatalf("hourly delta for %v: %d (%+v)", first, got, traffic.Hourly)
+	}
+}

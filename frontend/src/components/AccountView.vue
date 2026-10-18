@@ -245,7 +245,7 @@ const achievementList = [
       <section class="panel security-card">
         <div class="panel-heading"><div><h2>节点实测回报</h2><p class="small muted">让大家知道节点在国内到底能不能连。</p></div><label class="switch-field"><span>{{ beaconOn ? '已开启' : '已关闭' }}</span><button type="button" :class="['switch', { on: beaconOn }]" role="switch" :aria-checked="beaconOn" aria-label="节点实测回报" :disabled="!!saving || paused" @click="toggleBeacon"><span></span></button></label></div>
         <ul class="beacon-notes">
-          <li>Clash 客户端每 3 小时经订阅里最多 15 个节点访问一次本站，每次约 1 KB，只记录哪个节点能连上，不涉及浏览内容。</li>
+          <li>Clash 客户端每小时经订阅里最多 15 个节点访问一次本站，每次约 1 KB，只记录哪个节点能连上，不涉及浏览内容；每次更新订阅会换一批你还没测过的节点。</li>
           <li>结果显示在节点卡片的“国内实测”上；你的客户端连不上的节点，会自动排到你订阅的末尾。</li>
           <li>关闭后客户端下次更新订阅时生效，网站上仍能看到其他人的实测数据。</li>
         </ul>
