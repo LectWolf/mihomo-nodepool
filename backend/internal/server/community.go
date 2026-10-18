@@ -121,18 +121,23 @@ func registerCommunity(business businessRegistrar, s *pool.Store) {
 		if err != nil || userID < 1 {
 			return errors.New("账号ID无效")
 		}
+		// action: remove 仅踢出（可重新加入）、kick 踢出并禁止领取、unblock 解除禁止；兼容旧的 blocked 布尔值
 		var in struct {
-			Blocked *bool `json:"blocked"`
+			Action  string `json:"action"`
+			Blocked *bool  `json:"blocked"`
 		}
 		if err = decode(w, r, &in); err != nil {
 			return err
 		}
-		if in.Blocked == nil {
-			return errors.New("请指定是否禁止领取")
+		if in.Action == "" && in.Blocked != nil {
+			in.Action = map[bool]string{true: "kick", false: "unblock"}[*in.Blocked]
 		}
-		err = s.SetSourceSubscriberBlocked(r.Context(), id, userID, *in.Blocked)
+		if in.Action == "" {
+			return errors.New("请指定操作")
+		}
+		err = s.ModerateSourceSubscriber(r.Context(), id, userID, in.Action)
 		if err == nil {
-			writeJSON(w, 200, map[string]bool{"blocked": *in.Blocked})
+			writeJSON(w, 200, map[string]any{"action": in.Action, "blocked": in.Action == "kick"})
 		}
 		return err
 	})

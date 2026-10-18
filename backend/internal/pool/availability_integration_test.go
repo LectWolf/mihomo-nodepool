@@ -171,3 +171,53 @@ func TestMySQLNodeAvailabilityAndCatalogStats(t *testing.T) {
 		}
 	}
 }
+
+// 套餐流量耗尽或到期的来源与席位已满同样处理：标记不可选并排在可选节点之后
+func TestMySQLDrainedSourceSortsLast(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	provider := account(t, s, "drainprovider", 200, 5, 3)
+	viewer := account(t, s, "drainviewer", 200, 5, 3)
+	pc, vc := pool.WithUser(ctx, provider), pool.WithUser(ctx, viewer)
+	drained := sharedSource(t, s, pc, "drainedsrc", 2, 0)
+	expired := sharedSource(t, s, pc, "lapsedsrc", 1, 0)
+	healthy := sharedSource(t, s, pc, "okaysrc", 2, 0)
+	for id, status := range map[int64]string{drained.ID: "exhausted", expired.ID: "expired", healthy.ID: "normal"} {
+		if _, e := s.DB.Exec(`UPDATE np_sources SET subscription_usage=JSON_OBJECT('status',?,'upload_bytes',NULL) WHERE id=?`, status, id); e != nil {
+			t.Fatal(e)
+		}
+	}
+	s.InvalidateIndex()
+	all, e := s.Nodes(vc, pool.Filter{PageSize: 100})
+	if e != nil {
+		t.Fatal(e)
+	}
+	got, seenBlocked := map[int64]string{}, false
+	for _, n := range all.Items {
+		got[n.Sources[0].ID] = n.Unavailable
+		if n.Unavailable != "" {
+			seenBlocked = true
+		} else if seenBlocked {
+			t.Fatal("selectable node listed after drained ones")
+		}
+	}
+	if got[drained.ID] != "exhausted" || got[expired.ID] != "expired" || got[healthy.ID] != "" {
+		t.Fatalf("reasons: %v", got)
+	}
+	available, e := s.Nodes(vc, pool.Filter{PageSize: 100, Available: true})
+	if e != nil || available.Total != 2 {
+		t.Fatalf("available filter: %v %d", e, available.Total)
+	}
+	catalog, e := s.Catalog(vc, pool.CatalogFilter{ProviderID: provider.ID, Sort: "recommend", PageSize: 10})
+	if e != nil {
+		t.Fatal(e)
+	}
+	items := catalog["items"].([]pool.Source)
+	if len(items) != 3 || items[0].ID != healthy.ID || items[0].Unavailable != "" || items[1].Unavailable == "" || items[2].Unavailable == "" {
+		t.Fatalf("catalog order: %+v", items)
+	}
+	only, e := s.Catalog(vc, pool.CatalogFilter{ProviderID: provider.ID, Available: true, PageSize: 10})
+	if e != nil || len(only["items"].([]pool.Source)) != 1 {
+		t.Fatalf("catalog available: %v", e)
+	}
+}

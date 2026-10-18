@@ -122,7 +122,7 @@ func (s *Store) Catalog(ctx context.Context, f CatalogFilter) (map[string]any, e
 const FreshSourceWindow = 7 * 24 * time.Hour
 
 func sourceUsableSQL(u User) (string, []any) {
-	return `((private=1 OR owner_id=? OR ?='admin' OR min_level<=?) AND NOT EXISTS(SELECT 1 FROM np_source_seats k WHERE k.source_id=np_sources.id AND k.user_id=? AND k.state='kicked') AND (max_users=0 OR EXISTS(SELECT 1 FROM np_source_seats me WHERE me.source_id=np_sources.id AND me.user_id=? AND me.state='active' AND me.expires_at>UTC_TIMESTAMP(6)) OR (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=np_sources.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))<max_users))`, []any{u.ID, u.Role, u.Level, u.ID, u.ID}
+	return `(NOT ` + drainedSQL("np_sources") + ` AND (private=1 OR owner_id=? OR ?='admin' OR min_level<=?) AND NOT EXISTS(SELECT 1 FROM np_source_seats k WHERE k.source_id=np_sources.id AND k.user_id=? AND k.state='kicked') AND (max_users=0 OR EXISTS(SELECT 1 FROM np_source_seats me WHERE me.source_id=np_sources.id AND me.user_id=? AND me.state='active' AND me.expires_at>UTC_TIMESTAMP(6)) OR (SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=np_sources.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6))<max_users))`, []any{u.ID, u.Role, u.Level, u.ID, u.ID}
 }
 
 // attachSourceStats 补充来源目录的健康概况和当前用户可用性
@@ -198,7 +198,7 @@ func (s *Store) attachSourceStats(ctx context.Context, viewer User, items []Sour
 	for i := range items {
 		v := &items[i]
 		v.Seated = seats[v.ID] == "active"
-		v.Unavailable = originBlock(viewer, Origin{OwnerID: v.OwnerID, MinLevel: v.MinLevel, Private: v.Private, MaxUsers: v.MaxUsers, ActiveUsers: v.ActiveUsers}, seats[v.ID])
+		v.Unavailable = originBlock(viewer, Origin{OwnerID: v.OwnerID, MinLevel: v.MinLevel, Private: v.Private, MaxUsers: v.MaxUsers, ActiveUsers: v.ActiveUsers, SubscriptionUsage: v.SubscriptionUsage}, seats[v.ID])
 		v.SharedWithMe = v.Private && v.OwnerID != viewer.ID
 		if v.OwnerID != viewer.ID {
 			v.ShareCount = 0

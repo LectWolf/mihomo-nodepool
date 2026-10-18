@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -112,6 +113,18 @@ func (s *Store) SourceSubscribers(ctx context.Context, id int64, state string, p
 	return map[string]any{"items": items, "total": total, "page": page, "page_size": size, "history_retention_days": settings.HistoryRetentionDays}, nil
 }
 func (s *Store) SetSourceSubscriberBlocked(ctx context.Context, sourceID, userID int64, blocked bool) error {
+	if blocked {
+		return s.ModerateSourceSubscriber(ctx, sourceID, userID, "kick")
+	}
+	return s.ModerateSourceSubscriber(ctx, sourceID, userID, "unblock")
+}
+
+// ModerateSourceSubscriber 管理来源订阅用户：remove 仅踢出（从其组合移除并释放席位，之后可重新加入），
+// kick 踢出并禁止再次领取，unblock 解除禁止
+func (s *Store) ModerateSourceSubscriber(ctx context.Context, sourceID, userID int64, op string) error {
+	if op != "remove" && op != "kick" && op != "unblock" {
+		return errors.New("不支持的操作")
+	}
 	if err := s.SourcePermission(ctx, sourceID); err != nil {
 		return err
 	}
@@ -134,26 +147,46 @@ func (s *Store) SetSourceSubscriberBlocked(ctx context.Context, sourceID, userID
 	if owner == userID {
 		return fmt.Errorf("不能踢出来源所有者")
 	}
-	var count int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM np_source_seats WHERE source_id=? AND user_id=?`, sourceID, userID).Scan(&count); err != nil {
+	var current string
+	var expires time.Time
+	if err = tx.QueryRowContext(ctx, `SELECT state,expires_at FROM np_source_seats WHERE source_id=? AND user_id=? FOR UPDATE`, sourceID, userID).Scan(&current, &expires); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
 		return err
 	}
-	if count == 0 {
-		return ErrNotFound
+	now := utcNow()
+	action, state, ended := "unblocked", "released", now
+	switch op {
+	case "kick":
+		action, state = "kicked", "kicked"
+	case "remove":
+		if current == "kicked" {
+			return errors.New("该用户已被禁止领取，可先解除禁用")
+		}
+		action = "removed"
+		// 已到期或已释放的席位保留原状态，只把来源从组合里移除
+		if current != "active" || !expires.After(now) {
+			state, ended = current, time.Time{}
+		}
+	case "unblock":
+		if current != "kicked" {
+			return errors.New("该用户没有被禁止领取")
+		}
 	}
-	action := "unblocked"
-	state := "released"
-	if blocked {
-		action = "kicked"
-		state = "kicked"
+	if op != "unblock" {
 		if err = removeSubscriptionSources(ctx, tx, userID, map[int64]bool{sourceID: true}); err != nil {
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE np_source_seats SET state=?,ended_at=? WHERE source_id=? AND user_id=?`, state, utcNow(), sourceID, userID); err != nil {
+	if ended.IsZero() {
+		_, err = tx.ExecContext(ctx, `UPDATE np_source_seats SET state=? WHERE source_id=? AND user_id=?`, state, sourceID, userID)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE np_source_seats SET state=?,ended_at=? WHERE source_id=? AND user_id=?`, state, ended, sourceID, userID)
+	}
+	if err != nil {
 		return err
 	}
-	if err = recordSeatEvent(ctx, tx, sourceID, userID, action, utcNow()); err != nil {
+	if err = recordSeatEvent(ctx, tx, sourceID, userID, action, now); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -195,6 +228,11 @@ func (s *Store) ExportSourceLink(ctx context.Context, token, format string) ([]b
 	rows.Close()
 	if err != nil {
 		return nil, 0, 0, nil, err
+	}
+	if format == "v2ray" {
+		if err = s.attachTLSPins(ctx, nodes); err != nil {
+			return nil, 0, 0, nil, err
+		}
 	}
 	profile := DefaultRuleProfile()
 	raw, skipped, routing, err := ExportSubscriptionWithProfile(nodes, format, &profile, []Source{src})

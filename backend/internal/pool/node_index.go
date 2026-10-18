@@ -25,7 +25,7 @@ const (
 type indexSource struct {
 	id, owner             int64
 	enabled, ownerEnabled bool
-	private               bool
+	private, drained      bool
 	minLevel, maxUsers    int
 }
 
@@ -99,14 +99,14 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 	ix := &s.index
 	ix.dirty.Store(false)
 	sources := map[int64]*indexSource{}
-	rows, e := s.DB.QueryContext(ctx, `SELECT s.id,s.owner_id,s.enabled,u.enabled,s.private,s.min_level,s.max_users FROM np_sources s JOIN np_users u ON u.id=s.owner_id`)
+	rows, e := s.DB.QueryContext(ctx, `SELECT s.id,s.owner_id,s.enabled,u.enabled,s.private,`+drainedSQL("s")+`,s.min_level,s.max_users FROM np_sources s JOIN np_users u ON u.id=s.owner_id`)
 	if e != nil {
 		ix.dirty.Store(true)
 		return e
 	}
 	for rows.Next() {
 		v := &indexSource{}
-		if e = rows.Scan(&v.id, &v.owner, &v.enabled, &v.ownerEnabled, &v.private, &v.minLevel, &v.maxUsers); e != nil {
+		if e = rows.Scan(&v.id, &v.owner, &v.enabled, &v.ownerEnabled, &v.private, &v.drained, &v.minLevel, &v.maxUsers); e != nil {
 			rows.Close()
 			ix.dirty.Store(true)
 			return e
@@ -359,7 +359,7 @@ func (v viewerSeats) sees(u User, src *indexSource) bool {
 
 // usable 与 usableSQL、claimSeat 规则一致
 func (v viewerSeats) usable(u User, src *indexSource) bool {
-	if !src.enabled || !src.ownerEnabled || !v.sees(u, src) {
+	if !src.enabled || !src.ownerEnabled || src.drained || !v.sees(u, src) {
 		return false
 	}
 	if !src.private && src.owner != u.ID && u.Role != "admin" && src.minLevel > u.Level {

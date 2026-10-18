@@ -69,8 +69,12 @@ function outside(event: Event) {
 function scrolled(event: Event) {
   if (!observingScroll) return
   if (event.target instanceof Node && panel.value?.contains(event.target)) return
+  // 输入法收起或弹出时浏览器会滚动页面，跟随触发按钮重新定位即可
+  if (keyboardShift()) { position(); return }
   close(false)
 }
+let viewHeight = 0
+function keyboardShift() { return !!window.visualViewport && Math.abs(window.visualViewport.height - viewHeight) > 80 }
 function focusChanged(event: Event) {
   if (event.target !== trigger.value && !(event.target instanceof Node && panel.value?.contains(event.target))) close(false)
 }
@@ -83,7 +87,8 @@ function listen(add: boolean) {
   window.visualViewport?.[action]('resize', resized)
   window.visualViewport?.[action]('scroll', resized)
 }
-function resized() { close(false) }
+// 视口变化（手机输入法、旋转屏幕）只重新定位，不关闭
+function resized() { if (opened.value) position() }
 async function open(edge?: 'first' | 'last') {
   if (props.disabled || opened.value) return
   const current = ++openSequence
@@ -97,6 +102,7 @@ async function open(edge?: 'first' | 'last') {
   if (!opened.value || current !== openSequence) return
   panel.value?.showPopover()
   position()
+  viewHeight = window.visualViewport?.height ?? 0
   observingScroll = false
   listen(true)
   reveal()

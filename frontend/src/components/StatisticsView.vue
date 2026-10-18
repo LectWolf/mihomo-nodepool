@@ -96,7 +96,7 @@ function rateTone(runs: number, errors: number) { const rate = successRate(runs,
       <section class="panel traffic-panel">
         <div class="panel-heading"><div><h2>流量消耗</h2><p>每个整点读取来源套餐的已用流量，按相邻快照的差值汇总；套餐重置时取重置后的用量。</p></div></div>
         <div class="traffic-charts">
-          <div><h3><AppIcon name="clock" />近 24 小时</h3><BarChart :bars="hourlyBars" :format="formatTraffic" tone="blue" bytes :every="4" empty="首个整点快照后开始统计" /></div>
+          <div><h3><AppIcon name="clock" />近 24 小时</h3><BarChart :bars="hourlyBars" :format="formatTraffic" tone="blue" bytes :every="4" empty="需要连续两个整点快照才能算出用量，通常一小时内出现" /></div>
           <div><h3><AppIcon name="chart" />近 30 天</h3><BarChart :bars="dailyBars" :format="formatTraffic" tone="violet" bytes :every="5" empty="暂无按天统计" /></div>
         </div>
         <p class="small muted">只统计返回 Subscription-Userinfo 的来源；同一套餐被重复导入时会重复计数，可在运行设置中关闭整点用量轮询。</p>
