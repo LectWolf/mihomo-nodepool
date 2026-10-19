@@ -247,7 +247,7 @@ usePolling(async () => {
   if (reconnecting.value) await reconnect()
   else if (authenticated.value && !reconnectError.value) await refreshOverview()
   else if (isGuest.value) await loadSystem()
-}, 4000, false)
+}, 15000, false)
 onMounted(async () => {
   apiEvents.addEventListener('unauthorized', unauthorized)
   apiEvents.addEventListener('database-unavailable', unavailable)

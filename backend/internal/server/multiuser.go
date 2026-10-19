@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
@@ -285,29 +287,32 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 			return
 		}
 		traffic.TagRequest(r, traffic.KindSub, format)
+		user, e := s.SubscriptionDeliveryInfo(ctx, r.PathValue("token"))
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		settings, e := s.Settings(ctx)
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		origin := publicOrigin(r, settings)
+		cacheKey := subscriptionCacheKey(r, format, user, trusted)
+		if entry, ok := s.CachedSubscription(cacheKey); ok {
+			writeSubscriptionHeaders(w, entry, origin, user)
+			_ = s.TouchSubscriptionPull(ctx, r.PathValue("token"))
+			serveSubscription(w, r, entry)
+			return
+		}
 		raw, skipped, routingSkipped, nodes, e := s.ExportSavedSubscriptionNodes(ctx, r.PathValue("token"), format)
 		if format == "v2ray" && errors.Is(e, pool.ErrUnexportable) {
 			raw, e = v2rayNotice(v2rayEmpty), nil
 		}
-		user, infoErr := s.SubscriptionDeliveryInfo(ctx, r.PathValue("token"))
-		if infoErr != nil {
-			writeError(w, infoErr)
-			return
-		}
-		settings, settingsErr := s.Settings(ctx)
-		if settingsErr != nil {
-			writeError(w, settingsErr)
-			return
-		}
-		origin := publicOrigin(r, settings)
-		setProfileName(w)
-		w.Header().Set("Profile-Web-Page-Url", origin+"/subscriptions")
-		if user.SubscriptionExpiresAt != nil {
-			w.Header().Set("Subscription-Userinfo", "expire="+strconv.FormatInt(user.SubscriptionExpiresAt.Unix(), 10))
-		}
+		state := "active"
 		if errors.Is(e, pool.ErrSubscriptionInactive) {
 			raw, e = inactiveSubscription(format)
-			w.Header().Set("X-Subscription-State", "expired")
+			state = "expired"
 		} else if e == nil {
 			raw, e = attachKeepalive(raw, format, user, origin)
 			if e == nil && format == "clash" && user.BeaconEnabled {
@@ -316,24 +321,79 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 			if e == nil {
 				e = s.TouchSubscriptionPull(ctx, r.PathValue("token"))
 			}
-			w.Header().Set("X-Subscription-State", "active")
 		}
-		w.Header().Set("X-Subscription-Routing-Skipped", strconv.Itoa(routingSkipped))
-		w.Header().Set("X-Subscription-Skipped", strconv.Itoa(skipped))
-		w.Header().Set("X-Subscription-Format", format)
 		if e != nil {
 			writeError(w, e)
 			return
 		}
-		contentType := "application/yaml; charset=utf-8"
-		if format == "v2ray" {
-			contentType = "text/plain; charset=utf-8"
-			w.Header().Set("X-Subscription-Compatibility", "v2ray-compatible URI import only")
+		entry := pool.SubscriptionCacheEntry{
+			Body:           raw,
+			ETag:           subscriptionETag(raw),
+			State:          state,
+			Format:         format,
+			Skipped:        skipped,
+			RoutingSkipped: routingSkipped,
 		}
-		w.Header().Set("Content-Type", contentType)
-		w.WriteHeader(200)
-		_, _ = w.Write(raw)
+		s.CacheSubscription(cacheKey, entry)
+		writeSubscriptionHeaders(w, entry, origin, user)
+		serveSubscription(w, r, entry)
 	})
+}
+
+func subscriptionCacheKey(r *http.Request, format string, u pool.User, trusted []*net.IPNet) string {
+	key := r.PathValue("token") + "|" + format + "|" + strconv.FormatInt(u.ID, 10)
+	if format == "clash" && u.BeaconEnabled {
+		// 回报节点与客户端 IP 相关，按 IP 分桶避免串数据。
+		sum := sha256.Sum256([]byte(clientIP(r, trusted)))
+		key += "|" + hex.EncodeToString(sum[:8])
+	}
+	return key
+}
+
+func subscriptionETag(body []byte) string {
+	sum := sha256.Sum256(body)
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
+func writeSubscriptionHeaders(w http.ResponseWriter, e pool.SubscriptionCacheEntry, origin string, u pool.User) {
+	setProfileName(w)
+	w.Header().Set("Profile-Web-Page-Url", origin+"/subscriptions")
+	if u.SubscriptionExpiresAt != nil {
+		w.Header().Set("Subscription-Userinfo", "expire="+strconv.FormatInt(u.SubscriptionExpiresAt.Unix(), 10))
+	}
+	w.Header().Set("X-Subscription-State", e.State)
+	w.Header().Set("X-Subscription-Routing-Skipped", strconv.Itoa(e.RoutingSkipped))
+	w.Header().Set("X-Subscription-Skipped", strconv.Itoa(e.Skipped))
+	w.Header().Set("X-Subscription-Format", e.Format)
+	w.Header().Set("ETag", e.ETag)
+	contentType := "application/yaml; charset=utf-8"
+	if e.Format == "v2ray" {
+		contentType = "text/plain; charset=utf-8"
+		w.Header().Set("X-Subscription-Compatibility", "v2ray-compatible URI import only")
+	}
+	w.Header().Set("Content-Type", contentType)
+}
+
+func serveSubscription(w http.ResponseWriter, r *http.Request, e pool.SubscriptionCacheEntry) {
+	if matchETag(r.Header.Get("If-None-Match"), e.ETag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(e.Body)
+}
+
+func matchETag(header, etag string) bool {
+	if header == "" || etag == "" {
+		return false
+	}
+	for _, v := range strings.Split(header, ",") {
+		v = strings.TrimSpace(v)
+		if v == etag || v == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 // passwordGuard 限制修改密码时当前密码的连续错误次数

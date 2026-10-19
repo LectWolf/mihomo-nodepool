@@ -16,6 +16,12 @@ type Store struct {
 	initialized bool
 	index       nodeIndex
 	tiers       atomic.Pointer[probeTiers]
+	// 来源内容与设置的热缓存，减少订阅渲染和每个请求的重复查询。
+	sourceContent sourceContentCache
+	settingsMu    sync.RWMutex
+	settingsCache *Settings
+	settingsAt    time.Time
+	subs          subscriptionCache
 }
 
 func NewStore(db *sql.DB) *Store { return &Store{DB: db} }
@@ -120,6 +126,13 @@ func (s *Store) Ensure(ctx context.Context) error {
 	return nil
 }
 func (s *Store) Settings(ctx context.Context) (Settings, error) {
+	s.settingsMu.RLock()
+	if s.settingsCache != nil && time.Since(s.settingsAt) < 5*time.Second {
+		v := *s.settingsCache
+		s.settingsMu.RUnlock()
+		return v, nil
+	}
+	s.settingsMu.RUnlock()
 	var raw []byte
 	err := s.DB.QueryRowContext(ctx, `SELECT body FROM np_settings WHERE id=1`).Scan(&raw)
 	v := Defaults()
@@ -138,6 +151,10 @@ func (s *Store) Settings(ctx context.Context) (Settings, error) {
 		communityCache.Store(&c)
 		maintenanceCache.Store(&m)
 		loginCache.Store(&l)
+		s.settingsMu.Lock()
+		s.settingsCache = &v
+		s.settingsAt = time.Now()
+		s.settingsMu.Unlock()
 	}
 	return v, err
 }
@@ -216,6 +233,10 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 	communityCache.Store(&c)
 	maintenanceCache.Store(&m)
 	loginCache.Store(&l)
+	s.settingsMu.Lock()
+	s.settingsCache = nil
+	s.settingsMu.Unlock()
+	s.subs.clear()
 	return nil
 }
 

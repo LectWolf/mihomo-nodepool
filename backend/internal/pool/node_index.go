@@ -69,6 +69,8 @@ type nodeIndex struct {
 func (s *Store) InvalidateIndex() {
 	s.index.dirty.Store(true)
 	s.index.fieldDirty.Store(true)
+	s.sourceContent.clear()
+	s.subs.clear()
 }
 
 func (s *Store) nodeIndex(ctx context.Context) (*nodeIndex, error) {

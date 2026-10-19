@@ -38,7 +38,7 @@ watch(() => props.paused, paused => {
   else void load()
 }, { immediate: true })
 // 普通用户与访客读取的是服务端 5 秒缓存，降低轮询频率
-usePolling(async () => { if (!props.paused) await load() }, isAdmin.value ? 8000 : 15000, false)
+usePolling(async () => { if (!props.paused) await load() }, 15000, false)
 onBeforeUnmount(() => { ++sequence; controller?.abort() })
 const usageLabels: Record<string, string> = { unknown: '未知', normal: '正常', low: '余量偏低', exhausted: '流量耗尽', expired: '已到期', invalid: '信息异常' }
 function bytes(value: number | null | undefined) { return value == null ? '未知' : formatBytes(value) }
@@ -76,7 +76,7 @@ function rateTone(runs: number, errors: number) { const rate = successRate(runs,
 </script>
 <template>
   <section class="statistics-page">
-    <div class="page-heading"><div><p class="eyebrow">OPERATIONS & USAGE</p><h1>运行统计</h1><p class="muted">服务规模、后台任务与来源套餐用量，每 {{ isAdmin ? 4 : 15 }} 秒自动采样。</p></div><div class="statistics-actions"><span v-if="data" class="statistics-sample" :class="{ stale: !!error }"><i class="live-dot" aria-hidden="true"></i>最近采样 {{ formatDate(data.sampled_at) }}</span><button :disabled="loading || paused" @click="load"><span v-if="loading" class="spinner"></span><AppIcon v-else name="refresh" />{{ loading ? '读取中…' : '刷新统计' }}</button></div></div>
+    <div class="page-heading"><div><p class="eyebrow">OPERATIONS & USAGE</p><h1>运行统计</h1><p class="muted">服务规模、后台任务与来源套餐用量，每 15 秒自动采样。</p></div><div class="statistics-actions"><span v-if="data" class="statistics-sample" :class="{ stale: !!error }"><i class="live-dot" aria-hidden="true"></i>最近采样 {{ formatDate(data.sampled_at) }}</span><button :disabled="loading || paused" @click="load"><span v-if="loading" class="spinner"></span><AppIcon v-else name="refresh" />{{ loading ? '读取中…' : '刷新统计' }}</button></div></div>
     <p v-if="error" class="notice error" role="alert">{{ error }}<span v-if="data">保留上次采样结果。</span><button :disabled="loading || paused" @click="load">重试</button></p>
     <div v-if="!data && loading" class="panel empty-state" role="status"><span class="spinner"></span><h3>正在读取统计</h3></div>
     <template v-if="data">

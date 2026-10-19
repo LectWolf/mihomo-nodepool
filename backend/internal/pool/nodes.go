@@ -12,20 +12,42 @@ import (
 const visible = `n.blocked=0 AND EXISTS(SELECT 1 FROM np_source_nodes sn JOIN np_sources s ON s.id=sn.source_id JOIN np_users u ON u.id=s.owner_id WHERE sn.node_id=n.id AND sn.excluded=0 AND s.enabled=1 AND u.enabled=1)`
 const nodeColumns = `n.id,n.name,n.type,n.server,n.port,n.latency_ms,n.status,n.country,n.country_code,n.region,n.city,n.exit_ip,n.last_checked_at,n.last_success_at,n.exit_checked_at,n.next_check_at,n.last_error,n.config,n.created_at,n.failures,n.successes,n.blocked`
 
+func nodeScanDest(n *Node) []any {
+	n.Sources = []Origin{}
+	return []any{&n.ID, &n.Name, &n.Type, &n.Server, &n.Port, &n.LatencyMS, &n.Status, &n.Country, &n.CountryCode, &n.Region, &n.City, &n.ExitIP, &n.LastCheckedAt, &n.LastSuccessAt, &n.ExitCheckedAt, &n.NextCheckAt, &n.LastError, &n.Config, &n.CreatedAt, &n.Failures, &n.Successes, &n.Blocked}
+}
+
+func finishNode(n *Node) (Node, error) {
+	var e error
+	n.Server, e = unseal(purposeNodeServer, n.Server)
+	if e != nil {
+		return *n, e
+	}
+	n.Config, e = unsealConfig(n.Config)
+	if e != nil {
+		return *n, e
+	}
+	n.Insights = InspectNode(*n)
+	return *n, nil
+}
+
 func scanNode(row scanner) (Node, error) {
 	var n Node
-	n.Sources = []Origin{}
-	e := row.Scan(&n.ID, &n.Name, &n.Type, &n.Server, &n.Port, &n.LatencyMS, &n.Status, &n.Country, &n.CountryCode, &n.Region, &n.City, &n.ExitIP, &n.LastCheckedAt, &n.LastSuccessAt, &n.ExitCheckedAt, &n.NextCheckAt, &n.LastError, &n.Config, &n.CreatedAt, &n.Failures, &n.Successes, &n.Blocked)
-	if e == nil {
-		n.Server, e = unseal(purposeNodeServer, n.Server)
+	if e := row.Scan(nodeScanDest(&n)...); e != nil {
+		return n, e
 	}
-	if e == nil {
-		n.Config, e = unsealConfig(n.Config)
+	return finishNode(&n)
+}
+
+// scanNodeWithSource 读取带前导来源 ID 的节点行，供订阅批量查询使用。
+func scanNodeWithSource(row scanner) (int64, Node, error) {
+	var sid int64
+	var n Node
+	if e := row.Scan(append([]any{&sid}, nodeScanDest(&n)...)...); e != nil {
+		return sid, n, e
 	}
-	if e == nil {
-		n.Insights = InspectNode(n)
-	}
-	return n, e
+	out, e := finishNode(&n)
+	return sid, out, e
 }
 
 func (s *Store) Nodes(ctx context.Context, f Filter) (NodePage, error) {

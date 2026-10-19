@@ -36,6 +36,8 @@ type Manager struct {
 	digest       [32]byte
 	hash         string
 	sessions     map[[32]byte]session
+	users        map[int64]userCacheEntry
+	userMu       sync.Mutex
 	failures     int
 	window       time.Time
 	PasswordFile string
@@ -43,7 +45,7 @@ type Manager struct {
 }
 
 func New(dataDir, password string) (*Manager, error) {
-	m := &Manager{sessions: map[[32]byte]session{}}
+	m := &Manager{sessions: map[[32]byte]session{}, users: map[int64]userCacheEntry{}}
 	if password == "" {
 		if e := os.MkdirAll(dataDir, 0700); e != nil {
 			return nil, e
@@ -93,14 +95,41 @@ func random() (string, error) {
 	_, e := rand.Read(b[:])
 	return hex.EncodeToString(b[:]), e
 }
+
+type userCacheEntry struct {
+	u  pool.User
+	at time.Time
+}
+
+const userCacheTTL = 5 * time.Second
+
 func (m *Manager) user(ctx context.Context, id int64) (pool.User, error) {
 	if m.store == nil {
 		return pool.User{ID: 1, Username: "admin", DisplayName: "管理员", Role: "admin", Enabled: true, NodeLimit: 200, SourceLimit: 3, SubscriptionLimit: 1, PasswordHash: m.hash, AuthVersion: 1}, nil
 	}
+	m.userMu.Lock()
+	if e, ok := m.users[id]; ok && time.Since(e.at) < userCacheTTL {
+		u := e.u
+		m.userMu.Unlock()
+		return u, nil
+	}
+	m.userMu.Unlock()
 	if e := m.store.BootstrapAdmin(ctx, m.hash); e != nil {
 		return pool.User{}, e
 	}
-	return m.store.User(ctx, id)
+	u, e := m.store.User(ctx, id)
+	if e == nil {
+		m.userMu.Lock()
+		if len(m.users) > 10000 {
+			m.users = map[int64]userCacheEntry{}
+		}
+		if m.users == nil {
+			m.users = map[int64]userCacheEntry{}
+		}
+		m.users[id] = userCacheEntry{u: u, at: time.Now()}
+		m.userMu.Unlock()
+	}
+	return u, e
 }
 func (m *Manager) Identity(r *http.Request) (pool.User, bool) {
 	u, _, _, ok := m.identify(r)
