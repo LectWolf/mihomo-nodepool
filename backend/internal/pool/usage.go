@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/traffic"
 )
 
 // hourly 每小时一次：轮询订阅流量头并记录来源快照，用于流量与提供方趋势图
@@ -84,7 +86,11 @@ func (s *Service) pollUsage(ctx context.Context) {
 			defer func() { <-sem; wg.Done() }()
 			c, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
-			usage := fetchUsage(c, s.Client, src.URL)
+			client := s.UsageClient
+			if client == nil {
+				client = s.Client
+			}
+			usage := fetchUsage(c, client, src.URL)
 			if usage == nil {
 				return
 			}
@@ -324,21 +330,27 @@ func (s *Store) ProviderTrend(ctx context.Context, owner int64, days int) ([]Tre
 // 面板不支持时退回 GET 并立即断开
 func fetchUsage(ctx context.Context, client *http.Client, url string) *SubscriptionUsage {
 	for _, method := range []string{http.MethodHead, http.MethodGet} {
-		req, err := http.NewRequestWithContext(ctx, method, url, nil)
+		detail := strings.ToLower(method)
+		req, err := http.NewRequestWithContext(traffic.WithDetail(ctx, detail), method, url, nil)
 		if err != nil {
 			return nil
 		}
 		req.Header.Set("User-Agent", "clash.meta")
+		counter := traffic.Default.Counter(traffic.KindUsage, detail)
 		resp, err := client.Do(req)
 		if err != nil {
+			counter.Hit(true)
 			continue
 		}
+		// GET 回退不读正文，断开前内核已收下的部分不在计数里
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
 			if usage := ParseSubscriptionUsage(resp.Header.Get("Subscription-Userinfo")); usage != nil {
+				counter.Hit(false)
 				return usage
 			}
 		}
+		counter.Hit(true)
 	}
 	return nil
 }

@@ -1,12 +1,14 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"net"
 	"strconv"
 	"time"
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/config"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/traffic"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -33,6 +35,17 @@ func OpenTimeout(cfg config.MySQL, io time.Duration) (*sql.DB, error) {
 	driverConfig.WriteTimeout = io
 	if cfg.TLS {
 		driverConfig.TLSConfig = "true"
+	}
+	// 数据库流量单独计数，数据库不在本机时也会走公网网卡
+	dialer := &net.Dialer{Timeout: driverConfig.Timeout, KeepAlive: 30 * time.Second}
+	counter := traffic.Default.Counter(traffic.KindMySQL, "")
+	driverConfig.DialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		counter.Hit(false)
+		return traffic.WrapConn(c, counter), nil
 	}
 	connector, err := mysql.NewConnector(driverConfig)
 	if err != nil {

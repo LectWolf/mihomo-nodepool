@@ -259,3 +259,9 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 - POST `/sources/{id}/shares` `{user:"12"|"#12"|"username"}` → 201 同形条目；不能分享给本人、已停用账号或重复添加，每个来源最多 200 人。
 - DELETE `/sources/{id}/shares/{userID}` → 204。
 - GET `/nodes` 与 `/sources/catalog` 支持 `exclusive=1`：只看本人的来源和分享给自己的私有来源（“专属”标签）。
+
+## 本站流量
+
+- GET `/statistics` 对管理员增加 `site_traffic:{hourly:[{at,kind,detail?,requests,failures,bytes_in,bytes_out}],daily:[{at,kind,requests,failures,bytes_in,bytes_out}]}`：hourly 为近 24 小时按分类和明细（延迟检测、出口查询按节点协议，套餐用量读取分 HEAD／GET），daily 为近 30 天按分类。普通用户和访客不返回该字段。
+- 分类：后台任务（延迟检测、出口国家查询、证书指纹读取、来源刷新、套餐用量读取）、对外服务（Clash／v2ray 订阅拉取、来源直链、实测回报、席位保活、网页接口、静态资源），以及不计入占比的数据库和健康检查；另附容器网卡计数用于对照。
+- 计数为应用层字节，不含 TCP/IP 包头、重传和 DNS；订阅和网页为压缩前大小。进程内每分钟写入 `np_site_traffic`，保留 35 天。

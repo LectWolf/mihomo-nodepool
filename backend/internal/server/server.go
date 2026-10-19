@@ -16,6 +16,7 @@ import (
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/auth"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/buildinfo"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/traffic"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/web"
 	"github.com/go-sql-driver/mysql"
 )
@@ -119,10 +120,18 @@ func New(o Options) http.Handler {
 		if !admin {
 			v, rt = v.Public(), rt.Public()
 		}
+		// 本站流量只给管理员看
+		var site *pool.SiteTraffic
+		if admin {
+			if st, e := store.SiteTraffic(r.Context()); e == nil {
+				site = &st
+			}
+		}
 		body := struct {
 			pool.Statistics
-			Runtime pool.RuntimeStatistics `json:"runtime"`
-		}{v, rt}
+			Runtime     pool.RuntimeStatistics `json:"runtime"`
+			SiteTraffic *pool.SiteTraffic      `json:"site_traffic,omitempty"`
+		}{v, rt, site}
 		if !admin {
 			publicStats.set(body)
 		}
@@ -283,7 +292,7 @@ func New(o Options) http.Handler {
 		writeJSON(w, 404, map[string]string{"error": "接口不存在"})
 	})
 	mux.Handle("/", web.Handler())
-	return o.Auth.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return traffic.Classify(traffic.Default, o.Auth.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		actor := pool.CurrentUser(r.Context())
 		if (strings.HasPrefix(p, "/api/v1/users") || strings.HasPrefix(p, "/api/v1/moderation/")) && !pool.CanManageUsers(actor) {
@@ -313,7 +322,7 @@ func New(o Options) http.Handler {
 			return
 		}
 		mux.ServeHTTP(w, r)
-	}))
+	})))
 }
 func decode(w http.ResponseWriter, r *http.Request, out any) error {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 24<<20))

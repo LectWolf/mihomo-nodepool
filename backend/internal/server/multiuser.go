@@ -13,6 +13,7 @@ import (
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/auth"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/traffic"
 )
 
 type businessRegistrar func(string, func(http.ResponseWriter, *http.Request) error)
@@ -283,6 +284,7 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 			writeError(w, e)
 			return
 		}
+		traffic.TagRequest(r, traffic.KindSub, format)
 		raw, skipped, routingSkipped, nodes, e := s.ExportSavedSubscriptionNodes(ctx, r.PathValue("token"), format)
 		if format == "v2ray" && errors.Is(e, pool.ErrUnexportable) {
 			raw, e = v2rayNotice(v2rayEmpty), nil

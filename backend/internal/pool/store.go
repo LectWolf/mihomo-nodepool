@@ -109,6 +109,9 @@ func (s *Store) Ensure(ctx context.Context) error {
 	if err := s.ensureEncryption(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureSiteTraffic(ctx); err != nil {
+		return err
+	}
 	b, _ := json.Marshal(Defaults())
 	if _, e := s.DB.ExecContext(ctx, `INSERT IGNORE INTO np_settings(id,body) VALUES(1,?)`, b); e != nil {
 		return e

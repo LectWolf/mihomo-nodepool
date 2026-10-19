@@ -9,17 +9,21 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/traffic"
 )
 
 type Service struct {
-	Store   *Store
-	Prober  Prober
-	Client  *http.Client
-	metrics serviceMetrics
+	Store  *Store
+	Prober Prober
+	Client *http.Client
+	// UsageClient 为空时用 Client
+	UsageClient *http.Client
+	metrics     serviceMetrics
 }
 
 func NewService(store *Store, prober Prober) *Service {
-	return &Service{Store: store, Prober: prober, metrics: serviceMetrics{startedAt: utcNow()}, Client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+	redirect := func(r *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("重定向次数过多")
 		}
@@ -27,7 +31,11 @@ func NewService(store *Store, prober Prober) *Service {
 			return errors.New("不支持的重定向协议")
 		}
 		return nil
-	}}}
+	}
+	return &Service{Store: store, Prober: prober, metrics: serviceMetrics{startedAt: utcNow()},
+		Client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: redirect, Transport: traffic.Transport(traffic.Default, traffic.KindSource, true)},
+		// 用量读取不复用连接，HEAD 与 GET 回退能分别计数
+		UsageClient: &http.Client{Timeout: 30 * time.Second, CheckRedirect: redirect, Transport: traffic.Transport(traffic.Default, traffic.KindUsage, false)}}
 }
 func (s *Service) Run(ctx context.Context) {
 	var wg sync.WaitGroup
@@ -63,6 +71,8 @@ func (s *Service) Run(ctx context.Context) {
 			}
 		}
 	}()
+	wg.Add(1)
+	go func() { defer wg.Done(); s.siteTrafficLoop(ctx) }()
 	// 证书指纹单独循环：直连节点可能较慢，不拖慢每分钟的维护任务
 	wg.Add(1)
 	go func() {
@@ -150,15 +160,19 @@ func (s *Service) Refresh(parent context.Context, src Source) {
 		}
 		req.Header.Set("User-Agent", "clash.meta")
 		req.Header.Set("Accept", "text/yaml, application/yaml, application/json, text/plain, */*")
+		counter := traffic.Default.Counter(traffic.KindSource, "")
 		resp, e := s.Client.Do(req)
 		if e != nil {
+			counter.Hit(true)
 			fail("订阅请求失败或超时，保留上次节点")
 			return
 		}
 		b, e := io.ReadAll(io.LimitReader(resp.Body, (16<<20)+1))
 		resp.Body.Close()
 		s.metrics.sourceBytes.Add(int64(len(b)))
-		if e != nil || resp.StatusCode != http.StatusOK || len(b) > 16<<20 {
+		bad := e != nil || resp.StatusCode != http.StatusOK || len(b) > 16<<20
+		counter.Hit(bad)
+		if bad {
 			fail("订阅返回异常或超过 16 MiB，保留上次节点")
 			return
 		}

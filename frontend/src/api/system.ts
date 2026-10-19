@@ -13,6 +13,10 @@ export interface SystemInfo {
 export interface Maintenance { enabled: boolean; message: string; since?: string | null }
 export interface TrafficPoint { at: string; bytes: number }
 
+// 本站流量：hourly 按分类和明细，daily 只按分类
+export interface SiteTrafficRow { at: string; kind: string; detail?: string; requests: number; failures: number; bytes_in: number; bytes_out: number }
+export interface SiteTraffic { hourly: SiteTrafficRow[]; daily: SiteTrafficRow[] }
+
 export interface TaskItem { id: number; name: string; type: string; status: string; lease_until?: string; next_at?: string; last_error?: string }
 export interface SystemStatistics {
   overview: {
@@ -24,6 +28,7 @@ export interface SystemStatistics {
   sampled_at: string
   runtime: { started_at: string; uptime_seconds: number; heap_bytes: number; goroutines: number; source_body_bytes: number; source_runs: number; source_errors: number; probe_runs: number; probe_errors: number }
   traffic?: { hourly: TrafficPoint[]; daily: TrafficPoint[] }
+  site_traffic?: SiteTraffic
   usage: { sources_known: number; sources_total: number; upload_bytes: number | null; download_bytes: number | null; total_bytes: number | null; remaining_bytes: number | null; upload_sources: number; download_sources: number; total_sources: number; remaining_sources: number; overflow: boolean; items: { id: number; name: string; enabled: boolean; usage: SubscriptionUsage | null }[] }
 }
 export interface Source {
