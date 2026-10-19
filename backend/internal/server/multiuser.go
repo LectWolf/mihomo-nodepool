@@ -299,8 +299,10 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 		}
 		origin := publicOrigin(r, settings)
 		active := user.SubscriptionExpiresAt != nil && user.SubscriptionExpiresAt.After(time.Now().UTC())
+		// 只缓存 clash 大订阅；v2ray 体积小，且节点配置可能被外部直接改写，保持实时生成。
+		cacheable := format == "clash" && active
 		cacheKey := subscriptionCacheKey(r, format, user, trusted)
-		if active {
+		if cacheable {
 			if entry, ok := s.CachedSubscription(cacheKey); ok {
 				writeSubscriptionHeaders(w, entry, origin, user)
 				_ = s.TouchSubscriptionPull(ctx, r.PathValue("token"))
@@ -337,7 +339,7 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 			Skipped:        skipped,
 			RoutingSkipped: routingSkipped,
 		}
-		if state == "active" {
+		if cacheable {
 			s.CacheSubscription(cacheKey, entry)
 		}
 		writeSubscriptionHeaders(w, entry, origin, user)
