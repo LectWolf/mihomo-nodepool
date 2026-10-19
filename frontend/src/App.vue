@@ -95,6 +95,11 @@ function setSourceScope(value: 'mine' | 'all') {
 }
 const sourcesLoading = ref(false)
 const sourcesError = ref('')
+let sourcesFollowUp: ReturnType<typeof setTimeout> | undefined
+function scheduleSourcesFollowUp() {
+  if (sourcesFollowUp) return
+  sourcesFollowUp = setTimeout(() => { sourcesFollowUp = undefined; void loadSources() }, 1500)
+}
 const databaseUnavailable = ref(false)
 const passwordSetup = ref(false)
 const versionsOpen = ref(false)
@@ -102,6 +107,7 @@ const versionKey = ref(0)
 const reconnecting = ref(false)
 const reconnectError = ref('')
 let restartAt = 0
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 let systemLoading = false
 let connecting = false
 let sourcesRevision = 0
@@ -159,7 +165,15 @@ async function loadSources() {
   const revision = sourcesRevision, path = sourcesPath.value
   try {
     const value = await api<{ items: Source[] }>(path)
-    if (authenticated.value && revision === sourcesRevision) { sources.value = value.items ?? []; sourcesError.value = ''; databaseUnavailable.value = false; remember(path, sources.value) }
+    if (authenticated.value && revision === sourcesRevision) {
+      sources.value = value.items ?? []
+      sourcesError.value = ''
+      databaseUnavailable.value = false
+      remember(path, sources.value)
+      // 有来源正在导入/刷新时短间隔跟进，空闲时完全依赖 15 秒主轮询。
+      if (sources.value.some(source => source.status === 'queued' || source.status === 'processing')) scheduleSourcesFollowUp()
+      else if (sourcesFollowUp) { clearTimeout(sourcesFollowUp); sourcesFollowUp = undefined }
+    }
   } catch (error) { if (!isCancelled(error) && authenticated.value && revision === sourcesRevision) sourcesError.value = errorText(error) }
   finally {
     sourcesLoading.value = false
@@ -230,7 +244,23 @@ async function logout() {
   catch (error) { if (!isCancelled(error)) systemError.value = errorText(error) }
   finally { logoutBusy.value = false }
 }
-function startReconnect() { versionsOpen.value = false; restartAt = Date.now(); reconnecting.value = true; reconnectError.value = '' }
+function startReconnect() {
+  versionsOpen.value = false
+  restartAt = Date.now()
+  reconnecting.value = true
+  reconnectError.value = ''
+  scheduleReconnect()
+}
+// 重启后单独用 2 秒节奏探测，避免被 15 秒主轮询拖慢。
+function scheduleReconnect() {
+  if (reconnectTimer) return
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = undefined
+    if (!reconnecting.value) return
+    await reconnect()
+    if (reconnecting.value) scheduleReconnect()
+  }, 2000)
+}
 async function reconnect() {
   if (connecting || Date.now() - restartAt < 3000) return
   if (Date.now() - restartAt > 120000) { reconnecting.value = false; reconnectError.value = '服务尚未恢复，请确认服务已启动，然后重新连接。'; return }
@@ -247,7 +277,7 @@ usePolling(async () => {
   if (reconnecting.value) await reconnect()
   else if (authenticated.value && !reconnectError.value) await refreshOverview()
   else if (isGuest.value) await loadSystem()
-}, 15000, false)
+}, () => sources.value.some(source => source.status === 'queued' || source.status === 'processing') ? 3000 : 15000, false)
 onMounted(async () => {
   apiEvents.addEventListener('unauthorized', unauthorized)
   apiEvents.addEventListener('database-unavailable', unavailable)
@@ -263,6 +293,8 @@ onBeforeUnmount(() => {
   apiEvents.removeEventListener('maintenance', maintenance)
   apiEvents.removeEventListener('email-required', needEmail)
   document.removeEventListener('keydown', drawerKey)
+  if (sourcesFollowUp) clearTimeout(sourcesFollowUp)
+  if (reconnectTimer) clearTimeout(reconnectTimer)
 })
 watch(authenticated, on => { if (on) void loadTitles(true) })
 </script>
