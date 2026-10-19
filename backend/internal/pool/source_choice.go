@@ -213,6 +213,7 @@ func rehomeUser(ctx context.Context, tx *sql.Tx, u User, c CommunitySettings) (b
 
 // RehomeUser 在独立事务中为单个用户切换订阅来源
 func (s *Store) RehomeUser(ctx context.Context, userID int64) (bool, error) {
+	defer s.subs.clear()
 	settings, err := s.Settings(ctx)
 	if err != nil {
 		return false, err

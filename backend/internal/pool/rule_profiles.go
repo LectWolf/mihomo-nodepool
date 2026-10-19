@@ -394,6 +394,7 @@ func (in *RuleProfileInput) UnmarshalJSON(data []byte) error {
 // BindSubscriptionRule changes output policy without reclaiming or replacing the
 // saved node snapshot. Historical selections may no longer be available.
 func (s *Store) BindSubscriptionRule(ctx context.Context, id int64, profileID *int64) (Subscription, error) {
+	defer s.subs.clear()
 	if profileID != nil && *profileID < 0 {
 		return Subscription{}, errors.New("规则配置ID必须为0（官方默认规则）、正整数（私人规则）或null（不绑定）")
 	}

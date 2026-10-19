@@ -183,6 +183,7 @@ func limitedCount(ids, free map[int64]bool) int {
 }
 func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionInput) (SavedSubscription, error) {
 	var out SavedSubscription
+	defer s.subs.clear()
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" || len(in.Name) > 200 {
 		return out, errors.New("订阅名称不能为空且最多200字节")
@@ -532,6 +533,7 @@ func (s *Store) SaveSubscription(ctx context.Context, id int64, in SubscriptionI
 	return out, tx.Commit()
 }
 func (s *Store) MutateSubscription(ctx context.Context, id int64, rotate bool) (Subscription, error) {
+	defer s.subs.clear()
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return Subscription{}, e
@@ -612,8 +614,46 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 	if e != nil {
 		return nil, e
 	}
+	// 一次性取出所有相关来源的额度信息，避免逐节点/逐来源查询。
+	free := map[int64]bool{}
+	sourceIDs := map[int64]bool{}
+	for i, v := range items {
+		if i >= u.SubscriptionLimit {
+			break
+		}
+		for _, pair := range v.Nodes {
+			sourceIDs[pair.SourceID] = true
+		}
+		for _, sid := range v.FollowIDs {
+			sourceIDs[sid] = true
+		}
+	}
+	if len(sourceIDs) > 0 {
+		ids := make([]int64, 0, len(sourceIDs))
+		for id := range sourceIDs {
+			ids = append(ids, id)
+		}
+		rows, e := tx.QueryContext(ctx, `SELECT id,IF(private=1,0,max_users) FROM np_sources WHERE id IN (`+placeholders(len(ids))+`)`, int64Args(ids)...)
+		if e != nil {
+			return nil, e
+		}
+		for rows.Next() {
+			var id int64
+			var maxUsers int
+			if e = rows.Scan(&id, &maxUsers); e != nil {
+				rows.Close()
+				return nil, e
+			}
+			free[id] = maxUsers == 0
+		}
+		e = rows.Err()
+		rows.Close()
+		if e != nil {
+			return nil, e
+		}
+	}
 	seenNodes, seenSources := map[int64]bool{}, map[int64]bool{}
-	free, freeKnown, limitedSeen := map[int64]bool{}, map[int64]bool{}, 0
+	limitedSeen := 0
 	out := []Node{}
 	outSeen := map[int64]bool{}
 	found, stale := false, false
@@ -624,36 +664,36 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 		if v.ID == target.ID && v.Token == token {
 			found = true
 		}
-		for _, pair := range v.Nodes {
-			n, e := scanNode(tx.QueryRowContext(ctx, `SELECT `+strings.Replace(nodeColumns, "n.name", "sn.node_name", 1)+` FROM np_nodes n JOIN np_source_nodes sn ON sn.node_id=n.id JOIN np_sources s ON s.id=sn.source_id JOIN np_users p ON p.id=s.owner_id JOIN np_source_seats c ON c.source_id=s.id AND c.user_id=? AND c.state='active' AND c.expires_at>UTC_TIMESTAMP(6) WHERE n.id=? AND s.id=? AND sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND p.enabled=1 AND (s.private=1 OR s.min_level<=? OR s.owner_id=? OR ?='admin') AND `+accessSQL("s"), u.ID, pair.NodeID, pair.SourceID, u.Level, u.ID, u.Role, u.ID, u.ID))
-			if errors.Is(e, sql.ErrNoRows) {
-				stale = true
-				continue
+		// 按批加载订阅节点，避免每个节点一次查询。
+		for start := 0; start < len(v.Nodes); start += subscriptionNodeBatch {
+			end := start + subscriptionNodeBatch
+			if end > len(v.Nodes) {
+				end = len(v.Nodes)
 			}
+			loaded, e := loadSubscriptionNodesBatch(ctx, tx, u, v.Nodes[start:end])
 			if e != nil {
 				return nil, e
 			}
-			if !freeKnown[pair.SourceID] {
-				var maxUsers int
-				if e = tx.QueryRowContext(ctx, `SELECT IF(private=1,0,max_users) FROM np_sources WHERE id=?`, pair.SourceID).Scan(&maxUsers); e != nil {
-					return nil, e
+			for _, pair := range v.Nodes[start:end] {
+				n, ok := loaded[[2]int64{pair.NodeID, pair.SourceID}]
+				if !ok {
+					stale = true
+					continue
 				}
-				freeKnown[pair.SourceID] = true
-				free[pair.SourceID] = maxUsers == 0
-			}
-			newSource := !seenSources[pair.SourceID] && !free[pair.SourceID]
-			if (!seenNodes[n.ID] && len(seenNodes) >= u.NodeLimit) || (newSource && limitedSeen >= u.SourceLimit) {
-				continue
-			}
-			if newSource {
-				limitedSeen++
-			}
-			seenNodes[n.ID] = true
-			seenSources[pair.SourceID] = true
-			if v.ID == target.ID {
-				n.Sources = []Origin{{ID: pair.SourceID, NodeName: n.Name}}
-				out = append(out, n)
-				outSeen[n.ID] = true
+				newSource := !seenSources[pair.SourceID] && !free[pair.SourceID]
+				if (!seenNodes[n.ID] && len(seenNodes) >= u.NodeLimit) || (newSource && limitedSeen >= u.SourceLimit) {
+					continue
+				}
+				if newSource {
+					limitedSeen++
+				}
+				seenNodes[n.ID] = true
+				seenSources[pair.SourceID] = true
+				if v.ID == target.ID {
+					n.Sources = []Origin{{ID: pair.SourceID, NodeName: n.Name}}
+					out = append(out, n)
+					outSeen[n.ID] = true
+				}
 			}
 		}
 		// 跟随整个来源：实时输出该来源全部可用节点，不计节点额度，占来源额度
@@ -665,14 +705,6 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 			}
 			if ok == 0 {
 				continue
-			}
-			if !freeKnown[sid] {
-				var maxUsers int
-				if e = tx.QueryRowContext(ctx, `SELECT IF(private=1,0,max_users) FROM np_sources WHERE id=?`, sid).Scan(&maxUsers); e != nil {
-					return nil, e
-				}
-				freeKnown[sid] = true
-				free[sid] = maxUsers == 0
 			}
 			newSource := !seenSources[sid] && !free[sid]
 			if newSource && limitedSeen >= u.SourceLimit {
@@ -736,4 +768,46 @@ func (s *Store) SubscriptionNodes(ctx context.Context, token string) ([]Node, er
 		sort.SliceStable(out, func(i, j int) bool { return !demoted[out[i].ID] && demoted[out[j].ID] })
 	}
 	return out, nil
+}
+
+const subscriptionNodeBatch = 400
+
+// loadSubscriptionNodesBatch 一次加载一批 (node_id, source_id) 的可见节点，
+// 替代原先每个节点一次 SELECT 的 N+1 查询。
+func loadSubscriptionNodesBatch(ctx context.Context, tx *sql.Tx, u User, pairs []Selection) (map[[2]int64]Node, error) {
+	out := make(map[[2]int64]Node, len(pairs))
+	if len(pairs) == 0 {
+		return out, nil
+	}
+	marks := make([]string, 0, len(pairs))
+	args := make([]any, 0, 5+2*len(pairs))
+	args = append(args, u.ID)
+	for _, p := range pairs {
+		marks = append(marks, "(?,?)")
+		args = append(args, p.NodeID, p.SourceID)
+	}
+	args = append(args, u.Level, u.ID, u.Role, u.ID, u.ID)
+	q := `SELECT sn.source_id,` + strings.Replace(nodeColumns, "n.name", "sn.node_name", 1) + `
+ FROM np_nodes n
+ JOIN np_source_nodes sn ON sn.node_id=n.id
+ JOIN np_sources s ON s.id=sn.source_id
+ JOIN np_users p ON p.id=s.owner_id
+ JOIN np_source_seats c ON c.source_id=s.id AND c.user_id=? AND c.state='active' AND c.expires_at>UTC_TIMESTAMP(6)
+ WHERE (n.id,s.id) IN (` + strings.Join(marks, ",") + `)
+ AND sn.excluded=0 AND n.blocked=0 AND s.enabled=1 AND p.enabled=1
+ AND (s.private=1 OR s.min_level<=? OR s.owner_id=? OR ?='admin')
+ AND ` + accessSQL("s")
+	rows, e := tx.QueryContext(ctx, q, args...)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	for rows.Next() {
+		sid, n, e := scanNodeWithSource(rows)
+		if e != nil {
+			return nil, e
+		}
+		out[[2]int64{n.ID, sid}] = n
+	}
+	return out, rows.Err()
 }

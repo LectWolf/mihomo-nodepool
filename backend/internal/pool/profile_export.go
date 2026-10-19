@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -412,15 +413,47 @@ func (s *Store) exportSaved(ctx context.Context, token, format string, nodes []N
 			order = append(order, id)
 		}
 		sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+		// 先读缓存，再一次性批量读取缺失的来源内容，避免逐来源 SELECT + unseal。
+		contents := make(map[int64]string, len(order))
+		missing := make([]int64, 0, len(order))
 		for _, id := range order {
-			src := Source{ID: id}
-			if e = s.DB.QueryRowContext(ctx, `SELECT content FROM np_sources WHERE id=?`, id).Scan(&src.Content); e != nil {
+			if content, ok := s.sourceContent.get(id); ok {
+				contents[id] = content
+			} else {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			rows, e := s.DB.QueryContext(ctx, `SELECT id,content FROM np_sources WHERE id IN (`+placeholders(len(missing))+`)`, int64Args(missing)...)
+			if e != nil {
 				return nil, 0, 0, e
 			}
-			if src.Content, e = unseal(purposeSourceContent, src.Content); e != nil {
+			for rows.Next() {
+				var id int64
+				var content string
+				if e = rows.Scan(&id, &content); e != nil {
+					rows.Close()
+					return nil, 0, 0, e
+				}
+				if content, e = unseal(purposeSourceContent, content); e != nil {
+					rows.Close()
+					return nil, 0, 0, e
+				}
+				contents[id] = content
+				s.sourceContent.put(id, content)
+			}
+			e = rows.Err()
+			rows.Close()
+			if e != nil {
 				return nil, 0, 0, e
 			}
-			sources = append(sources, src)
+		}
+		for _, id := range order {
+			content, ok := contents[id]
+			if !ok {
+				return nil, 0, 0, sql.ErrNoRows
+			}
+			sources = append(sources, Source{ID: id, Content: content})
 		}
 	}
 	return ExportSubscriptionWithProfile(nodes, format, &p, sources)

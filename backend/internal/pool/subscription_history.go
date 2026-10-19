@@ -51,6 +51,7 @@ type RestoredSubscription struct {
 // RestoreSubscriptionArchive 用历史组合新建订阅（target=0）或覆盖已有订阅，已失效的节点会被跳过
 func (s *Store) RestoreSubscriptionArchive(ctx context.Context, archiveID, target int64) (RestoredSubscription, error) {
 	var out RestoredSubscription
+	defer s.subs.clear()
 	user := CurrentUser(ctx)
 	var name string
 	var raw, followRaw []byte

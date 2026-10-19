@@ -36,6 +36,8 @@ type Manager struct {
 	digest       [32]byte
 	hash         string
 	sessions     map[[32]byte]session
+	bootstrapMu  sync.Mutex
+	bootstrapped bool
 	failures     int
 	window       time.Time
 	PasswordFile string
@@ -93,13 +95,21 @@ func random() (string, error) {
 	_, e := rand.Read(b[:])
 	return hex.EncodeToString(b[:]), e
 }
+
 func (m *Manager) user(ctx context.Context, id int64) (pool.User, error) {
 	if m.store == nil {
 		return pool.User{ID: 1, Username: "admin", DisplayName: "管理员", Role: "admin", Enabled: true, NodeLimit: 200, SourceLimit: 3, SubscriptionLimit: 1, PasswordHash: m.hash, AuthVersion: 1}, nil
 	}
-	if e := m.store.BootstrapAdmin(ctx, m.hash); e != nil {
-		return pool.User{}, e
+	// BootstrapAdmin 只需要成功执行一次；之后每个请求直接读用户，避免缓存导致的权限/会话延迟。
+	m.bootstrapMu.Lock()
+	if !m.bootstrapped {
+		if e := m.store.BootstrapAdmin(ctx, m.hash); e != nil {
+			m.bootstrapMu.Unlock()
+			return pool.User{}, e
+		}
+		m.bootstrapped = true
 	}
+	m.bootstrapMu.Unlock()
 	return m.store.User(ctx, id)
 }
 func (m *Manager) Identity(r *http.Request) (pool.User, bool) {
