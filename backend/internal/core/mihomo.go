@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/traffic"
 	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/proxydialer"
 	C "github.com/metacubex/mihomo/constant"
 	mlog "github.com/metacubex/mihomo/log"
@@ -36,7 +39,7 @@ func New() *Mihomo {
 }
 func (*Mihomo) Version() string { return "v1.19.31" }
 func (*Mihomo) Validate(config map[string]any) error {
-	_, release, e := parseProxy(config)
+	_, release, e := parseProxy(config, nil)
 	if e != nil {
 		return e
 	}
@@ -44,8 +47,9 @@ func (*Mihomo) Validate(config map[string]any) error {
 	return nil
 }
 
-// parseProxy 解析节点；内嵌前置代理时以前置代理作为拨号器，release 关闭整条链
-func parseProxy(config map[string]any) (C.Proxy, func(), error) {
+// parseProxy 解析节点；内嵌前置代理时以前置代理作为拨号器，release 关闭整条链。
+// tag 非空时最内层节点的连接计入流量统计
+func parseProxy(config map[string]any, tag *traffic.Tag) (C.Proxy, func(), error) {
 	var chain []C.Proxy
 	release := func() {
 		for _, p := range chain {
@@ -59,6 +63,7 @@ func parseProxy(config map[string]any) (C.Proxy, func(), error) {
 			m[k] = v
 		}
 		var opts []adapter.ProxyOption
+		var metered *meteredDialer
 		if raw, ok := m[pool.DialerKey]; ok {
 			delete(m, pool.DialerKey)
 			inner, ok := raw.(map[string]any)
@@ -70,10 +75,19 @@ func parseProxy(config map[string]any) (C.Proxy, func(), error) {
 				return nil, err
 			}
 			opts = append(opts, adapter.WithDialerForAPI(proxydialer.New(d, false)))
+		} else if tag != nil {
+			metered = &meteredDialer{tag: tag}
+			opts = append(opts, adapter.WithDialerForAPI(metered))
 		}
 		p, err := adapter.ParseProxy(m, opts...)
 		if err != nil {
 			return nil, err
+		}
+		// 自定义拨号器会跳过节点的 ip-version、tfo 等选项，这里补回
+		if metered != nil {
+			if o, ok := p.Adapter().(interface{ DialOptions() []dialer.Option }); ok {
+				metered.opts = o.DialOptions()
+			}
 		}
 		chain = append(chain, p)
 		return p, nil
@@ -92,7 +106,10 @@ func (m *Mihomo) Probe(ctx context.Context, n pool.Node, s pool.Settings, exit b
 		result.Error = "节点配置无效"
 		return result
 	}
-	p, release, e := parseProxy(config)
+	kind := nodeType(config)
+	probeCounter := traffic.Default.Counter(traffic.KindProbe, kind)
+	tag := traffic.NewTag(probeCounter)
+	p, release, e := parseProxy(config, tag)
 	if e != nil {
 		result.Error = "Mihomo 无法加载节点配置"
 		return result
@@ -122,6 +139,7 @@ func (m *Mihomo) Probe(ctx context.Context, n pool.Node, s pool.Settings, exit b
 			}
 		}
 	}
+	probeCounter.Hit(result.LatencyMS == nil)
 	if result.LatencyMS == nil {
 		result.Error = "连接失败或测试超时（已重试）"
 		return result
@@ -137,6 +155,8 @@ func (m *Mihomo) Probe(ctx context.Context, n pool.Node, s pool.Settings, exit b
 		return result
 	}
 	result.ExitAttempted = true
+	exitCounter := traffic.Default.Counter(traffic.KindExit, kind)
+	tag.Set(exitCounter)
 	geoCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	transport := &http.Transport{DialContext: func(c context.Context, network, address string) (net.Conn, error) {
@@ -185,8 +205,22 @@ func (m *Mihomo) Probe(ctx context.Context, n pool.Node, s pool.Settings, exit b
 		result.CountryCode = location.CountryCode
 		result.Region = location.Region
 		result.City = location.City
+		exitCounter.Hit(false)
 		return result
 	}
+	exitCounter.Hit(true)
 	result.ExitError = "出口国家查询失败，稍后重试"
 	return result
+}
+
+// nodeType 流量明细按协议区分；带前置代理时标注 +chain
+func nodeType(config map[string]any) string {
+	t, _ := config["type"].(string)
+	if t == "" {
+		t = "unknown"
+	}
+	if _, ok := config[pool.DialerKey]; ok {
+		t += "+chain"
+	}
+	return strings.ToLower(t)
 }

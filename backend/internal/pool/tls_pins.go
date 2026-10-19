@@ -16,6 +16,8 @@ import (
 
 	"github.com/metacubex/quic-go"
 	mtls "github.com/metacubex/tls"
+
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/traffic"
 )
 
 // 证书指纹：Xray 新版移除了 allowInsecure（跳过证书验证），配置里只有它而没有
@@ -140,20 +142,39 @@ func fetchPin(ctx context.Context, t tlsTarget) (string, error) {
 	addr := net.JoinHostPort(ip.String(), t.port)
 	var certs []*x509.Certificate
 	if t.quic {
+		counter := traffic.Default.Counter(traffic.KindTLS, "quic")
+		udpAddr, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			return "", err
+		}
+		udp, err := net.ListenUDP("udp", nil)
+		if err != nil {
+			return "", err
+		}
+		defer udp.Close()
 		// mihomo 的 quic-go 使用自带的 tls 分支
-		conn, err := quic.DialAddr(ctx, addr, &mtls.Config{ServerName: t.sni, InsecureSkipVerify: true, NextProtos: t.alpn}, &quic.Config{HandshakeIdleTimeout: tlsPinTimeout})
+		conn, err := quic.Dial(ctx, traffic.WrapPacketConn(udp, counter), udpAddr, &mtls.Config{ServerName: t.sni, InsecureSkipVerify: true, NextProtos: t.alpn}, &quic.Config{HandshakeIdleTimeout: tlsPinTimeout})
+		counter.Hit(err != nil)
 		if err != nil {
 			return "", err
 		}
 		certs = conn.ConnectionState().TLS.PeerCertificates
 		_ = conn.CloseWithError(0, "")
 	} else {
-		d := tls.Dialer{NetDialer: &net.Dialer{Timeout: tlsPinTimeout}, Config: &tls.Config{ServerName: t.sni, InsecureSkipVerify: true, NextProtos: t.alpn}}
-		conn, err := d.DialContext(ctx, "tcp", addr)
+		counter := traffic.Default.Counter(traffic.KindTLS, "tcp")
+		raw, err := (&net.Dialer{Timeout: tlsPinTimeout}).DialContext(ctx, "tcp", addr)
 		if err != nil {
+			counter.Hit(true)
 			return "", err
 		}
-		certs = conn.(*tls.Conn).ConnectionState().PeerCertificates
+		conn := tls.Client(traffic.WrapConn(raw, counter), &tls.Config{ServerName: t.sni, InsecureSkipVerify: true, NextProtos: t.alpn})
+		err = conn.HandshakeContext(ctx)
+		counter.Hit(err != nil)
+		if err != nil {
+			_ = raw.Close()
+			return "", err
+		}
+		certs = conn.ConnectionState().PeerCertificates
 		_ = conn.Close()
 	}
 	if len(certs) == 0 {

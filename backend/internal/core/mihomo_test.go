@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/traffic"
 )
 
 // This is a real CONNECT tunnel. No mocked latency result can pass this test.
@@ -60,9 +61,18 @@ func TestProbeUsesMihomoTunnelForDelayAndCountry(t *testing.T) {
 	engine.GeoURLs = []string{target.URL + "/geo"}
 	settings := pool.Defaults()
 	settings.TestURL = target.URL + "/delay"
+	before := trafficOf("probe", "http")
+	exitBefore := trafficOf("exit", "http")
 	result := engine.Probe(context.Background(), pool.Node{Config: config}, settings, true)
 	if result.LatencyMS == nil || result.ExitIP != "203.0.113.9" || result.CountryCode != "US" || result.Region != "加州" || result.City != "洛杉矶" || connects.Load() < 2 {
 		t.Fatalf("probe did not traverse tunnel: %+v, connects=%d", result, connects.Load())
+	}
+	// 检测和出口查询分别计数，字节来自经过代理的连接
+	if p := trafficOf("probe", "http"); p.Requests != before.Requests+1 || p.Out <= before.Out || p.In <= before.In {
+		t.Fatalf("probe traffic not counted: %+v -> %+v", before, p)
+	}
+	if e := trafficOf("exit", "http"); e.Requests != exitBefore.Requests+1 || e.In-exitBefore.In < 100 {
+		t.Fatalf("exit traffic not counted: %+v -> %+v", exitBefore, e)
 	}
 }
 
@@ -119,4 +129,16 @@ func TestProbeTraversesEmbeddedDialer(t *testing.T) {
 	if result.LatencyMS == nil || relay.Load() == 0 || exit.Load() == 0 {
 		t.Fatalf("chain not used: %+v relay=%d exit=%d", result, relay.Load(), exit.Load())
 	}
+	if v := trafficOf("probe", "http+chain"); v.Requests == 0 || v.Out == 0 {
+		t.Fatalf("chain traffic not counted: %+v", v)
+	}
+}
+
+func trafficOf(kind, detail string) traffic.Values {
+	for _, r := range traffic.Default.Peek() {
+		if r.Kind == kind && r.Detail == detail {
+			return r.Values
+		}
+	}
+	return traffic.Values{}
 }

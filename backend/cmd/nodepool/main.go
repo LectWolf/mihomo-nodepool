@@ -19,6 +19,7 @@ import (
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/database"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/server"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/traffic"
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/update"
 	"github.com/joho/godotenv"
 )
@@ -80,8 +81,14 @@ func run() error {
 	workerDone := make(chan struct{})
 	go func() { defer close(workerDone); service.Run(ctx) }()
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: server.New(server.Options{Service: service, Auth: admin, Updates: updater, TrustedProxies: cfg.TrustedProxies}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second}
+	traffic.Server(srv)
+	ln, e := net.Listen("tcp", cfg.HTTPAddr)
+	if e != nil {
+		stop()
+		return e
+	}
 	errorsCh := make(chan error, 1)
-	go func() { errorsCh <- srv.ListenAndServe() }()
+	go func() { errorsCh <- srv.Serve(traffic.Listen(ln, traffic.Default)) }()
 	log.Printf("Mihomo NodePool %s 正在监听 %s", buildinfo.Version, cfg.HTTPAddr)
 	select {
 	case e = <-errorsCh:

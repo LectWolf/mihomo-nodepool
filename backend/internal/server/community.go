@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/traffic"
 	"github.com/coder/websocket"
 	"gopkg.in/yaml.v3"
 )
@@ -318,6 +319,7 @@ func registerSourceLink(mux *http.ServeMux, s *pool.Store) {
 			writeError(w, err)
 			return
 		}
+		traffic.TagRequest(r, traffic.KindLink, format)
 		raw, skipped, routing, usage, err := s.ExportSourceLink(ctx, r.PathValue("token"), format)
 		if format == "v2ray" && errors.Is(err, pool.ErrUnexportable) {
 			raw, err = v2rayNotice(v2rayEmpty), nil

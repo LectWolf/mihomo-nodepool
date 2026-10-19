@@ -7,6 +7,7 @@ import { isAdmin } from '../api/accounts'
 import AppIcon from './AppIcon.vue'
 import PageNumbers from './PageNumbers.vue'
 import BarChart from './BarChart.vue'
+import SiteTrafficPanel from './SiteTrafficPanel.vue'
 import '../statistics.css'
 import { cached, remember } from '../view-cache'
 const props = defineProps<{ paused: boolean }>()
@@ -101,6 +102,7 @@ function rateTone(runs: number, errors: number) { const rate = successRate(runs,
         </div>
         <p class="small muted">只统计返回 Subscription-Userinfo 的来源；同一套餐被重复导入时会重复计数，可在运行设置中关闭整点用量轮询。</p>
       </section>
+      <SiteTrafficPanel v-if="isAdmin && data.site_traffic" :data="data.site_traffic" />
       <section class="panel">
         <div class="panel-heading"><div><h2>当前后台任务</h2><p>执行状态以任务租约为准，排队包括已到期任务；每类最多显示 100 条，优先显示执行中任务。</p></div></div>
         <div class="task-columns">
