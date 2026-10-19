@@ -298,12 +298,15 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 			return
 		}
 		origin := publicOrigin(r, settings)
+		active := user.SubscriptionExpiresAt != nil && user.SubscriptionExpiresAt.After(time.Now().UTC())
 		cacheKey := subscriptionCacheKey(r, format, user, trusted)
-		if entry, ok := s.CachedSubscription(cacheKey); ok {
-			writeSubscriptionHeaders(w, entry, origin, user)
-			_ = s.TouchSubscriptionPull(ctx, r.PathValue("token"))
-			serveSubscription(w, r, entry)
-			return
+		if active {
+			if entry, ok := s.CachedSubscription(cacheKey); ok {
+				writeSubscriptionHeaders(w, entry, origin, user)
+				_ = s.TouchSubscriptionPull(ctx, r.PathValue("token"))
+				serveSubscription(w, r, entry)
+				return
+			}
 		}
 		raw, skipped, routingSkipped, nodes, e := s.ExportSavedSubscriptionNodes(ctx, r.PathValue("token"), format)
 		if format == "v2ray" && errors.Is(e, pool.ErrUnexportable) {
@@ -334,7 +337,9 @@ func registerSubscriptionDownload(mux *http.ServeMux, s *pool.Store, trusted []*
 			Skipped:        skipped,
 			RoutingSkipped: routingSkipped,
 		}
-		s.CacheSubscription(cacheKey, entry)
+		if state == "active" {
+			s.CacheSubscription(cacheKey, entry)
+		}
 		writeSubscriptionHeaders(w, entry, origin, user)
 		serveSubscription(w, r, entry)
 	})

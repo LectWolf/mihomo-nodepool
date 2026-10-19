@@ -36,8 +36,8 @@ type Manager struct {
 	digest       [32]byte
 	hash         string
 	sessions     map[[32]byte]session
-	users        map[int64]userCacheEntry
-	userMu       sync.Mutex
+	bootstrapMu  sync.Mutex
+	bootstrapped bool
 	failures     int
 	window       time.Time
 	PasswordFile string
@@ -45,7 +45,7 @@ type Manager struct {
 }
 
 func New(dataDir, password string) (*Manager, error) {
-	m := &Manager{sessions: map[[32]byte]session{}, users: map[int64]userCacheEntry{}}
+	m := &Manager{sessions: map[[32]byte]session{}}
 	if password == "" {
 		if e := os.MkdirAll(dataDir, 0700); e != nil {
 			return nil, e
@@ -96,40 +96,21 @@ func random() (string, error) {
 	return hex.EncodeToString(b[:]), e
 }
 
-type userCacheEntry struct {
-	u  pool.User
-	at time.Time
-}
-
-const userCacheTTL = 5 * time.Second
-
 func (m *Manager) user(ctx context.Context, id int64) (pool.User, error) {
 	if m.store == nil {
 		return pool.User{ID: 1, Username: "admin", DisplayName: "管理员", Role: "admin", Enabled: true, NodeLimit: 200, SourceLimit: 3, SubscriptionLimit: 1, PasswordHash: m.hash, AuthVersion: 1}, nil
 	}
-	m.userMu.Lock()
-	if e, ok := m.users[id]; ok && time.Since(e.at) < userCacheTTL {
-		u := e.u
-		m.userMu.Unlock()
-		return u, nil
-	}
-	m.userMu.Unlock()
-	if e := m.store.BootstrapAdmin(ctx, m.hash); e != nil {
-		return pool.User{}, e
-	}
-	u, e := m.store.User(ctx, id)
-	if e == nil {
-		m.userMu.Lock()
-		if len(m.users) > 10000 {
-			m.users = map[int64]userCacheEntry{}
+	// BootstrapAdmin 只需要成功执行一次；之后每个请求直接读用户，避免缓存导致的权限/会话延迟。
+	m.bootstrapMu.Lock()
+	if !m.bootstrapped {
+		if e := m.store.BootstrapAdmin(ctx, m.hash); e != nil {
+			m.bootstrapMu.Unlock()
+			return pool.User{}, e
 		}
-		if m.users == nil {
-			m.users = map[int64]userCacheEntry{}
-		}
-		m.users[id] = userCacheEntry{u: u, at: time.Now()}
-		m.userMu.Unlock()
+		m.bootstrapped = true
 	}
-	return u, e
+	m.bootstrapMu.Unlock()
+	return m.store.User(ctx, id)
 }
 func (m *Manager) Identity(r *http.Request) (pool.User, bool) {
 	u, _, _, ok := m.identify(r)
