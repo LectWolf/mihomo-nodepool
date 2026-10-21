@@ -12,15 +12,17 @@ import (
 )
 
 // 节点列表的内存索引：来源、节点、关联关系常驻内存，列表筛选排序不再逐行查库。
-// 写操作调用 InvalidateIndex 后下次读取同步重建；检测结果直接就地更新；
-// 另有 IndexTTL 兜底，覆盖迁移命令等进程外写入。
+// 写操作调用 InvalidateIndex 后下次读取同步重建；检测结果直接就地更新。
 const (
-	IndexTTL      = time.Minute
 	fieldAggTTL   = 5 * time.Minute
 	FieldRecent   = 24 * time.Hour // 最近一次国内回报为能连且在该时长内，本机暂停检测
 	fieldGoodRate = 0.7
 	fieldBadRate  = 0.3
 )
+
+// IndexTTL 是索引的最长保鲜时间，兜底覆盖迁移命令、直接改库等进程外写入。
+// 重建一次要把全部可展示节点读进内存，分钟级刷新足够；可用 NODEPOOL_INDEX_TTL 调整。
+var IndexTTL = envDuration("NODEPOOL_INDEX_TTL", 5*time.Minute, 30*time.Second, time.Hour)
 
 type indexSource struct {
 	id, owner             int64
@@ -69,6 +71,12 @@ type nodeIndex struct {
 func (s *Store) InvalidateIndex() {
 	s.index.dirty.Store(true)
 	s.index.fieldDirty.Store(true)
+	s.invalidateCaches()
+}
+
+// invalidateCaches 只清渲染结果与来源内容缓存，保留节点索引。
+// 来源刷新后节点集合没有变化时用它，避免为一份相同的索引重建整表。
+func (s *Store) invalidateCaches() {
 	s.sourceContent.clear()
 	s.subs.clear()
 }
@@ -118,7 +126,9 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 	rows.Close()
 	plain := !DataEncryptionEnabled()
 	byID := map[int64]*indexNode{}
-	rows, e = s.DB.QueryContext(ctx, `SELECT id,name,type,IF(?,server,''),status,COALESCE(latency_ms,-1),country,country_code,created_at FROM np_nodes WHERE blocked=0`, plain)
+	// 只取可展示的节点：没有任何未排除关联的节点下面也会被丢掉，
+	// 先读出来等于把整张节点表传一遍，节点规模上来后这部分远大于筛选本身。
+	rows, e = s.DB.QueryContext(ctx, `SELECT id,name,type,IF(?,server,''),status,COALESCE(latency_ms,-1),country,country_code,created_at FROM np_nodes WHERE blocked=0 AND EXISTS(SELECT 1 FROM np_source_nodes sn WHERE sn.node_id=np_nodes.id AND sn.excluded=0)`, plain)
 	if e != nil {
 		ix.dirty.Store(true)
 		return e

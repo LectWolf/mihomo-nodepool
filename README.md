@@ -148,6 +148,8 @@ Clash 导出保留完整代理配置。v2ray 输出 v2rayN 等客户端通用的
 | `UPDATE_GITHUB_TOKEN` | 空 | 读取私有仓库 Release 的令牌，需有目标仓库只读权限 |
 | `NODEPOOL_DATA_KEY` | 空 | 数据加密密钥，32 字节 Base64 或 64 位十六进制；可用 `openssl rand -base64 32` 生成 |
 | `NODEPOOL_TRUSTED_PROXIES` | 空 | 可信反向代理 IP／CIDR，逗号分隔；仅这些地址的 `X-Forwarded-For` 用于拉取风控统计 |
+| `NODEPOOL_INDEX_TTL` | `5m` | 节点列表内存索引的最长刷新间隔，30s–1h；越短越实时，重建时会把全部可展示节点读一遍 |
+| `NODEPOOL_SUB_CACHE_TTL` | `5m` | 订阅渲染缓存时间，30s–30m；来源内容或用户结构变化会立即失效，按客户端拉取频率调整 |
 
 凭据不返回前端；来源 URL 与节点原配置不会由列表接口回显。来源内容和凭据存储在你配置的 MySQL 中，数据库备份与访问权限由部署者管理。
 

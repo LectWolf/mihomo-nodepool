@@ -5,12 +5,12 @@ import (
 	"time"
 )
 
-const (
-	// SubscriptionCacheTTL 是订阅渲染结果的短缓存时间。
-	// 来源/用户结构变化会通过 InvalidateIndex 立即清空。
-	SubscriptionCacheTTL = 60 * time.Second
-	subscriptionCacheMax = 64 << 20 // 64 MiB
-)
+const subscriptionCacheMax = 64 << 20 // 64 MiB
+
+// SubscriptionCacheTTL 是订阅渲染结果的缓存时间。来源内容或用户结构变化会主动清空，
+// 这里只做兜底；客户端通常几分钟才拉一次，缓存太短等于每次都重新拼装整份配置。
+// 可用 NODEPOOL_SUB_CACHE_TTL 调整。
+var SubscriptionCacheTTL = envDuration("NODEPOOL_SUB_CACHE_TTL", 5*time.Minute, 30*time.Second, 30*time.Minute)
 
 // SubscriptionCacheEntry 是一次订阅渲染的完整结果。
 type SubscriptionCacheEntry struct {

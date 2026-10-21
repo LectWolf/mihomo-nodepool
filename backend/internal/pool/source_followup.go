@@ -38,6 +38,39 @@ func sourceNodeNames(ctx context.Context, q txQueryer, sourceID int64) (map[int6
 	return out, rows.Err()
 }
 
+// sourceVisibleNodeNames 取该来源当前参与展示的 (节点, 名称)，
+// 用于判断一次刷新后内存索引的内容是否真的变了。
+func sourceVisibleNodeNames(ctx context.Context, q txQueryer, sourceID int64) (map[int64]string, error) {
+	rows, e := q.QueryContext(ctx, `SELECT node_id,node_name FROM np_source_nodes WHERE source_id=? AND excluded=0`, sourceID)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var name string
+		if e = rows.Scan(&id, &name); e != nil {
+			return nil, e
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
+
+// sameLinks 比较两次快照的 (节点, 名称) 集合是否完全一致。
+func sameLinks(before, after map[int64]string) bool {
+	if len(before) != len(after) {
+		return false
+	}
+	for id, name := range before {
+		if got, ok := after[id]; !ok || got != name {
+			return false
+		}
+	}
+	return true
+}
+
 // QueueSourceNodes 来源刷新后接着检测它的节点：新节点优先，按固定间隔错开。
 // 已到分级间隔的才排队；国内用户正在实测能连的健康节点跳过。
 func (s *Store) QueueSourceNodes(ctx context.Context, sourceID int64, now time.Time) error {

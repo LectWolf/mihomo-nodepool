@@ -267,6 +267,16 @@ func (s *Store) ApplySource(ctx context.Context, src Source, body string, parsed
 	if e != nil {
 		return e
 	}
+	// 刷新前参与展示的节点快照，提交后与本次结果比对，决定是否需要重建索引。
+	before, e := sourceVisibleNodeNames(ctx, tx, src.ID)
+	if e != nil {
+		return e
+	}
+	// 订阅流量耗尽状态也在索引里，刷新可能改变它。
+	var drainedBefore bool
+	if e = tx.QueryRowContext(ctx, `SELECT `+drainedSQL("np_sources")+` FROM np_sources WHERE id=?`, src.ID).Scan(&drainedBefore); e != nil {
+		return e
+	}
 	if _, e = tx.ExecContext(ctx, `DELETE FROM np_source_nodes WHERE source_id=?`, src.ID); e != nil {
 		return e
 	}
@@ -282,6 +292,7 @@ func (s *Store) ApplySource(ctx context.Context, src Source, body string, parsed
 	defer link.Close()
 	now := utcNow()
 	seen := map[string]bool{}
+	links := map[int64]string{}
 	for _, node := range parsed.Nodes {
 		excluded := (global != nil && global.MatchString(node.Name)) || (local != nil && local.MatchString(node.Name))
 		server, e := seal(purposeNodeServer, node.Server)
@@ -302,6 +313,9 @@ func (s *Store) ApplySource(ctx context.Context, src Source, body string, parsed
 		}
 		if _, e = link.ExecContext(ctx, src.ID, nodeID, node.Name, excluded); e != nil {
 			return e
+		}
+		if !excluded {
+			links[nodeID] = node.Name
 		}
 		old, exists := seen[node.Hash]
 		seen[node.Hash] = excluded && (!exists || old)
@@ -343,7 +357,13 @@ func (s *Store) ApplySource(ctx context.Context, src Source, body string, parsed
 	if e = tx.Commit(); e != nil {
 		return e
 	}
-	s.InvalidateIndex()
+	// 节点集合与名称都没变时索引内容也不变，只清渲染缓存；
+	// 来源刷新是分钟级的，每次都重建等于持续把整张节点表读一遍。
+	if sameLinks(before, links) && drainedBefore == (drainedReason(src.SubscriptionUsage) != "") {
+		s.invalidateCaches()
+	} else {
+		s.InvalidateIndex()
+	}
 	// 节点已保存，后续两步失败只影响排队和换绑，下次刷新会再做
 	if e = s.RebindSelections(ctx, src.ID, oldNames); e != nil {
 		log.Print("订阅节点同名换绑失败，下次刷新重试")
