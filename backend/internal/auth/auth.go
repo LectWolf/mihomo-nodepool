@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/trustedproxy"
 )
 
 type session struct {
@@ -38,14 +40,19 @@ type Manager struct {
 	sessions     map[[32]byte]session
 	bootstrapMu  sync.Mutex
 	bootstrapped bool
-	failures     int
-	window       time.Time
+	attempts     *loginLimiter
+	trusted      []*net.IPNet
 	PasswordFile string
 	store        *pool.Store
 }
 
+// SetTrustedProxies 指定可信反向代理，只有它们的 X-Forwarded-For 参与登录限流。
+func (m *Manager) SetTrustedProxies(trusted []*net.IPNet) {
+	m.trusted = trusted
+}
+
 func New(dataDir, password string) (*Manager, error) {
-	m := &Manager{sessions: map[[32]byte]session{}}
+	m := &Manager{sessions: map[[32]byte]session{}, attempts: newLoginLimiter()}
 	if password == "" {
 		if e := os.MkdirAll(dataDir, 0700); e != nil {
 			return nil, e
@@ -294,17 +301,6 @@ func (m *Manager) Register(mux *http.ServeMux) {
 		m.authReply(w, r, u, true, v.Persistent)
 	})
 	mux.HandleFunc("POST /api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
-		m.mu.Lock()
-		if time.Since(m.window) > time.Minute {
-			m.failures = 0
-			m.window = time.Now()
-		}
-		limited := m.failures >= 10
-		m.mu.Unlock()
-		if limited {
-			reply(w, 429, map[string]string{"error": "尝试过于频繁，请一分钟后重试"})
-			return
-		}
 		var in struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
@@ -317,6 +313,16 @@ func (m *Manager) Register(mux *http.ServeMux) {
 		}
 		if in.Username == "" {
 			in.Username = "admin"
+		}
+		// 按 IP 与「IP + 账号」分别计数：同一出口的大量失败不会波及其他人，
+		// 也不会出现单一计数器被刷满后全站都登不上。
+		ip := trustedproxy.ClientIP(r, m.trusted)
+		keys := []string{"ip:" + ip, "pair:" + ip + "\x00" + strings.ToLower(in.Username)}
+		rules := []loginRule{loginIPRule, loginPairRule}
+		if wait := m.attempts.retryAfter(keys, rules); wait > 0 {
+			w.Header().Set("Retry-After", retryAfterHeader(wait))
+			reply(w, 429, map[string]string{"error": "尝试过于频繁，请稍后再试"})
+			return
 		}
 		u, e := m.user(r.Context(), 1)
 		if e != nil {
@@ -336,22 +342,16 @@ func (m *Manager) Register(mux *http.ServeMux) {
 		valid := pool.CheckPassword(hash, in.Password)
 		if e == nil && u.Enabled && u.PasswordHash == "" && m.store != nil {
 			// 旧站迁移等没有密码的账号：引导改用邮箱验证码或已绑定的第三方账号
-			m.mu.Lock()
-			m.failures++
-			m.mu.Unlock()
+			m.attempts.fail(keys, rules)
 			reply(w, 409, m.passwordUnset(r.Context(), u))
 			return
 		}
 		if e != nil || !u.Enabled || !valid {
-			m.mu.Lock()
-			m.failures++
-			m.mu.Unlock()
+			m.attempts.fail(keys, rules)
 			reply(w, 401, map[string]string{"error": "账号或密码不正确，或账号已停用"})
 			return
 		}
-		m.mu.Lock()
-		m.failures = 0
-		m.mu.Unlock()
+		m.attempts.clear(keys[1:])
 		m.StartSession(w, r, u, in.Remember)
 	})
 	mux.HandleFunc("POST /api/v1/auth/logout", func(w http.ResponseWriter, r *http.Request) {
