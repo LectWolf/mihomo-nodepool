@@ -17,6 +17,7 @@
 - GET `/me/identities` → `{items:[{provider,login,created_at}],providers:{github,linuxdo}}`；DELETE `/me/identities/{provider}` 解绑。
 - 邮件服务可用且 `login.require_email=true` 时，没有邮箱的非管理员账号只能浏览（GET）、绑定邮箱、修改昵称／密码／头像和退出，其他写操作返回 403 `{error,email_required:true}`。
 - POST `/auth/login` `{username?,password,remember?}` → 同上，并设置 HttpOnly、SameSite Cookie；`username` 可以是用户名或已绑定邮箱，省略用户名兼容 `admin`。账号存在但没有设置密码（旧平台迁移、第三方注册）时返回 409 `{error,password_unset:true,email_hint,providers}`：`email_hint` 是打码后的已验证邮箱（邮件服务未配置时为空），`providers` 是已绑定且已启用的第三方登录；前端引导用邮箱验证码设置密码，或经第三方登录后强制补设密码。默认是浏览器会话 Cookie（服务端 12 小时）；`remember=true` 时 Cookie 与服务端会话为 30 天，使用中剩余不足 29 天会自动续期。
+- 登录失败按出口 IP（30 次/10 分钟）与「出口 IP + 账号」（8 次/15 分钟）分别计数，超限返回 429 与 `Retry-After`，成功后清零该组合；不设全站计数器，单个出口的失败不影响其他 IP 或其他账号。出口 IP 只在直连地址属于 `NODEPOOL_TRUSTED_PROXIES` 时取自 `X-Forwarded-For`。
 - POST `/auth/persist` `{remember}` → 同 `/auth`；登录后“保持登录状态？”确认用，把当前会话改为 30 天持久会话。会话以 SHA-256 摘要存入 `np_sessions`，服务重启不掉线，退出登录、改密码或停用账号即失效。
 - POST `/auth/logout` → `{authenticated:false}`。
 - GET `/me` → `{user:User,usage:{nodes,sources,subscriptions},provider_path}`。

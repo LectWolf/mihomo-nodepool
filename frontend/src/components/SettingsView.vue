@@ -302,7 +302,7 @@ watch(paused, value => {
           </section>
         </template>
         <section v-if="props.system" id="settings-service" class="panel settings-section system-card">
-          <div class="panel-heading"><div><h2>数据安全与服务信息</h2><p class="small muted">版本和构建信息只随程序升级或重新构建后变化；任务状态每 4 秒采样。</p></div><a href="/statistics" class="compact-link" @click.prevent="navigate('statistics')">运行统计<AppIcon name="right" /></a></div>
+          <div class="panel-heading"><div><h2>数据安全与服务信息</h2><p class="small muted">版本和构建信息只随程序升级或重新构建后变化；任务状态空闲时每 15 秒、有排队任务时每 3 秒刷新。</p></div><a href="/statistics" class="compact-link" @click.prevent="navigate('statistics')">运行统计<AppIcon name="right" /></a></div>
           <div :class="['security-status', props.system.data_encryption ? 'on' : 'off']"><AppIcon :name="props.system.data_encryption ? 'lock' : 'unlock'" /><div><strong>{{ props.system.data_encryption ? '订阅与节点数据已加密存储' : '未启用数据加密' }}</strong><p class="small muted">{{ props.system.data_encryption ? '来源订阅地址、原始内容、节点配置与服务器地址使用 AES-256-GCM 加密，密钥只保存在环境变量 NODEPOOL_DATA_KEY 中。请另行备份密钥，丢失后数据无法读取。' : '设置环境变量 NODEPOOL_DATA_KEY（32 字节 Base64，可用 openssl rand -base64 32 生成）后重启，已有数据会自动加密。' }}</p></div></div>
           <dl class="detail-list service-list">
             <div><dt>版本</dt><dd>{{ props.system.version }}</dd></div><div><dt>检测内核</dt><dd>{{ props.system.core.state === 'ready' ? '就绪' : '异常' }} {{ props.system.core.version }}</dd></div>

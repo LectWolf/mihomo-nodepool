@@ -6,9 +6,9 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/LectWolf/mihomo-nodepool/backend/internal/pool"
+	"github.com/LectWolf/mihomo-nodepool/backend/internal/trustedproxy"
 )
 
 func registerEconomy(business businessRegistrar, s *pool.Store) {
@@ -201,37 +201,5 @@ func registerEconomy(business businessRegistrar, s *pool.Store) {
 
 // clientIP 只在直连地址属于可信代理时读取 X-Forwarded-For
 func clientIP(r *http.Request, trusted []*net.IPNet) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	isTrusted := func(raw string) bool {
-		ip := net.ParseIP(strings.TrimSpace(raw))
-		if ip == nil {
-			return false
-		}
-		for _, n := range trusted {
-			if n.Contains(ip) {
-				return true
-			}
-		}
-		return false
-	}
-	if !isTrusted(host) {
-		return host
-	}
-	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
-	for i := len(parts) - 1; i >= 0; i-- {
-		item := strings.TrimSpace(parts[i])
-		if item == "" {
-			continue
-		}
-		if !isTrusted(item) {
-			if net.ParseIP(item) == nil {
-				return host
-			}
-			return item
-		}
-	}
-	return host
+	return trustedproxy.ClientIP(r, trusted)
 }

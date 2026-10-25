@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -327,6 +328,10 @@ func checkSource(in SourceInput) error {
 		u, e := url.Parse(in.URL)
 		if e != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
 			return errors.New("订阅地址必须是 HTTP(S) URL")
+		}
+		// 字面量地址直接拒绝内网；域名在真正拨号时按解析结果复核
+		if ip, e := netip.ParseAddr(u.Hostname()); e == nil && targetBlocked(ip) {
+			return errors.New("订阅地址不能指向本机或内网")
 		}
 	case "file", "links":
 		if strings.TrimSpace(in.Content) == "" {
