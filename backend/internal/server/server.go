@@ -38,6 +38,7 @@ func New(o Options) http.Handler {
 	mux := http.NewServeMux()
 	store := o.Service.Store
 	o.Auth.BindStore(store)
+	o.Auth.SetTrustedProxies(o.TrustedProxies)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -390,7 +391,11 @@ func maintenanceBlocks(r *http.Request, u pool.User) (bool, string) {
 	return true, message
 }
 
-// publicStats 普通用户与访客共享 5 秒内的统计结果，避免频繁轮询压垮数据库
+// publicStats 普通用户与访客共享统计结果，避免频繁轮询压垮数据库。
+// 页面每 15 秒轮询一次，缓存必须比轮询间隔长，否则每次都落到数据库；
+// 任务状态与运行时数据不在这份缓存里，仍然实时读取。
+const statsCacheTTL = 30 * time.Second
+
 var publicStats, adminStats statsCache
 
 type statsCache struct {
@@ -402,7 +407,7 @@ type statsCache struct {
 func (c *statsCache) get() (any, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.body, c.body != nil && time.Since(c.at) < 5*time.Second
+	return c.body, c.body != nil && time.Since(c.at) < statsCacheTTL
 }
 
 func (c *statsCache) set(body any) {
