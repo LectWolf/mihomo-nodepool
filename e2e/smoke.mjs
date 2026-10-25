@@ -32,7 +32,7 @@ targetPort = await listen(target)
 const portProbe = createServer(); const appPort = await listen(portProbe); await new Promise(resolve => portProbe.close(resolve))
 const base = `http://127.0.0.1:${appPort}`
 const app = spawn(resolve(process.env.NODEPOOL_BINARY || `build/nodepool${process.platform === 'win32' ? '.exe' : ''}`), [], {
-  env: { ...process.env, HTTP_ADDR: `127.0.0.1:${appPort}`, DATA_DIR: join(artifacts, 'data'), NODEPOOL_ENV_FILE: join(artifacts, 'missing.env'), ADMIN_PASSWORD: 'browser-test-password' },
+  env: { ...process.env, HTTP_ADDR: `127.0.0.1:${appPort}`, DATA_DIR: join(artifacts, 'data'), NODEPOOL_ENV_FILE: join(artifacts, 'missing.env'), ADMIN_PASSWORD: 'browser-test-password', NODEPOOL_ALLOW_PRIVATE_TARGETS: '1' },
   stdio: ['ignore', openSync(join(artifacts, 'server.log'), 'w'), openSync(join(artifacts, 'server-error.log'), 'w')],
 })
 let browser

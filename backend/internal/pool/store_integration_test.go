@@ -29,6 +29,9 @@ func testStore(t *testing.T) *pool.Store {
 	}
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	// 集成测试的模拟订阅源都跑在 127.0.0.1，需要临时放行内网目标
+	pool.AllowPrivateTargets = true
+	t.Cleanup(func() { pool.AllowPrivateTargets = false })
 	db, e := sql.Open("mysql", cfg.FormatDSN())
 	if e != nil {
 		t.Fatal(e)

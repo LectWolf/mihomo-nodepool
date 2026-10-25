@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,6 +54,10 @@ func run() error {
 	}
 	if e = pool.SetDataKey(cfg.DataKey); e != nil {
 		return e
+	}
+	// 只在测试环境打开：让回环地址上的模拟订阅源可用，生产必须保持关闭
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("NODEPOOL_ALLOW_PRIVATE_TARGETS"))); v == "1" || v == "true" {
+		pool.AllowPrivateTargets = true
 	}
 	if e = os.MkdirAll(cfg.DataDir, 0700); e != nil {
 		return fmt.Errorf("无法创建数据目录：%w", e)

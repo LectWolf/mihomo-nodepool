@@ -33,9 +33,9 @@ func NewService(store *Store, prober Prober) *Service {
 		return nil
 	}
 	return &Service{Store: store, Prober: prober, metrics: serviceMetrics{startedAt: utcNow()},
-		Client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: redirect, Transport: traffic.Transport(traffic.Default, traffic.KindSource, true)},
+		Client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: redirect, Transport: guardedTransport(traffic.Default, traffic.KindSource, true)},
 		// 用量读取不复用连接，HEAD 与 GET 回退能分别计数
-		UsageClient: &http.Client{Timeout: 30 * time.Second, CheckRedirect: redirect, Transport: traffic.Transport(traffic.Default, traffic.KindUsage, false)}}
+		UsageClient: &http.Client{Timeout: 30 * time.Second, CheckRedirect: redirect, Transport: guardedTransport(traffic.Default, traffic.KindUsage, false)}}
 }
 func (s *Service) Run(ctx context.Context) {
 	var wg sync.WaitGroup
