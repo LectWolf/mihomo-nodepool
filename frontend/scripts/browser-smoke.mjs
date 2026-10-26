@@ -418,7 +418,7 @@ try {
   await click('节点总览'); await click('运行设置')
   assert.equal(await evaluate('document.querySelector("#settings-filter textarea").value'), 'draft-pattern')
   await click('保存设置'); await hasText('设置已保存')
-  assert.deepEqual(Object.keys(requests.filter(item => item.method === 'PUT').at(-1).body).sort(), ['exclude_pattern', 'field_test_days', 'history_retention_days', 'idle_check_days', 'maintenance', 'probe_concurrency', 'public_url', 'source_concurrency', 'subscription_lease_days', 'test_url', 'timeout_ms'])
+  assert.deepEqual(Object.keys(requests.filter(item => item.method === 'PUT').at(-1).body).sort(), ['exclude_pattern', 'field_test_days', 'history_retention_days', 'idle_check_days', 'maintenance', 'probe_concurrency', 'public_url', 'source_auto_pause_days', 'source_concurrency', 'subscription_lease_days', 'test_url', 'timeout_ms'])
   check('settings validation, exact payload, and drafts retained through polling/navigation')
   await evaluate('document.querySelector(".version-chip").click()'); await hasText('Release v2.0.0')
   assert.equal(await evaluate('document.querySelectorAll("dialog[open] .release-timeline button").length > 1'), true, 'releases render as a timeline')
