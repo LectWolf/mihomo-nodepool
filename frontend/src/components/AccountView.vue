@@ -75,7 +75,7 @@ async function unlink(id: string) {
 function bindHref(id: string) { return oauthHref(id, 'bind') }
 function emailBound() { emailEditing.value = false; void loadProfile() }
 watch(ledgerPage, () => void loadLedger())
-async function patch(kind: 'profile' | 'password' | 'beacon', body: Record<string, unknown>, done: string) {
+async function patch(kind: 'profile' | 'password' | 'beacon' | 'auto-pause', body: Record<string, unknown>, done: string) {
   if (saving.value || props.paused) return
   const ticket = scope.ticket()
   saving.value = kind; error.value = ''; message.value = ''
@@ -90,6 +90,8 @@ async function patch(kind: 'profile' | 'password' | 'beacon', body: Record<strin
 }
 const beaconOn = computed(() => currentUser.value?.beacon_enabled !== false)
 function toggleBeacon() { void patch('beacon', { beacon_enabled: !beaconOn.value }, beaconOn.value ? '已关闭实测回报，客户端下次更新订阅后生效。' : '已开启实测回报，客户端下次更新订阅后生效。') }
+const autoPauseOn = computed(() => !!currentUser.value?.auto_pause_dead_sources)
+function toggleAutoPause() { void patch('auto-pause', { auto_pause_dead_sources: !autoPauseOn.value }, autoPauseOn.value ? '已关闭失效来源自动停用。' : '已开启失效来源自动停用，连续多天没有可用节点的来源会被停用。') }
 function saveProfile() { void patch('profile', { display_name: displayName.value.trim() }, '昵称已保存。') }
 function savePassword() {
   if (hasPassword.value && !currentPassword.value) { error.value = '请输入当前密码。'; return }
@@ -248,6 +250,14 @@ const achievementList = [
           <li>Clash 客户端每小时经订阅里最多 15 个节点访问一次本站，每次约 1 KB，只记录哪个节点能连上，不涉及浏览内容；每次更新订阅会换一批你还没测过的节点。</li>
           <li>结果显示在节点卡片的“国内实测”上；你的客户端连不上的节点，会自动排到你订阅的末尾。</li>
           <li>关闭后客户端下次更新订阅时生效，网站上仍能看到其他人的实测数据。</li>
+        </ul>
+      </section>
+      <section class="panel security-card">
+        <div class="panel-heading"><div><h2>失效来源自动停用</h2><p class="small muted">来源连续多天没有可用节点时，自动帮你停用。</p></div><label class="switch-field"><span>{{ autoPauseOn ? '已开启' : '已关闭' }}</span><button type="button" :class="['switch', { on: autoPauseOn }]" role="switch" :aria-checked="autoPauseOn" aria-label="失效来源自动停用" :disabled="!!saving || paused" @click="toggleAutoPause"><span></span></button></label></div>
+        <ul class="beacon-notes">
+          <li>只处理你自己分享的来源，别人的不受影响；停用不会删除来源和内容，随时可以重新启用。</li>
+          <li>重新启用后会立刻重新刷新或解析，并从下一个周期重新计时，不会刚开就被停用。</li>
+          <li>占用该来源的订阅会自动切到其他可用来源，不用逐个改订阅。</li>
         </ul>
       </section>
       </div>

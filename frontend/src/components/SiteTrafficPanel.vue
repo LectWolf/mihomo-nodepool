@@ -6,37 +6,28 @@ import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{ data: SiteTraffic }>()
 
-// 分组：图表按组堆叠，表格按分类与明细展开
-type Group = 'probe' | 'source' | 'serve'
+// 分组：图表按组堆叠，摘要卡片按组汇总；订阅拉取单独一组，避免被网页接口的体积稀释
+type Group = 'probe' | 'source' | 'serve' | 'sub'
 const groups: { key: Group; label: string; tone: string }[] = [
   { key: 'probe', label: '节点检测', tone: 'amber' },
   { key: 'source', label: '来源与用量', tone: 'violet' },
   { key: 'serve', label: '对外服务', tone: 'blue' },
+  { key: 'sub', label: '订阅拉取', tone: 'teal' },
 ]
-const kinds: Record<string, { label: string; group?: Group; hint: string }> = {
-  probe: { label: '延迟检测', group: 'probe', hint: '经节点访问测试地址，按协议区分' },
-  exit: { label: '出口国家查询', group: 'probe', hint: '检测成功后经节点查询出口 IP' },
-  tls: { label: '证书指纹读取', group: 'probe', hint: '直连跳过证书验证的 TLS 节点' },
-  source: { label: '来源刷新', group: 'source', hint: '下载上游订阅' },
-  usage: { label: '套餐用量读取', group: 'source', hint: '整点读取 Subscription-Userinfo；GET 回退时断开前已收下的正文不在计数里' },
-  sub: { label: '订阅拉取', group: 'serve', hint: '用户客户端拉取组合订阅' },
-  link: { label: '来源直链', group: 'serve', hint: '提供方的来源直链' },
-  beacon: { label: '实测回报', group: 'serve', hint: '客户端测速经节点回报' },
-  lease: { label: '席位保活', group: 'serve', hint: 'WebSocket 保活连接' },
-  api: { label: '网页接口', group: 'serve', hint: '控制台的 /api 请求' },
-  web: { label: '页面与静态资源', group: 'serve', hint: '前端页面、脚本和图片' },
-  mysql: { label: '数据库', hint: '与 MySQL 的往返；数据库在本机或同一 Docker 网络时不走公网' },
-  health: { label: '健康检查', hint: '容器内回环地址，不走网卡' },
+const kindGroups: Record<string, Group> = {
+  probe: 'probe', exit: 'probe', tls: 'probe',
+  source: 'source', usage: 'source',
+  api: 'serve', web: 'serve', link: 'serve', beacon: 'serve', lease: 'serve',
+  sub: 'sub',
 }
-const details: Record<string, string> = { clash: 'Clash', v2ray: 'v2ray', head: 'HEAD', get: 'GET 回退', tcp: 'TCP', quic: 'QUIC' }
 const total = (r: { bytes_in: number; bytes_out: number }) => r.bytes_in + r.bytes_out
-const groupOf = (kind: string) => kinds[kind]?.group
+const groupOf = (kind: string) => kindGroups[kind]
 
 const pad = (n: number) => String(n).padStart(2, '0')
 interface Stack { label: string; detail: string; parts: Record<Group, number>; sum: number; nic: number }
 function stacks(rows: SiteTrafficRow[], slots: Date[], key: (d: Date) => string, label: (d: Date) => string, detail: (d: Date) => string): Stack[] {
   const map = new Map<string, Stack>()
-  for (const d of slots) map.set(key(d), { label: label(d), detail: detail(d), parts: { probe: 0, source: 0, serve: 0 }, sum: 0, nic: 0 })
+  for (const d of slots) map.set(key(d), { label: label(d), detail: detail(d), parts: { probe: 0, source: 0, serve: 0, sub: 0 }, sum: 0, nic: 0 })
   for (const r of rows) {
     const s = map.get(key(new Date(r.at)))
     if (!s) continue
@@ -75,33 +66,19 @@ function shown(chart: string) {
   return active.value?.chart === chart && c ? c.bars[active.value.index] : null
 }
 
-// 近 24 小时分类明细
-interface Line { kind: string; detail: string; label: string; hint: string; requests: number; failures: number; bytes_in: number; bytes_out: number; children: Line[] }
-const lines = computed(() => {
-  const map = new Map<string, Line>()
+// 摘要卡片与占比按近 24 小时的分组汇总
+const groupBytes = computed(() => {
+  const bytes: Record<string, number> = {}
   for (const r of props.data.hourly) {
-    if (r.kind === 'nic') continue
-    const meta = kinds[r.kind] ?? { label: r.kind, hint: '' }
-    let line = map.get(r.kind)
-    if (!line) { line = { kind: r.kind, detail: '', label: meta.label, hint: meta.hint, requests: 0, failures: 0, bytes_in: 0, bytes_out: 0, children: [] }; map.set(r.kind, line) }
-    line.requests += r.requests; line.failures += r.failures; line.bytes_in += r.bytes_in; line.bytes_out += r.bytes_out
-    if (r.detail) {
-      let child = line.children.find(c => c.detail === r.detail)
-      if (!child) { child = { kind: r.kind, detail: r.detail, label: details[r.detail] ?? r.detail, hint: '', requests: 0, failures: 0, bytes_in: 0, bytes_out: 0, children: [] }; line.children.push(child) }
-      child.requests += r.requests; child.failures += r.failures; child.bytes_in += r.bytes_in; child.bytes_out += r.bytes_out
-    }
+    const g = groupOf(r.kind)
+    if (g) bytes[g] = (bytes[g] ?? 0) + total(r)
   }
-  const out = [...map.values()].sort((a, b) => total(b) - total(a))
-  for (const l of out) l.children.sort((a, b) => total(b) - total(a))
-  return out
+  return bytes
 })
-const counted = computed(() => lines.value.filter(l => groupOf(l.kind)).reduce((n, l) => n + total(l), 0))
-const groupTotals = computed(() => groups.map(g => ({ ...g, bytes: lines.value.filter(l => groupOf(l.kind) === g.key).reduce((n, l) => n + total(l), 0) })))
+const counted = computed(() => Object.values(groupBytes.value).reduce((n, v) => n + v, 0))
+const groupTotals = computed(() => groups.map(g => ({ ...g, bytes: groupBytes.value[g.key] ?? 0 })))
 const nic24 = computed(() => props.data.hourly.filter(r => r.kind === 'nic').reduce((acc, r) => ({ bytes_in: acc.bytes_in + r.bytes_in, bytes_out: acc.bytes_out + r.bytes_out }), { bytes_in: 0, bytes_out: 0 }))
-const expanded = ref<Set<string>>(new Set(['probe']))
-function toggle(kind: string) { const s = new Set(expanded.value); if (s.has(kind)) s.delete(kind); else s.add(kind); expanded.value = s }
 const share = (v: number) => counted.value > 0 ? `${(v / counted.value * 100).toFixed(v / counted.value >= 0.1 ? 0 : 1)}%` : '—'
-const avg = (l: Line) => l.requests > 0 ? formatBytes(Math.round(total(l) / l.requests)) : '—'
 </script>
 
 <template>
@@ -130,28 +107,6 @@ const avg = (l: Line) => l.requests > 0 ? formatBytes(Math.round(total(l) / l.re
         </div>
       </div>
     </div>
-    <div class="table-wrap site-traffic-table">
-      <table>
-        <thead><tr><th>近 24 小时分类</th><th>次数</th><th>接收</th><th>发送</th><th>合计</th><th>平均每次</th><th>占比</th></tr></thead>
-        <tbody>
-          <template v-for="l in lines" :key="l.kind">
-            <tr :class="{ muted: !groupOf(l.kind) }">
-              <td><button v-if="l.children.length" type="button" class="link-button expand" :aria-expanded="expanded.has(l.kind)" @click="toggle(l.kind)"><AppIcon name="down" />{{ l.label }}</button><strong v-else>{{ l.label }}</strong><small class="cell-sub">{{ l.hint }}</small></td>
-              <td>{{ l.requests.toLocaleString() }}<small v-if="l.failures" class="cell-sub danger-text">失败 {{ l.failures.toLocaleString() }}</small></td>
-              <td>{{ formatBytes(l.bytes_in) }}</td><td>{{ formatBytes(l.bytes_out) }}</td><td><strong>{{ formatBytes(total(l)) }}</strong></td><td>{{ avg(l) }}</td><td>{{ groupOf(l.kind) ? share(total(l)) : '不计入' }}</td>
-            </tr>
-            <template v-if="expanded.has(l.kind)">
-              <tr v-for="c in l.children" :key="l.kind + c.detail" class="child">
-                <td><span>{{ c.label }}</span></td>
-                <td>{{ c.requests.toLocaleString() }}<small v-if="c.failures" class="cell-sub danger-text">失败 {{ c.failures.toLocaleString() }}</small></td>
-                <td>{{ formatBytes(c.bytes_in) }}</td><td>{{ formatBytes(c.bytes_out) }}</td><td>{{ formatBytes(total(c)) }}</td><td>{{ avg(c) }}</td><td>{{ groupOf(c.kind) ? share(total(c)) : '' }}</td>
-              </tr>
-            </template>
-          </template>
-        </tbody>
-      </table>
-    </div>
-    <p v-if="!lines.length" class="small muted">暂无记录。</p>
     <p class="small muted">字节在应用层统计，不含 TCP/IP 包头、重传和 DNS 查询，握手多的检测流量在网卡上会更高一些。订阅、网页按 Nginx 压缩前的大小计算，经压缩后出站更小。容器网卡包含 Nginx 与本服务之间、本服务与数据库之间的流量，可用来对照上面各项是否漏算。</p>
   </section>
 </template>

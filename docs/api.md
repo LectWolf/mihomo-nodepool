@@ -21,7 +21,7 @@
 - POST `/auth/persist` `{remember}` → 同 `/auth`；登录后“保持登录状态？”确认用，把当前会话改为 30 天持久会话。会话以 SHA-256 摘要存入 `np_sessions`，服务重启不掉线，退出登录、改密码或停用账号即失效。
 - POST `/auth/logout` → `{authenticated:false}`。
 - GET `/me` → `{user:User,usage:{nodes,sources,subscriptions},provider_path}`。
-- PATCH `/me` `{display_name?,password?,current_password?,beacon_enabled?}` → User；User 含 `has_password`、`beacon_enabled`（实测回报，默认开启，关闭后客户端下次更新订阅生效）。已有密码的账号修改密码必须提供正确的 `current_password`（错误 400，同一账号 15 分钟内错 5 次后 429）；没有密码的账号可直接设置。修改密码撤销其他会话，保留当前浏览器。
+- PATCH `/me` `{display_name?,password?,current_password?,beacon_enabled?,auto_pause_dead_sources?}` → User；User 含 `has_password`、`beacon_enabled`（实测回报，默认开启，关闭后客户端下次更新订阅生效）、`auto_pause_dead_sources`（失效来源自动停用，默认关闭，由用户自己开启）。已有密码的账号修改密码必须提供正确的 `current_password`（错误 400，同一账号 15 分钟内错 5 次后 429）；没有密码的账号可直接设置。修改密码撤销其他会话，保留当前浏览器。
 - GET `/users?q=&role=&status=&risk=&quota=&page=1&page_size=20` → `{items:User[],total,page,page_size,limits,risk}`，管理员与用户管理员（manager）。`role=admin|manager|user`，`status=enabled|disabled`，`risk=flagged|frozen|clean`（触发任一风控标记／冻结中／无标记），`quota=custom|level`（单独设置额度／跟随等级）；参数可组合。
 - POST `/users` `{username,password,display_name?,node_limit?,source_limit?,subscription_limit?,role?}` → User，201。管理员创建的账号沿用 1–64 位用户名规则，便于导入旧平台数据。
 - PATCH `/users/{id}` `{display_name?,password?,enabled?,node_limit?,source_limit?,subscription_limit?,xp?,points?,role?}` → User。
@@ -56,7 +56,7 @@ GET `/statistics`（仅管理员）→ `{sampled_at,overview,tasks,source_tasks,
 
 - GET `/sources?scope=all` → `{items:Source[]}`；默认只返回本人来源，管理员传 `scope=all` 时返回全部（含私有来源）。
 - POST `/sources` `{name,kind:"url"|"file"|"links",url?,content?,exclude_pattern?,max_users?,min_level?,private?}` → Source，202。URL来源传url，其余传content。
-- PATCH `/sources/{id}` `{name?,enabled?,exclude_pattern?,url?,max_users?,min_level?}` → Source；空url保留已有地址，排除变化重新处理缓存。最低等级0–6，默认0不限。
+- PATCH `/sources/{id}` `{name?,enabled?,exclude_pattern?,url?,max_users?,min_level?}` → Source；空url保留已有地址，排除变化重新处理缓存。最低等级0–6，默认0不限。重新启用会清空自动停用标记（`auto_paused_at`、`auto_pause_reason`、`dead_since`）并立即排队刷新或解析。
 - POST `/sources/{id}/refresh` → `{queued:true}`；URL 来源重新抓取，文件和链接重新解析已保存内容。
 - DELETE `/sources/{id}` → `{deleted:true}`。
 - GET `/sources/catalog?q=&provider_id=&following=1&page=1&page_size=20` → `{items:Source[],total,page,page_size}`；共享目录只列出已启用提供方的已启用来源，且须包含未排除、未屏蔽节点。
@@ -177,7 +177,7 @@ URI 订阅只承诺兼容 URI 导入；不提供 sing-box JSON，不把 URI 集�
 
 ## 设置和版本
 
-- GET `/settings` → `{exclude_pattern,test_url,timeout_ms,probe_concurrency,source_concurrency,refresh_hours:8,check_hours:8,subscription_lease_days:14,history_retention_days:30,field_test_days:3,idle_check_days:3,public_url:""}`。
+- GET `/settings` → `{exclude_pattern,test_url,timeout_ms,probe_concurrency,source_concurrency,refresh_hours:8,check_hours:8,subscription_lease_days:14,history_retention_days:30,field_test_days:3,idle_check_days:3,source_auto_pause_days:7,public_url:""}`。
 - GET／PUT `/settings` 另含 `community`（等级额度、经验积分、兑换价格、称号、风控与反馈参数），旧前端不提交时保留已保存值；服务端统一校验范围。
 - PUT `/settings`提交以上可编辑字段，固定周期不需提交。租期1–365天、历史1–3650天、实测窗口1–7天、闲置检测间隔0–30天（0为不定期检测，旧前端不提交时保留原值），旧缺字段使用默认值；public_url可空，否则必须无用户信息／路径／查询的HTTP(S)源地址。排除正则变化按缓存重算，失败保留旧列表。
 - GET `/releases` → `{current_version,latest_version,update_available,can_update,can_rollback,need_restart,state,message,releases:[{version,name,body,published_at,url}]}`。
