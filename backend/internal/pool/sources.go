@@ -179,6 +179,12 @@ func (s *Store) PatchSource(ctx context.Context, id int64, p SourcePatch) (Sourc
 	if e = tx.Commit(); e != nil {
 		return v, e
 	}
+	if p.Enabled != nil && *p.Enabled {
+		// 手动重新启用时清掉自动停用的标记，自动停用从下一个周期重新计时
+		if _, e = s.DB.ExecContext(ctx, `UPDATE np_sources SET auto_paused_at=NULL,auto_pause_reason='',dead_since=NULL WHERE id=?`, id); e != nil {
+			return v, e
+		}
+	}
 	// 停用或调整等级要求后，受影响的订阅切换到其他来源
 	if madePrivate {
 		if e = s.releaseUnsharedSeats(ctx, id); e != nil {

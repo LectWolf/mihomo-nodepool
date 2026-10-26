@@ -7,6 +7,7 @@
   --tone-blue: #2f63a3; --tone-blue-soft: #e8f0fa;
   --tone-violet: #6650ad; --tone-violet-soft: #efebfa;
   --tone-amber: #9a6a0d; --tone-amber-soft: #fbf2df;
+  --tone-teal: #1c7c70; --tone-teal-soft: #e4f3f0;
   --tone-red: var(--danger); --tone-red-soft: #fbeceb;
   --tone-track: #e6ebf0;
   --elev-1: 0 1px 2px #1b2b3c0d, 0 2px 8px #1b2b3c08;
@@ -20,6 +21,7 @@
   --tone-blue: #94b9ea; --tone-blue-soft: #1e2b3b;
   --tone-violet: #bcaaf1; --tone-violet-soft: #29253c;
   --tone-amber: #e6cb8c; --tone-amber-soft: #3a3426;
+  --tone-teal: #6fd0c1; --tone-teal-soft: #16302d;
   --tone-red-soft: #3d292b;
   --tone-track: #2b353f;
   --elev-1: inset 0 1px 0 #ffffff07, 0 1px 2px #0005;
@@ -31,6 +33,7 @@
 .tone-blue { --tone: var(--tone-blue); --tone-soft: var(--tone-blue-soft); }
 .tone-violet { --tone: var(--tone-violet); --tone-soft: var(--tone-violet-soft); }
 .tone-amber { --tone: var(--tone-amber); --tone-soft: var(--tone-amber-soft); }
+.tone-teal { --tone: var(--tone-teal); --tone-soft: var(--tone-teal-soft); }
 .tone-red { --tone: var(--tone-red); --tone-soft: var(--tone-red-soft); }
 
 body { background: var(--canvas); -webkit-font-smoothing: antialiased; }

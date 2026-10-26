@@ -35,6 +35,8 @@ type Settings struct {
 	HistoryRetentionDays  int    `json:"history_retention_days"`
 	// FieldTestDays 国内用户实测结果参与排序和展示的天数
 	FieldTestDays int `json:"field_test_days"`
+	// SourceAutoPauseDays 来源连续多少天没有可用节点就自动停用（0 表示关闭），只在所有者主动开启后生效
+	SourceAutoPauseDays int `json:"source_auto_pause_days"`
 	// IdleCheckDays 没人使用的节点的检测间隔；0 表示不定期检测（新节点仍测一次）
 	IdleCheckDays *int              `json:"idle_check_days"`
 	PublicURL     string            `json:"public_url"`
@@ -63,7 +65,7 @@ func (s Settings) IdleDays() int {
 }
 
 func Defaults() Settings {
-	return Settings{ExcludePattern: DefaultExclude, TestURL: "https://www.gstatic.com/generate_204", TimeoutMS: 5000, ProbeConcurrency: 16, SourceConcurrency: 5, RefreshHours: 8, CheckHours: 8, SubscriptionLeaseDays: 14, HistoryRetentionDays: 30, FieldTestDays: 3, IdleCheckDays: intPtr(DefaultIdleCheckDays), Community: DefaultCommunity(), Login: DefaultLogin()}
+	return Settings{ExcludePattern: DefaultExclude, TestURL: "https://www.gstatic.com/generate_204", TimeoutMS: 5000, ProbeConcurrency: 16, SourceConcurrency: 5, RefreshHours: 8, CheckHours: 8, SubscriptionLeaseDays: 14, HistoryRetentionDays: 30, FieldTestDays: 3, SourceAutoPauseDays: 7, IdleCheckDays: intPtr(DefaultIdleCheckDays), Community: DefaultCommunity(), Login: DefaultLogin()}
 }
 func (s Settings) Validate() error {
 	if s.SubscriptionLeaseDays < 0 || s.SubscriptionLeaseDays > 365 || s.HistoryRetentionDays < 0 || s.HistoryRetentionDays > 3650 {
@@ -71,6 +73,9 @@ func (s Settings) Validate() error {
 	}
 	if s.FieldTestDays < 0 || s.FieldTestDays > 7 {
 		return errors.New("实测结果有效天数须为1–7天")
+	}
+	if s.SourceAutoPauseDays < 0 || s.SourceAutoPauseDays > 90 {
+		return errors.New("自动停用天数须为0–90天，0 表示关闭")
 	}
 	if s.IdleCheckDays != nil && (*s.IdleCheckDays < 0 || *s.IdleCheckDays > 30) {
 		return errors.New("闲置节点检测间隔须为0–30天")
@@ -149,10 +154,14 @@ type Source struct {
 	LastRefreshAt  *time.Time `json:"last_refresh_at"`
 	NextRefreshAt  *time.Time `json:"next_refresh_at"`
 	CreatedAt      time.Time  `json:"created_at"`
-	URL            string     `json:"-"`
-	Content        string     `json:"-"`
-	Revision       int64      `json:"-"`
-	Cached         bool       `json:"-"`
+	// 连续没有可用节点的时间，自动停用后记下时间与原因，所有者重新启用时清空
+	DeadSince       *time.Time `json:"dead_since,omitempty"`
+	AutoPausedAt    *time.Time `json:"auto_paused_at,omitempty"`
+	AutoPauseReason string     `json:"auto_pause_reason,omitempty"`
+	URL             string     `json:"-"`
+	Content         string     `json:"-"`
+	Revision        int64      `json:"-"`
+	Cached          bool       `json:"-"`
 }
 type SourceInput struct {
 	MaxUsers       int    `json:"max_users"`

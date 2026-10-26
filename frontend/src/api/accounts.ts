@@ -7,7 +7,7 @@ export interface User {
   node_limit: number; source_limit: number; subscription_limit: number; created_at: string
   xp: number; points: number; level: number; checkin_on: string; checkin_streak: number; subscription_expires_at: string | null
   title?: string; avatar_version?: number; risk_frozen_until?: string | null
-  email?: string; email_verified?: boolean; has_password?: boolean; beacon_enabled?: boolean
+  email?: string; email_verified?: boolean; has_password?: boolean; beacon_enabled?: boolean; auto_pause_dead_sources?: boolean
 }
 export interface Quota { nodes: number; sources: number; subscriptions: number }
 export interface Limits extends Quota { level: Quota; personal: Quota; boost: Quota }

@@ -43,6 +43,8 @@ export interface Source {
   // 来源目录补充：健康概况与当前用户可用性
   healthy_count?: number; avg_latency?: number | null; countries?: string[]; unavailable?: Unavailable; seated?: boolean; fresh?: boolean
   takedown?: SourceTakedown | null
+  // 自动停用：连续没有可用节点被停用后的标记
+  dead_since?: string | null; auto_paused_at?: string | null; auto_pause_reason?: string
 }
 // 管理员下架记录：下架期间提供方不能自行启用
 export interface SourceTakedown { reason: string; reason_label: string; detail: string; at: string; by: string }
@@ -72,7 +74,7 @@ export interface Options { types: string[]; countries: { code: string; name: str
 export interface Settings {
   exclude_pattern: string; test_url: string; timeout_ms: number; probe_concurrency: number
   source_concurrency: number; refresh_hours: number; check_hours: number
-  subscription_lease_days?: number; history_retention_days?: number; field_test_days?: number; idle_check_days?: number; public_url?: string
+  subscription_lease_days?: number; history_retention_days?: number; field_test_days?: number; idle_check_days?: number; public_url?: string; source_auto_pause_days?: number
   community?: CommunitySettings
   maintenance?: Maintenance
   login?: LoginSettings

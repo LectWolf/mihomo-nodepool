@@ -14,10 +14,10 @@ const emit = defineEmits<{ saved: [] }>()
 const api = useApi()
 const paused = computed(() => !!props.paused || route.value.section !== 'settings' || props.system?.database.connected === false)
 const scope = useAccountScope(() => paused.value)
-type SettingsForm = Settings & { subscription_lease_days: number; history_retention_days: number; field_test_days: number; idle_check_days: number; public_url: string; community?: CommunitySettings; login?: LoginSettings; maintenance: { enabled: boolean; message: string; since?: string | null } }
+type SettingsForm = Settings & { subscription_lease_days: number; history_retention_days: number; field_test_days: number; idle_check_days: number; source_auto_pause_days: number; public_url: string; community?: CommunitySettings; login?: LoginSettings; maintenance: { enabled: boolean; message: string; since?: string | null } }
 function formValue(value: Settings): SettingsForm {
   // 社区设置含数组，深拷贝避免与原值共享引用
-  return { ...value, subscription_lease_days: value.subscription_lease_days ?? 14, history_retention_days: value.history_retention_days ?? 30, field_test_days: value.field_test_days ?? 3, idle_check_days: value.idle_check_days ?? 3, public_url: value.public_url ?? '', maintenance: { enabled: !!value.maintenance?.enabled, message: value.maintenance?.message ?? '', since: value.maintenance?.since ?? null }, community: value.community ? JSON.parse(JSON.stringify(value.community)) as CommunitySettings : undefined, login: value.login ? loginForm(value.login) : undefined }
+  return { ...value, subscription_lease_days: value.subscription_lease_days ?? 14, history_retention_days: value.history_retention_days ?? 30, field_test_days: value.field_test_days ?? 3, idle_check_days: value.idle_check_days ?? 3, source_auto_pause_days: value.source_auto_pause_days ?? 7, public_url: value.public_url ?? '', maintenance: { enabled: !!value.maintenance?.enabled, message: value.maintenance?.message ?? '', since: value.maintenance?.since ?? null }, community: value.community ? JSON.parse(JSON.stringify(value.community)) as CommunitySettings : undefined, login: value.login ? loginForm(value.login) : undefined }
 }
 // 密钥只写不读：表单里留空表示沿用已保存的值
 function loginForm(v: LoginSettings): LoginSettings {
@@ -158,6 +158,7 @@ async function save() {
   if (!Number.isInteger(value.history_retention_days) || value.history_retention_days < 1 || value.history_retention_days > 3650) { error.value = '历史保留需要是 1–3650 天的整数。'; return }
   if (!Number.isInteger(value.field_test_days) || value.field_test_days < 1 || value.field_test_days > 7) { error.value = '实测结果有效天数需要是 1–7 天的整数。'; return }
   if (!Number.isInteger(value.idle_check_days) || value.idle_check_days < 0 || value.idle_check_days > 30) { error.value = '闲置节点检测间隔需要是 0–30 天的整数。'; return }
+  if (!Number.isInteger(value.source_auto_pause_days) || value.source_auto_pause_days < 0 || value.source_auto_pause_days > 90) { error.value = '失效来源自动停用天数需要是 0–90 天的整数，0 表示关闭。'; return }
   if (value.community) { const message = communityError(value.community); if (message) { error.value = message; return } }
   const publicURL = value.public_url.trim()
   if (publicURL) {
@@ -169,7 +170,7 @@ async function save() {
     const result = await api<Settings>('/settings', json('PUT', {
       exclude_pattern: value.exclude_pattern, test_url: value.test_url.trim(), timeout_ms: value.timeout_ms,
       probe_concurrency: value.probe_concurrency, source_concurrency: value.source_concurrency,
-      subscription_lease_days: value.subscription_lease_days, history_retention_days: value.history_retention_days, field_test_days: value.field_test_days, idle_check_days: value.idle_check_days, public_url: publicURL,
+      subscription_lease_days: value.subscription_lease_days, history_retention_days: value.history_retention_days, field_test_days: value.field_test_days, idle_check_days: value.idle_check_days, source_auto_pause_days: value.source_auto_pause_days, public_url: publicURL,
       maintenance: { enabled: value.maintenance.enabled, message: value.maintenance.message.trim() },
       ...(value.community ? { community: value.community } : {}),
       ...(value.login ? { login: { ...value.login, email_suffixes: value.login.email_suffixes.map(v => v.trim()).filter(Boolean), smtp: { ...value.login.smtp, port: Number(value.login.smtp.port) || 0 } } } : {}),
@@ -260,6 +261,7 @@ watch(paused, value => {
             <label class="form-field"><span class="field-label">订阅租期 <small class="muted">天</small></span><input v-model.number="draft.subscription_lease_days" type="number" min="1" max="365" step="1" required /><span class="field-hint">默认 14 天，支持 1–365 天。网页签到、有效探测和请假可续期；普通下载不会续期。</span></label>
             <label class="form-field"><span class="field-label">历史保留 <small class="muted">天</small></span><input v-model.number="draft.history_retention_days" type="number" min="1" max="3650" step="1" required /><span class="field-hint">默认 30 天，支持 1–3650 天。历史不占用有效席位。</span></label>
             <label class="form-field"><span class="field-label">实测结果有效天数 <small class="muted">天</small></span><input v-model.number="draft.field_test_days" type="number" min="1" max="7" step="1" required /><span class="field-hint">默认 3 天。国内用户客户端的实测在这段时间内参与排序和展示，更早的不再计入。</span></label>
+            <label class="form-field"><span class="field-label">失效来源自动停用 <small class="muted">天</small></span><input v-model.number="draft.source_auto_pause_days" type="number" min="0" max="90" step="1" required /><span class="field-hint">默认 7 天，0 表示关闭。只对在账号设置里主动开启的用户生效：来源连续这么多天没有可用节点就自动停用。</span></label>
           </div></fieldset>
         </section>
         <section id="settings-public" class="panel settings-section">

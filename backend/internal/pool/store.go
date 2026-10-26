@@ -240,7 +240,7 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 	return nil
 }
 
-const sourceBaseColumns = `id,name,kind,enabled,exclude_pattern,status,node_count,excluded_count,last_error,last_refresh_at,next_refresh_at,created_at`
+const sourceBaseColumns = `id,name,kind,enabled,exclude_pattern,status,node_count,excluded_count,last_error,last_refresh_at,next_refresh_at,created_at,dead_since,auto_paused_at,auto_pause_reason`
 const sourceOwnerColumns = `revision,cached,owner_id,max_users,(SELECT COUNT(*) FROM np_source_claims c WHERE c.source_id=np_sources.id),(SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=np_sources.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6)),COALESCE((SELECT display_name FROM np_users u WHERE u.id=np_sources.owner_id),''),min_level,COALESCE(share_token,''),subscription_usage,(SELECT COUNT(*) FROM np_source_seats st JOIN np_users su ON su.id=st.user_id AND su.enabled=1 WHERE st.source_id=np_sources.id AND st.state='active' AND st.expires_at>UTC_TIMESTAMP(6)),COALESCE((SELECT username FROM np_users u WHERE u.id=np_sources.owner_id),''),COALESCE((SELECT avatar_version FROM np_users u WHERE u.id=np_sources.owner_id),0),COALESCE((SELECT title FROM np_users u WHERE u.id=np_sources.owner_id),''),COALESCE((SELECT role FROM np_users u WHERE u.id=np_sources.owner_id),''),takedown_reason,takedown_detail,takedown_at,COALESCE((SELECT COALESCE(NULLIF(u.display_name,''),u.username) FROM np_users u WHERE u.id=np_sources.takedown_by),''),private,(SELECT COUNT(*) FROM np_source_shares sh WHERE sh.source_id=np_sources.id)`
 const sourceColumns = sourceBaseColumns + `,url,content,` + sourceOwnerColumns
 const publicSourceColumns = sourceBaseColumns + `,'','',` + sourceOwnerColumns
@@ -253,7 +253,14 @@ func scanSource(row scanner) (Source, error) {
 	var takeReason sql.NullString
 	var takeDetail, takeBy string
 	var takeAt sql.NullTime
-	e := row.Scan(&v.ID, &v.Name, &v.Kind, &v.Enabled, &v.ExcludePattern, &v.Status, &v.NodeCount, &v.ExcludedCount, &v.LastError, &v.LastRefreshAt, &v.NextRefreshAt, &v.CreatedAt, &v.URL, &v.Content, &v.Revision, &v.Cached, &v.OwnerID, &v.MaxUsers, &v.ClaimedUsers, &v.ActiveUsers, &v.ProviderName, &v.MinLevel, &v.ShareToken, &usage, &v.OccupiedUsers, &v.ProviderUsername, &v.ProviderAvatar, &v.ProviderTitle, &v.ProviderRole, &takeReason, &takeDetail, &takeAt, &takeBy, &v.Private, &v.ShareCount)
+	var deadSince, autoPausedAt sql.NullTime
+	e := row.Scan(&v.ID, &v.Name, &v.Kind, &v.Enabled, &v.ExcludePattern, &v.Status, &v.NodeCount, &v.ExcludedCount, &v.LastError, &v.LastRefreshAt, &v.NextRefreshAt, &v.CreatedAt, &deadSince, &autoPausedAt, &v.AutoPauseReason, &v.URL, &v.Content, &v.Revision, &v.Cached, &v.OwnerID, &v.MaxUsers, &v.ClaimedUsers, &v.ActiveUsers, &v.ProviderName, &v.MinLevel, &v.ShareToken, &usage, &v.OccupiedUsers, &v.ProviderUsername, &v.ProviderAvatar, &v.ProviderTitle, &v.ProviderRole, &takeReason, &takeDetail, &takeAt, &takeBy, &v.Private, &v.ShareCount)
+	if deadSince.Valid {
+		v.DeadSince = &deadSince.Time
+	}
+	if autoPausedAt.Valid {
+		v.AutoPausedAt = &autoPausedAt.Time
+	}
 	if e == nil && takeAt.Valid {
 		v.Takedown = &SourceTakedown{Reason: takeReason.String, ReasonLabel: takedownLabel(takeReason.String), Detail: takeDetail, At: takeAt.Time, By: takeBy}
 	}
