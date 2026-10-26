@@ -43,6 +43,7 @@ func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manage
 			Password        *string `json:"password"`
 			CurrentPassword string  `json:"current_password"`
 			BeaconEnabled   *bool   `json:"beacon_enabled"`
+			AutoPause       *bool   `json:"auto_pause_dead_sources"`
 		}
 		if e := decode(w, r, &in); e != nil {
 			return e
@@ -67,6 +68,11 @@ func registerMultiuser(business businessRegistrar, s *pool.Store, a *auth.Manage
 		}
 		if in.BeaconEnabled != nil {
 			if e := s.SetBeacon(r.Context(), id, *in.BeaconEnabled); e != nil {
+				return e
+			}
+		}
+		if in.AutoPause != nil {
+			if e := s.SetAutoPause(r.Context(), id, *in.AutoPause); e != nil {
 				return e
 			}
 		}
