@@ -16,6 +16,10 @@ func (s *Store) ensureCommunity(ctx context.Context) error {
 		{"np_sources", "min_level", "INT NOT NULL DEFAULT 0"},
 		{"np_sources", "share_token", "CHAR(64) NULL UNIQUE"},
 		{"np_sources", "subscription_usage", "JSON NULL"},
+		{"np_users", "auto_pause_dead_sources", "TINYINT(1) NOT NULL DEFAULT 0"},
+		{"np_sources", "dead_since", "DATETIME(6) NULL"},
+		{"np_sources", "auto_paused_at", "DATETIME(6) NULL"},
+		{"np_sources", "auto_pause_reason", "VARCHAR(32) NOT NULL DEFAULT ''"},
 	}
 	for _, column := range columns {
 		var count int

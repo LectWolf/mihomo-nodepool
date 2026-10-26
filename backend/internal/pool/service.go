@@ -44,7 +44,7 @@ func (s *Service) Run(ctx context.Context) {
 	go func() { defer wg.Done(); s.nodeLoop(ctx) }()
 	go func() {
 		defer wg.Done()
-		var tiersAt time.Time
+		var tiersAt, autoPauseAt time.Time
 		for ctx.Err() == nil {
 			if s.ready(ctx) {
 				if time.Since(tiersAt) >= ProbeTiersTTL {
@@ -61,6 +61,14 @@ func (s *Service) Run(ctx context.Context) {
 				}
 				if err := s.Store.AwardDaily(ctx); err != nil {
 					log.Print("每日共享奖励发放失败，将自动重试")
+				}
+				if time.Since(autoPauseAt) >= 15*time.Minute {
+					autoPauseAt = time.Now()
+					if n, err := s.Store.AutoPauseDeadSources(ctx); err != nil {
+						log.Print("来源自动停用扫描失败，将自动重试")
+					} else if n > 0 {
+						log.Printf("已自动停用 %d 个长期没有可用节点的来源", n)
+					}
 				}
 				if err := s.hourly(ctx); err != nil {
 					log.Printf("每小时流量快照失败，将在下个整点重试：%v", err)
@@ -164,18 +172,27 @@ func (s *Service) Refresh(parent context.Context, src Source) {
 		resp, e := s.Client.Do(req)
 		if e != nil {
 			counter.Hit(true)
-			fail("订阅请求失败或超时，保留上次节点")
+			fail(fetchFailure(e))
 			return
 		}
 		b, e := io.ReadAll(io.LimitReader(resp.Body, (16<<20)+1))
 		resp.Body.Close()
 		s.metrics.sourceBytes.Add(int64(len(b)))
-		bad := e != nil || resp.StatusCode != http.StatusOK || len(b) > 16<<20
-		counter.Hit(bad)
-		if bad {
-			fail("订阅返回异常或超过 16 MiB，保留上次节点")
+		switch {
+		case e != nil:
+			counter.Hit(true)
+			fail("下载订阅时连接中断，保留上次节点")
+			return
+		case len(b) > 16<<20:
+			counter.Hit(true)
+			fail("订阅内容超过 16 MiB，保留上次节点")
+			return
+		case resp.StatusCode != http.StatusOK:
+			counter.Hit(true)
+			fail(upstreamStatus(resp.StatusCode))
 			return
 		}
+		counter.Hit(false)
 		body = string(b)
 		src.SubscriptionUsage = ParseSubscriptionUsage(resp.Header.Get("Subscription-Userinfo"))
 		if src.SubscriptionUsage != nil {
@@ -185,7 +202,7 @@ func (s *Service) Refresh(parent context.Context, src Source) {
 	}
 	parsed, e := Parse(body, s.Prober.Validate)
 	if e != nil {
-		fail(e.Error() + "；保留上次节点")
+		fail("订阅内容无法解析：" + e.Error() + "，保留上次节点")
 		return
 	}
 	if e = s.Store.ApplySource(ctx, src, body, parsed); e != nil {
